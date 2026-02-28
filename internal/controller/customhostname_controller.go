@@ -152,9 +152,12 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudfl
 		ZoneID:   cloudflare.F(zoneID),
 		Hostname: cloudflare.F(ch.Spec.Hostname),
 	}
-	if ch.Spec.SSL != nil {
-		params.SSL = cloudflare.F(buildSSLParams(ch.Spec.SSL))
+	// Default to DV + HTTP if not specified — SSL is always required for custom hostnames.
+	sslSpec := ch.Spec.SSL
+	if sslSpec == nil {
+		sslSpec = &cfv1alpha1.CustomHostnameSSL{Type: "dv", Method: "http"}
 	}
+	params.SSL = cloudflare.F(buildSSLParams(sslSpec))
 	opts := []option.RequestOption{option.WithJSONSet("custom_origin_server", ch.Spec.OriginServer)}
 	if ch.Spec.OriginSNI != nil && *ch.Spec.OriginSNI != ch.Spec.OriginServer {
 		opts = append(opts, option.WithJSONSet("custom_origin_sni", *ch.Spec.OriginSNI))
