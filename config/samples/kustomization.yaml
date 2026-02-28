@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- cf_v1alpha1_customhostname.yaml
+- cf_v1alpha1_zone.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
