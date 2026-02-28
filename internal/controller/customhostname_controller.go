@@ -183,10 +183,17 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 			ZoneID: cloudflare.F(zoneID),
 		})
 		if err != nil {
-			log.Error(err, "failed to delete custom hostname", "id", ch.Status.ID)
-			return ctrl.Result{}, err
+			// 404 means the resource is already gone (e.g. deleted by another entity or stale ID).
+			// Treat as success — our specific resource no longer exists, remove finalizer.
+			if cfErr, ok := err.(*cloudflare.Error); ok && cfErr.StatusCode == 404 {
+				log.Info("custom hostname already gone from Cloudflare, releasing finalizer", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
+			} else {
+				log.Error(err, "failed to delete custom hostname", "id", ch.Status.ID)
+				return ctrl.Result{}, err
+			}
+		} else {
+			log.Info("custom hostname deleted from Cloudflare", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
 		}
-		log.Info("custom hostname deleted from Cloudflare", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
 	}
 
 	controllerutil.RemoveFinalizer(ch, finalizerName)
