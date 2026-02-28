@@ -121,7 +121,12 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	// Exists — adopt ID and sync if drifted
 	ch.Status.ID = existing.ID
 	if existing.CustomOriginServer != ch.Spec.OriginServer || sniDrifted(existing.CustomOriginSNI, ch) {
-		log.Info("custom hostname drifted, updating", "hostname", ch.Spec.Hostname)
+		log.Info("custom hostname drifted, updating",
+			"hostname", ch.Spec.Hostname,
+			"currentOrigin", existing.CustomOriginServer,
+			"desiredOrigin", ch.Spec.OriginServer,
+			"currentSNI", existing.CustomOriginSNI,
+			"desiredSNI", ch.Spec.OriginSNI)
 		editParams := custom_hostnames.CustomHostnameEditParams{ZoneID: cloudflare.F(zoneID)}
 		opts := []option.RequestOption{option.WithJSONSet("custom_origin_server", ch.Spec.OriginServer)}
 		if ch.Spec.OriginSNI != nil && *ch.Spec.OriginSNI != ch.Spec.OriginServer {
