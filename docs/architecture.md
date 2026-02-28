@@ -114,3 +114,10 @@ CustomHostname CR (app namespace)
 ```
 
 App namespaces never hold Cloudflare credentials.
+
+## Future Work
+
+- **`status.createCount`** — track how many times a hostname has been recreated in Cloudflare. A high count indicates an external entity is repeatedly deleting it. Useful for alerting.
+- **Prometheus metrics** — `creates_total`, `deletes_total`, `updates_total` (drift corrections), `orphans_total` (per zone), `ssl_status` gauge. controller-runtime already exposes a metrics endpoint.
+- **`--delete-policy` flag** — control delete behavior when origin has drifted from spec at deletion time. `always` (default): delete by ID regardless. `own-only`: only delete if current CF origin matches `spec.originServer`, otherwise release finalizer without deleting.
+- **Precise delete via `findByHostname`** — look up current CF state before deleting. If ID matches `status.id` → delete. If ID differs → another entity owns it, release finalizer. Eliminates reliance on 404 handling.
