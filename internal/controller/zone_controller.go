@@ -104,18 +104,31 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, fmt.Errorf("failed to list CustomHostname CRs: %w", err)
 	}
 
-	// Enqueue CRs that have drifted from Cloudflare state
+	// Enqueue CRs that have drifted from Cloudflare state, and build a set of
+	// known CR hostnames for orphan detection in the next pass.
+	crHostnames := make(map[string]bool, len(chList.Items))
 	drifted := 0
 	for i := range chList.Items {
 		ch := &chList.Items[i]
 		if !r.refersToZone(ch, &zone) {
 			continue
 		}
+		crHostnames[ch.Spec.Hostname] = true
 		cfCH, exists := cfHostnames[ch.Spec.Hostname]
 		if !exists || hasDrift(ch, cfCH) {
 			log.Info("drift detected, enqueuing CustomHostname", "hostname", ch.Spec.Hostname, "exists", exists)
 			r.CustomHostnameEvents <- event.GenericEvent{Object: ch}
 			drifted++
+		}
+	}
+
+	// Log orphans: custom hostnames in Cloudflare with no corresponding CR.
+	// Visible at --zap-log-level=1 (debug). Useful for auditing manual
+	// Cloudflare changes or planning migration to CRs.
+	for hostname, cfCH := range cfHostnames {
+		if !crHostnames[hostname] {
+			log.V(1).Info("orphan: custom hostname in Cloudflare has no CR",
+				"hostname", hostname, "origin", cfCH.CustomOriginServer)
 		}
 	}
 
