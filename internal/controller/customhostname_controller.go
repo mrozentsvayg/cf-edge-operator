@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -71,10 +72,16 @@ func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	cf, zoneID, err := r.buildCloudflareClient(ctx, &ch)
+	cf, zoneID, zoneName, err := r.buildCloudflareClient(ctx, &ch)
 	if err != nil {
 		log.Error(err, "failed to build Cloudflare client")
 		return ctrl.Result{}, r.setCondition(ctx, &ch, metav1.ConditionFalse, "ZoneError", err.Error())
+	}
+
+	// Validate that the origin server belongs to the zone — Cloudflare for SaaS is zone-scoped.
+	if zoneName != "" && !strings.HasSuffix(ch.Spec.OriginServer, "."+zoneName) && ch.Spec.OriginServer != zoneName {
+		return ctrl.Result{}, r.setCondition(ctx, &ch, metav1.ConditionFalse, "OriginNotInZone",
+			fmt.Sprintf("originServer %q must belong to zone %q", ch.Spec.OriginServer, zoneName))
 	}
 
 	// Handle deletion
@@ -223,14 +230,14 @@ func (r *CustomHostnameReconciler) setCondition(ctx context.Context, ch *cfv1alp
 	return nil
 }
 
-func (r *CustomHostnameReconciler) buildCloudflareClient(ctx context.Context, ch *cfv1alpha1.CustomHostname) (*cloudflare.Client, string, error) {
+func (r *CustomHostnameReconciler) buildCloudflareClient(ctx context.Context, ch *cfv1alpha1.CustomHostname) (*cloudflare.Client, string, string, error) {
 	zoneNS := ch.Spec.ZoneRef.Namespace
 	if zoneNS == "" {
 		zoneNS = r.OperatorNamespace
 	}
 	var zone cfv1alpha1.Zone
 	if err := r.Get(ctx, types.NamespacedName{Name: ch.Spec.ZoneRef.Name, Namespace: zoneNS}, &zone); err != nil {
-		return nil, "", fmt.Errorf("zone %q not found: %w", ch.Spec.ZoneRef.Name, err)
+		return nil, "", "", fmt.Errorf("zone %q not found: %w", ch.Spec.ZoneRef.Name, err)
 	}
 	key := zone.Spec.CredentialsRef.Key
 	if key == "" {
@@ -238,13 +245,13 @@ func (r *CustomHostnameReconciler) buildCloudflareClient(ctx context.Context, ch
 	}
 	var secret corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{Name: zone.Spec.CredentialsRef.Name, Namespace: zone.Namespace}, &secret); err != nil {
-		return nil, "", fmt.Errorf("secret %q not found: %w", zone.Spec.CredentialsRef.Name, err)
+		return nil, "", "", fmt.Errorf("secret %q not found: %w", zone.Spec.CredentialsRef.Name, err)
 	}
 	token, ok := secret.Data[key]
 	if !ok {
-		return nil, "", fmt.Errorf("key %q not found in secret %q", key, zone.Spec.CredentialsRef.Name)
+		return nil, "", "", fmt.Errorf("key %q not found in secret %q", key, zone.Spec.CredentialsRef.Name)
 	}
-	return cloudflare.NewClient(option.WithAPIToken(string(token))), zone.Spec.ID, nil
+	return cloudflare.NewClient(option.WithAPIToken(string(token))), zone.Spec.ID, zone.Status.Name, nil
 }
 
 func sniDrifted(currentSNI string, ch *cfv1alpha1.CustomHostname) bool {
