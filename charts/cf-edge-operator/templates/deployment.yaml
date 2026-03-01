@@ -29,7 +29,8 @@ spec:
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         args:
         - --health-probe-bind-address=:8081
-        - --metrics-bind-address=0
+        - --metrics-bind-address=:8080
+        - --metrics-secure=false
         - --operator-namespace={{ include "cf-edge-operator.operatorNamespace" . }}
         {{- if .Values.leaderElect }}
         - --leader-elect
