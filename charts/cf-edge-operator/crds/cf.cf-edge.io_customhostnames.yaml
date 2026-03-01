@@ -1,0 +1,253 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: customhostnames.cf.cf-edge.io
+spec:
+  group: cf.cf-edge.io
+  names:
+    kind: CustomHostname
+    listKind: CustomHostnameList
+    plural: customhostnames
+    singular: customhostname
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.hostname
+      name: Hostname
+      type: string
+    - jsonPath: .spec.originServer
+      name: Origin
+      type: string
+    - jsonPath: .status.ssl.status
+      name: SSL
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: CustomHostname is the Schema for the customhostnames API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: CustomHostnameSpec defines the desired state of CustomHostname
+            properties:
+              hostname:
+                description: Hostname is the custom hostname to register with Cloudflare
+                  (e.g. customer.example.com)
+                format: hostname
+                type: string
+              originSNI:
+                description: |-
+                  OriginSNI overrides the SNI sent to the origin. Defaults to OriginServer if omitted.
+                  Set to ":request_host_header:" to forward the incoming Host header as SNI.
+                  Requires a Cloudflare account entitlement — contact your Cloudflare account team to enable.
+                type: string
+              originServer:
+                description: OriginServer is the origin the custom hostname points
+                  to (e.g. origin.internal.example.com)
+                format: hostname
+                type: string
+              ssl:
+                description: SSL configures the SSL/TLS certificate settings for this
+                  custom hostname.
+                properties:
+                  certificateAuthority:
+                    description: |-
+                      CertificateAuthority sets the CA for the certificate.
+                      Requires an enterprise plan. Omit if not applicable.
+                    enum:
+                    - lets_encrypt
+                    - google
+                    - ssl_com
+                    type: string
+                  method:
+                    default: http
+                    description: Method of DCV (Domain Control Validation). Defaults
+                      to "http".
+                    enum:
+                    - http
+                    - txt
+                    - email
+                    type: string
+                  minTLSVersion:
+                    description: MinTLSVersion sets the minimum TLS version for this
+                      hostname.
+                    enum:
+                    - "1.0"
+                    - "1.1"
+                    - "1.2"
+                    - "1.3"
+                    type: string
+                  type:
+                    default: dv
+                    description: Type of SSL validation. Defaults to "dv".
+                    enum:
+                    - dv
+                    type: string
+                type: object
+              zoneRef:
+                description: |-
+                  ZoneRef references the Zone resource that owns this custom hostname.
+                  The Zone must exist in the operator namespace.
+                properties:
+                  name:
+                    description: Name of the Zone resource
+                    type: string
+                  namespace:
+                    description: Namespace of the Zone resource. Defaults to the operator
+                      namespace if omitted.
+                    type: string
+                required:
+                - name
+                type: object
+            required:
+            - hostname
+            - originServer
+            - zoneRef
+            type: object
+          status:
+            description: CustomHostnameStatus defines the observed state of CustomHostname
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              id:
+                description: ID is the Cloudflare-assigned custom hostname ID, used
+                  for updates and deletes
+                type: string
+              ssl:
+                description: SSL reflects the current SSL certificate state as reported
+                  by Cloudflare
+                properties:
+                  expiresOn:
+                    description: ExpiresOn is the certificate expiration time
+                    format: date-time
+                    type: string
+                  status:
+                    description: Status is the certificate verification state (e.g.
+                      pending_validation, active, expired)
+                    type: string
+                  validationErrors:
+                    description: ValidationErrors contains any errors encountered
+                      during SSL validation
+                    items:
+                      type: string
+                    type: array
+                  validationRecords:
+                    description: |-
+                      ValidationRecords contains the DCV tokens Cloudflare requires to complete SSL issuance.
+                      The customer must satisfy these before SSL becomes active.
+                    items:
+                      description: SSLValidationRecord mirrors the Cloudflare API
+                        ssl.validation_records entry
+                      properties:
+                        emails:
+                          description: Emails lists contact addresses used for email-based
+                            validation (email method)
+                          items:
+                            type: string
+                          type: array
+                        httpBody:
+                          description: HTTPBody is the content that must be served
+                            at HTTPUrl (http method)
+                          type: string
+                        httpUrl:
+                          description: HTTPUrl is the URL where the token must be
+                            served (http method)
+                          type: string
+                        txtName:
+                          description: TXTName is the DNS TXT record name the customer
+                            must create (txt method)
+                          type: string
+                        txtValue:
+                          description: TXTValue is the value of the DNS TXT record
+                            (txt method)
+                          type: string
+                      type: object
+                    type: array
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
