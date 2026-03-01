@@ -18,17 +18,66 @@ package controller
 
 import (
 	"context"
+	"testing"
 
+	"github.com/cloudflare/cloudflare-go/v6/custom_hostnames"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	cfv1alpha1 "github.com/mrozentsvayg/cf-edge-operator/api/v1alpha1"
 )
+
+func TestHasDrift(t *testing.T) {
+	sni := "sni.example.com"
+	tests := []struct {
+		name string
+		ch   cfv1alpha1.CustomHostname
+		cfCH custom_hostnames.CustomHostnameListResponse
+		want bool
+	}{
+		{
+			name: "no drift",
+			ch:   cfv1alpha1.CustomHostname{Spec: cfv1alpha1.CustomHostnameSpec{OriginServer: "origin.example.com"}},
+			cfCH: custom_hostnames.CustomHostnameListResponse{CustomOriginServer: "origin.example.com"},
+			want: false,
+		},
+		{
+			name: "origin server drift",
+			ch:   cfv1alpha1.CustomHostname{Spec: cfv1alpha1.CustomHostnameSpec{OriginServer: "new.example.com"}},
+			cfCH: custom_hostnames.CustomHostnameListResponse{CustomOriginServer: "old.example.com"},
+			want: true,
+		},
+		{
+			name: "sni set and matches",
+			ch:   cfv1alpha1.CustomHostname{Spec: cfv1alpha1.CustomHostnameSpec{OriginServer: "origin.example.com", OriginSNI: &sni}},
+			cfCH: custom_hostnames.CustomHostnameListResponse{CustomOriginServer: "origin.example.com", CustomOriginSNI: sni},
+			want: false,
+		},
+		{
+			name: "sni set and differs",
+			ch:   cfv1alpha1.CustomHostname{Spec: cfv1alpha1.CustomHostnameSpec{OriginServer: "origin.example.com", OriginSNI: &sni}},
+			cfCH: custom_hostnames.CustomHostnameListResponse{CustomOriginServer: "origin.example.com", CustomOriginSNI: "other.example.com"},
+			want: true,
+		},
+		{
+			name: "sni not spec'd, cf has sni set",
+			ch:   cfv1alpha1.CustomHostname{Spec: cfv1alpha1.CustomHostnameSpec{OriginServer: "origin.example.com"}},
+			cfCH: custom_hostnames.CustomHostnameListResponse{CustomOriginServer: "origin.example.com", CustomOriginSNI: sni},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasDrift(&tt.ch, tt.cfCH); got != tt.want {
+				t.Errorf("hasDrift() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
 
 var _ = Describe("Zone Controller", func() {
 	Context("When reconciling a resource", func() {
