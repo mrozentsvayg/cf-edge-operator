@@ -132,10 +132,14 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 		if ch.Spec.OriginSNI != nil && *ch.Spec.OriginSNI != ch.Spec.OriginServer {
 			opts = append(opts, option.WithJSONSet("custom_origin_sni", *ch.Spec.OriginSNI))
 		}
-		if _, err := cf.CustomHostnames.Edit(ctx, existing.ID, editParams, opts...); err != nil {
-			log.Error(err, "failed to update custom hostname", "id", existing.ID)
-			return ctrl.Result{}, r.setCondition(ctx, ch, metav1.ConditionFalse, "UpdateFailed", err.Error())
+		editStart := time.Now()
+		_, editErr := cf.CustomHostnames.Edit(ctx, existing.ID, editParams, opts...)
+		recordCFCall("update", editStart, &editErr)
+		if editErr != nil {
+			log.Error(editErr, "failed to update custom hostname", "id", existing.ID)
+			return ctrl.Result{}, r.setCondition(ctx, ch, metav1.ConditionFalse, "UpdateFailed", editErr.Error())
 		}
+		customHostnameUpdatesTotal.Inc()
 	}
 
 	ch.Status.SSL = sslStatusFromList(existing)
@@ -163,13 +167,16 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudfl
 		opts = append(opts, option.WithJSONSet("custom_origin_sni", *ch.Spec.OriginSNI))
 	}
 
+	createStart := time.Now()
 	resp, err := cf.CustomHostnames.New(ctx, params, opts...)
+	recordCFCall("create", createStart, &err)
 	if err != nil {
 		log.Error(err, "failed to create custom hostname", "hostname", ch.Spec.Hostname)
 		return ctrl.Result{}, r.setCondition(ctx, ch, metav1.ConditionFalse, "CreateFailed", err.Error())
 	}
 
 	log.Info("custom hostname created", "hostname", ch.Spec.Hostname, "id", resp.ID)
+	customHostnameCreatesTotal.Inc()
 	ch.Status.ID = resp.ID
 	ch.Status.SSL = sslStatusFromNew(resp)
 	if err := r.Status().Update(ctx, ch); err != nil {
@@ -182,20 +189,23 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 	log := logf.FromContext(ctx)
 
 	if controllerutil.ContainsFinalizer(ch, finalizerName) && ch.Status.ID != "" {
-		_, err := cf.CustomHostnames.Delete(ctx, ch.Status.ID, custom_hostnames.CustomHostnameDeleteParams{
+		deleteStart := time.Now()
+		_, delErr := cf.CustomHostnames.Delete(ctx, ch.Status.ID, custom_hostnames.CustomHostnameDeleteParams{
 			ZoneID: cloudflare.F(zoneID),
 		})
-		if err != nil {
+		recordCFCall("delete", deleteStart, &delErr)
+		if delErr != nil {
 			// 404 means the resource is already gone (e.g. deleted by another entity or stale ID).
 			// Treat as success — our specific resource no longer exists, remove finalizer.
-			if cfErr, ok := err.(*cloudflare.Error); ok && cfErr.StatusCode == 404 {
+			if cfErr, ok := delErr.(*cloudflare.Error); ok && cfErr.StatusCode == 404 {
 				log.Info("custom hostname already gone from Cloudflare, releasing finalizer", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
 			} else {
-				log.Error(err, "failed to delete custom hostname", "id", ch.Status.ID)
-				return ctrl.Result{}, err
+				log.Error(delErr, "failed to delete custom hostname", "id", ch.Status.ID)
+				return ctrl.Result{}, delErr
 			}
 		} else {
 			log.Info("custom hostname deleted from Cloudflare", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
+			customHostnameDeletesTotal.Inc()
 		}
 	}
 
@@ -204,6 +214,7 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 }
 
 func (r *CustomHostnameReconciler) findByHostname(ctx context.Context, cf *cloudflare.Client, zoneID, hostname string) (*custom_hostnames.CustomHostnameListResponse, error) {
+	start := time.Now()
 	pager := cf.CustomHostnames.ListAutoPaging(ctx, custom_hostnames.CustomHostnameListParams{
 		ZoneID:   cloudflare.F(zoneID),
 		Hostname: cloudflare.F(hostname),
@@ -211,10 +222,14 @@ func (r *CustomHostnameReconciler) findByHostname(ctx context.Context, cf *cloud
 	for pager.Next() {
 		ch := pager.Current()
 		if ch.Hostname == hostname {
-			return &ch, nil
+			err := pager.Err()
+			recordCFCall("list", start, &err)
+			return &ch, err
 		}
 	}
-	return nil, pager.Err()
+	err := pager.Err()
+	recordCFCall("list", start, &err)
+	return nil, err
 }
 
 func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, ch *cfv1alpha1.CustomHostname) (ctrl.Result, error) {

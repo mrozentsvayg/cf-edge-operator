@@ -125,12 +125,15 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	// Log orphans: custom hostnames in Cloudflare with no corresponding CR.
 	// Visible at --zap-log-level=1 (debug). Useful for auditing manual
 	// Cloudflare changes or planning migration to CRs.
+	orphanCount := 0
 	for hostname, cfCH := range cfHostnames {
 		if !crHostnames[hostname] {
 			log.V(1).Info("orphan: custom hostname in Cloudflare has no CR",
 				"hostname", hostname, "origin", cfCH.CustomOriginServer)
+			orphanCount++
 		}
 	}
+	zoneOrphans.WithLabelValues(zone.Status.Name).Set(float64(orphanCount))
 
 	if drifted > 0 {
 		log.Info("drift detection complete", "zoneID", zone.Spec.ID, "drifted", drifted, "total", len(cfHostnames))
@@ -140,6 +143,7 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 }
 
 func (r *ZoneReconciler) listCloudflareHostnames(ctx context.Context, cf *cloudflare.Client, zoneID string) (map[string]custom_hostnames.CustomHostnameListResponse, error) {
+	start := time.Now()
 	result := make(map[string]custom_hostnames.CustomHostnameListResponse)
 	pager := cf.CustomHostnames.ListAutoPaging(ctx, custom_hostnames.CustomHostnameListParams{
 		ZoneID: cloudflare.F(zoneID),
@@ -148,7 +152,9 @@ func (r *ZoneReconciler) listCloudflareHostnames(ctx context.Context, cf *cloudf
 		ch := pager.Current()
 		result[ch.Hostname] = ch
 	}
-	return result, pager.Err()
+	err := pager.Err()
+	recordCFCall("list", start, &err)
+	return result, err
 }
 
 func (r *ZoneReconciler) refersToZone(ch *cfv1alpha1.CustomHostname, zone *cfv1alpha1.Zone) bool {
