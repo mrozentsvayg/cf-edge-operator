@@ -63,6 +63,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var operatorNamespace string
+	var deletePolicy string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -81,6 +82,10 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.StringVar(&operatorNamespace, "operator-namespace", "cf-edge-operator-system",
 		"Namespace where Zone resources are managed. Used to resolve ZoneRef when namespace is omitted.")
+	flag.StringVar(&deletePolicy, "delete-policy", "always",
+		"Controls delete behavior when a CustomHostname CR is deleted. "+
+			"'always': delete from Cloudflare by ID regardless. "+
+			"'own-only': only delete if the current Cloudflare hostname ID matches status.id.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	opts := zap.Options{
@@ -189,6 +194,7 @@ func main() {
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
 		OperatorNamespace: operatorNamespace,
+		DeletePolicy:      deletePolicy,
 	}).SetupWithManager(mgr, driftEvents); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "CustomHostname")
 		os.Exit(1)

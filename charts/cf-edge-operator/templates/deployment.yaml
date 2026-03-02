@@ -32,6 +32,7 @@ spec:
         - --metrics-bind-address=:8080
         - --metrics-secure=false
         - --operator-namespace={{ include "cf-edge-operator.operatorNamespace" . }}
+        - --delete-policy={{ .Values.deletePolicy }}
         {{- if .Values.leaderElect }}
         - --leader-elect
         {{- end }}

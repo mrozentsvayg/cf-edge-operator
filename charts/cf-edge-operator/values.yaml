@@ -12,6 +12,11 @@ leaderElect: true
 # Defaults to the release namespace if left empty.
 operatorNamespace: ""
 
+# Delete policy for CustomHostname CRs.
+# "always": delete from Cloudflare by ID regardless (default).
+# "own-only": only delete if the current Cloudflare ID matches status.id.
+deletePolicy: "always"
+
 resources:
   limits:
     cpu: 500m

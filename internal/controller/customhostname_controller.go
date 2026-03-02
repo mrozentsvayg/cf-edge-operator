@@ -52,10 +52,20 @@ const (
 // CustomHostnameReconciler reconciles a CustomHostname object.
 // It acts as the worker: handles individual Cloudflare API writes (create/update/delete).
 // Triggered by spec changes and by the Zone coordinator via the event channel on drift detection.
+const (
+	DeletePolicyAlways  = "always"
+	DeletePolicyOwnOnly = "own-only"
+)
+
+// CustomHostnameReconciler reconciles a CustomHostname object.
+// It acts as the worker: handles individual Cloudflare API writes (create/update/delete).
+// Triggered by spec changes and by the Zone coordinator via the event channel on drift detection.
 type CustomHostnameReconciler struct {
 	client.Client
 	Scheme            *runtime.Scheme
 	OperatorNamespace string
+	// DeletePolicy controls delete behavior: "always" (default) or "own-only".
+	DeletePolicy string
 }
 
 // +kubebuilder:rbac:groups=cf.cf-edge.io,resources=customhostnames,verbs=get;list;watch;create;update;patch;delete
@@ -190,6 +200,27 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 	log := logf.FromContext(ctx)
 
 	if controllerutil.ContainsFinalizer(ch, finalizerName) && ch.Status.ID != "" {
+		// For own-only policy: look up current CF state before deleting.
+		// If another entity now owns this hostname (different ID), release the finalizer without deleting.
+		if r.DeletePolicy == DeletePolicyOwnOnly {
+			current, err := r.findByHostname(ctx, cf, zoneID, ch.Spec.Hostname)
+			if err != nil {
+				log.Error(err, "failed to look up hostname before delete", "hostname", ch.Spec.Hostname)
+				return ctrl.Result{}, err
+			}
+			if current == nil {
+				log.Info("hostname not found in Cloudflare, releasing finalizer", "hostname", ch.Spec.Hostname)
+				controllerutil.RemoveFinalizer(ch, finalizerName)
+				return ctrl.Result{}, r.Update(ctx, ch)
+			}
+			if current.ID != ch.Status.ID {
+				log.Info("hostname owned by another entity, releasing finalizer without deleting",
+					"hostname", ch.Spec.Hostname, "ourID", ch.Status.ID, "currentID", current.ID)
+				controllerutil.RemoveFinalizer(ch, finalizerName)
+				return ctrl.Result{}, r.Update(ctx, ch)
+			}
+		}
+
 		deleteStart := time.Now()
 		_, delErr := cf.CustomHostnames.Delete(ctx, ch.Status.ID, custom_hostnames.CustomHostnameDeleteParams{
 			ZoneID: cloudflare.F(zoneID),
