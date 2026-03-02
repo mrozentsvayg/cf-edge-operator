@@ -208,14 +208,15 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 				log.Error(err, "failed to look up hostname before delete", "hostname", ch.Spec.Hostname)
 				return ctrl.Result{}, err
 			}
-			if current == nil {
-				log.Info("hostname not found in Cloudflare, releasing finalizer", "hostname", ch.Spec.Hostname)
-				controllerutil.RemoveFinalizer(ch, finalizerName)
-				return ctrl.Result{}, r.Update(ctx, ch)
-			}
-			if current.ID != ch.Status.ID {
-				log.Info("hostname owned by another entity, releasing finalizer without deleting",
-					"hostname", ch.Spec.Hostname, "ourID", ch.Status.ID, "currentID", current.ID)
+			if !shouldDeleteInCF(r.DeletePolicy, ch.Status.ID, current) {
+				log.Info("own-only: releasing finalizer without deleting",
+					"hostname", ch.Spec.Hostname, "statusID", ch.Status.ID,
+					"currentID", func() string {
+						if current != nil {
+							return current.ID
+						}
+						return "<not found>"
+					}())
 				controllerutil.RemoveFinalizer(ch, finalizerName)
 				return ctrl.Result{}, r.Update(ctx, ch)
 			}
@@ -243,6 +244,19 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 
 	controllerutil.RemoveFinalizer(ch, finalizerName)
 	return ctrl.Result{}, r.Update(ctx, ch)
+}
+
+// shouldDeleteInCF returns true if the hostname should be deleted from Cloudflare.
+// For "always" policy it always returns true.
+// For "own-only" it returns true only if current CF state exists and has the same ID as statusID.
+func shouldDeleteInCF(policy, statusID string, current *custom_hostnames.CustomHostnameListResponse) bool {
+	if policy != DeletePolicyOwnOnly {
+		return true
+	}
+	if current == nil {
+		return false
+	}
+	return current.ID == statusID
 }
 
 func (r *CustomHostnameReconciler) findByHostname(ctx context.Context, cf *cloudflare.Client, zoneID, hostname string) (*custom_hostnames.CustomHostnameListResponse, error) {

@@ -27,6 +27,62 @@ import (
 	cfv1alpha1 "github.com/mrozentsvayg/cf-edge-operator/api/v1alpha1"
 )
 
+func TestShouldDeleteInCF(t *testing.T) {
+	matched := &custom_hostnames.CustomHostnameListResponse{ID: "abc123"}
+	different := &custom_hostnames.CustomHostnameListResponse{ID: "xyz999"}
+
+	tests := []struct {
+		name     string
+		policy   string
+		statusID string
+		current  *custom_hostnames.CustomHostnameListResponse
+		want     bool
+	}{
+		{
+			name:     "always: always deletes regardless",
+			policy:   DeletePolicyAlways,
+			statusID: "abc123",
+			current:  different,
+			want:     true,
+		},
+		{
+			name:     "always: deletes even when not found",
+			policy:   DeletePolicyAlways,
+			statusID: "abc123",
+			current:  nil,
+			want:     true,
+		},
+		{
+			name:     "own-only: not found in CF, do not delete",
+			policy:   DeletePolicyOwnOnly,
+			statusID: "abc123",
+			current:  nil,
+			want:     false,
+		},
+		{
+			name:     "own-only: IDs match, delete",
+			policy:   DeletePolicyOwnOnly,
+			statusID: "abc123",
+			current:  matched,
+			want:     true,
+		},
+		{
+			name:     "own-only: IDs differ, do not delete",
+			policy:   DeletePolicyOwnOnly,
+			statusID: "abc123",
+			current:  different,
+			want:     false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldDeleteInCF(tt.policy, tt.statusID, tt.current); got != tt.want {
+				t.Errorf("shouldDeleteInCF() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSSLStatusFromNew(t *testing.T) {
 	expires := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 
