@@ -1,4 +1,4 @@
-apiVersion: cf.cf-edge.io/v1alpha1
+apiVersion: saas.cf-edge.io/v1alpha1
 kind: CustomHostname
 metadata:
   name: rpc-meridian
@@ -14,7 +14,7 @@ spec:
     method: http
 ---
 # With explicit SNI override:
-apiVersion: cf.cf-edge.io/v1alpha1
+apiVersion: saas.cf-edge.io/v1alpha1
 kind: CustomHostname
 metadata:
   name: rpc-meridian-sni

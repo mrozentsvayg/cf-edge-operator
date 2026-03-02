@@ -28,7 +28,7 @@ This ensures that if a `CustomHostname` CR is deleted during the transition, the
 ### Step 2: Create Zone CR
 
 ```yaml
-apiVersion: cf.cf-edge.io/v1alpha1
+apiVersion: domains.cf-edge.io/v1alpha1
 kind: Zone
 metadata:
   name: my-zone
@@ -45,7 +45,7 @@ spec:
 The operator will call `findByHostname` on reconcile and adopt the existing CF hostname (created by external-dns). No new CF resource is created.
 
 ```yaml
-apiVersion: cf.cf-edge.io/v1alpha1
+apiVersion: saas.cf-edge.io/v1alpha1
 kind: CustomHostname
 metadata:
   name: customer-acme
@@ -101,4 +101,3 @@ If you need to roll back to external-dns management:
 1. Remove the `CustomHostname` CR — with `own-only`, the operator will not delete the CF hostname if external-dns has taken it over.
 2. Re-add the external-dns annotation to the relevant Kubernetes Service or Ingress.
 
-With `always` policy, rollback is also safe as long as external-dns hasn't yet changed the CF hostname ID. Using `own-only` eliminates the timing dependency.

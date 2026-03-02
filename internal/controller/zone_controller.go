@@ -36,7 +36,8 @@ import (
 	"github.com/cloudflare/cloudflare-go/v6/option"
 	"github.com/cloudflare/cloudflare-go/v6/zones"
 
-	cfv1alpha1 "github.com/mrozentsvayg/cf-edge-operator/api/v1alpha1"
+	domainsv1alpha1 "github.com/mrozentsvayg/cf-edge-operator/api/domains/v1alpha1"
+	saasv1alpha1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1alpha1"
 )
 
 const driftDetectionInterval = 5 * time.Minute
@@ -52,16 +53,16 @@ type ZoneReconciler struct {
 	CustomHostnameEvents chan<- event.GenericEvent
 }
 
-// +kubebuilder:rbac:groups=cf.cf-edge.io,resources=zones,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=cf.cf-edge.io,resources=zones/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=cf.cf-edge.io,resources=zones/finalizers,verbs=update
-// +kubebuilder:rbac:groups=cf.cf-edge.io,resources=customhostnames,verbs=get;list;watch
+// +kubebuilder:rbac:groups=domains.cf-edge.io,resources=zones,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=domains.cf-edge.io,resources=zones/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=domains.cf-edge.io,resources=zones/finalizers,verbs=update
+// +kubebuilder:rbac:groups=saas.cf-edge.io,resources=customhostnames,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	var zone cfv1alpha1.Zone
+	var zone domainsv1alpha1.Zone
 	if err := r.Get(ctx, req.NamespacedName, &zone); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -99,7 +100,7 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 
 	// List all CustomHostname CRs referencing this zone (across all namespaces)
-	var chList cfv1alpha1.CustomHostnameList
+	var chList saasv1alpha1.CustomHostnameList
 	if err := r.List(ctx, &chList); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to list CustomHostname CRs: %w", err)
 	}
@@ -166,7 +167,7 @@ func (r *ZoneReconciler) listCloudflareHostnames(ctx context.Context, cf *cloudf
 	return result, err
 }
 
-func (r *ZoneReconciler) refersToZone(ch *cfv1alpha1.CustomHostname, zone *cfv1alpha1.Zone) bool {
+func (r *ZoneReconciler) refersToZone(ch *saasv1alpha1.CustomHostname, zone *domainsv1alpha1.Zone) bool {
 	if ch.Spec.ZoneRef.Name != zone.Name {
 		return false
 	}
@@ -174,7 +175,7 @@ func (r *ZoneReconciler) refersToZone(ch *cfv1alpha1.CustomHostname, zone *cfv1a
 	return ns == "" || ns == zone.Namespace
 }
 
-func hasDrift(ch *cfv1alpha1.CustomHostname, cfCH custom_hostnames.CustomHostnameListResponse) bool {
+func hasDrift(ch *saasv1alpha1.CustomHostname, cfCH custom_hostnames.CustomHostnameListResponse) bool {
 	if cfCH.CustomOriginServer != ch.Spec.OriginServer {
 		return true
 	}
@@ -184,7 +185,7 @@ func hasDrift(ch *cfv1alpha1.CustomHostname, cfCH custom_hostnames.CustomHostnam
 	return false
 }
 
-func (r *ZoneReconciler) fetchAPIToken(ctx context.Context, zone *cfv1alpha1.Zone) (string, error) {
+func (r *ZoneReconciler) fetchAPIToken(ctx context.Context, zone *domainsv1alpha1.Zone) (string, error) {
 	key := zone.Spec.CredentialsRef.Key
 	if key == "" {
 		key = "apiToken"
@@ -203,7 +204,7 @@ func (r *ZoneReconciler) fetchAPIToken(ctx context.Context, zone *cfv1alpha1.Zon
 	return string(token), nil
 }
 
-func (r *ZoneReconciler) setReady(ctx context.Context, zone *cfv1alpha1.Zone, status metav1.ConditionStatus, reason, message string) error {
+func (r *ZoneReconciler) setReady(ctx context.Context, zone *domainsv1alpha1.Zone, status metav1.ConditionStatus, reason, message string) error {
 	meta.SetStatusCondition(&zone.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
 		Status:             status,
@@ -220,7 +221,7 @@ func (r *ZoneReconciler) setReady(ctx context.Context, zone *cfv1alpha1.Zone, st
 // SetupWithManager sets up the controller with the Manager.
 func (r *ZoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&cfv1alpha1.Zone{}).
+		For(&domainsv1alpha1.Zone{}).
 		Named("zone").
 		Complete(r)
 }

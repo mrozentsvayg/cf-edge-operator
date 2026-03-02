@@ -24,7 +24,7 @@ import (
 	"github.com/cloudflare/cloudflare-go/v6/custom_hostnames"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	cfv1alpha1 "github.com/mrozentsvayg/cf-edge-operator/api/v1alpha1"
+	saasv1alpha1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1alpha1"
 )
 
 func TestShouldDeleteInCF(t *testing.T) {
@@ -89,14 +89,14 @@ func TestSSLStatusFromNew(t *testing.T) {
 	tests := []struct {
 		name string
 		resp custom_hostnames.CustomHostnameNewResponse
-		want cfv1alpha1.CustomHostnameSSLStatus
+		want saasv1alpha1.CustomHostnameSSLStatus
 	}{
 		{
 			name: "status only",
 			resp: custom_hostnames.CustomHostnameNewResponse{
 				SSL: custom_hostnames.CustomHostnameNewResponseSSL{Status: "pending_validation"},
 			},
-			want: cfv1alpha1.CustomHostnameSSLStatus{Status: "pending_validation"},
+			want: saasv1alpha1.CustomHostnameSSLStatus{Status: "pending_validation"},
 		},
 		{
 			name: "expires on set",
@@ -106,7 +106,7 @@ func TestSSLStatusFromNew(t *testing.T) {
 					ExpiresOn: expires,
 				},
 			},
-			want: cfv1alpha1.CustomHostnameSSLStatus{
+			want: saasv1alpha1.CustomHostnameSSLStatus{
 				Status:    "active",
 				ExpiresOn: func() *metav1.Time { t := metav1.NewTime(expires); return &t }(),
 			},
@@ -121,9 +121,9 @@ func TestSSLStatusFromNew(t *testing.T) {
 					},
 				},
 			},
-			want: cfv1alpha1.CustomHostnameSSLStatus{
+			want: saasv1alpha1.CustomHostnameSSLStatus{
 				Status: "pending_validation",
-				ValidationRecords: []cfv1alpha1.SSLValidationRecord{
+				ValidationRecords: []saasv1alpha1.SSLValidationRecord{
 					{TXTName: "_cf-txt.example.com", TXTValue: "abc123", HTTPUrl: "http://example.com/.well-known/pki-validation/x.txt", HTTPBody: "body"},
 				},
 			},
@@ -136,7 +136,7 @@ func TestSSLStatusFromNew(t *testing.T) {
 					ValidationErrors: []custom_hostnames.CustomHostnameNewResponseSSLValidationError{{Message: "timed out"}},
 				},
 			},
-			want: cfv1alpha1.CustomHostnameSSLStatus{
+			want: saasv1alpha1.CustomHostnameSSLStatus{
 				Status:           "validation_timed_out",
 				ValidationErrors: []string{"timed out"},
 			},
@@ -179,14 +179,14 @@ func TestSSLStatusFromList(t *testing.T) {
 	tests := []struct {
 		name string
 		resp custom_hostnames.CustomHostnameListResponse
-		want cfv1alpha1.CustomHostnameSSLStatus
+		want saasv1alpha1.CustomHostnameSSLStatus
 	}{
 		{
 			name: "status only",
 			resp: custom_hostnames.CustomHostnameListResponse{
 				SSL: custom_hostnames.CustomHostnameListResponseSSL{Status: "pending_validation"},
 			},
-			want: cfv1alpha1.CustomHostnameSSLStatus{Status: "pending_validation"},
+			want: saasv1alpha1.CustomHostnameSSLStatus{Status: "pending_validation"},
 		},
 		{
 			name: "expires on set",
@@ -196,7 +196,7 @@ func TestSSLStatusFromList(t *testing.T) {
 					ExpiresOn: expires,
 				},
 			},
-			want: cfv1alpha1.CustomHostnameSSLStatus{
+			want: saasv1alpha1.CustomHostnameSSLStatus{
 				Status:    "active",
 				ExpiresOn: func() *metav1.Time { t := metav1.NewTime(expires); return &t }(),
 			},
@@ -211,9 +211,9 @@ func TestSSLStatusFromList(t *testing.T) {
 					},
 				},
 			},
-			want: cfv1alpha1.CustomHostnameSSLStatus{
+			want: saasv1alpha1.CustomHostnameSSLStatus{
 				Status: "pending_validation",
-				ValidationRecords: []cfv1alpha1.SSLValidationRecord{
+				ValidationRecords: []saasv1alpha1.SSLValidationRecord{
 					{TXTName: "_cf-txt.example.com", TXTValue: "abc123", HTTPUrl: "http://example.com/.well-known/pki-validation/x.txt", HTTPBody: "body"},
 				},
 			},
@@ -226,7 +226,7 @@ func TestSSLStatusFromList(t *testing.T) {
 					ValidationErrors: []custom_hostnames.CustomHostnameListResponseSSLValidationError{{Message: "timed out"}},
 				},
 			},
-			want: cfv1alpha1.CustomHostnameSSLStatus{
+			want: saasv1alpha1.CustomHostnameSSLStatus{
 				Status:           "validation_timed_out",
 				ValidationErrors: []string{"timed out"},
 			},

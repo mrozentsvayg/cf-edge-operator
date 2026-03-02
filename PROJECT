@@ -7,24 +7,24 @@ domain: cf-edge.io
 layout:
 - go.kubebuilder.io/v4
 projectName: cf-edge-operator
-repo: github.com/conduitxyz/cf-edge-operator
+repo: github.com/mrozentsvayg/cf-edge-operator
 resources:
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
   domain: cf-edge.io
-  group: cf
+  group: saas
   kind: CustomHostname
-  path: github.com/conduitxyz/cf-edge-operator/api/v1alpha1
+  path: github.com/mrozentsvayg/cf-edge-operator/api/saas/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
   domain: cf-edge.io
-  group: cf
+  group: domains
   kind: Zone
-  path: github.com/conduitxyz/cf-edge-operator/api/v1alpha1
+  path: github.com/mrozentsvayg/cf-edge-operator/api/domains/v1alpha1
   version: v1alpha1
 version: "3"
