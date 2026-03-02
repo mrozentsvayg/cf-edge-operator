@@ -1,6 +1,6 @@
 module github.com/mrozentsvayg/cf-edge-operator
 
-go 1.25.3
+go 1.26.0
 
 require (
 	github.com/cloudflare/cloudflare-go/v6 v6.8.0
