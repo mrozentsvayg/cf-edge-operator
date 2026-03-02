@@ -1,0 +1,179 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package v1alpha1
+
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// CustomHostnameSpec defines the desired state of CustomHostname
+type CustomHostnameSpec struct {
+	// Hostname is the custom hostname to register with Cloudflare (e.g. customer.example.com)
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Format=hostname
+	Hostname string `json:"hostname"`
+
+	// OriginServer is the origin the custom hostname points to (e.g. origin.internal.example.com)
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Format=hostname
+	OriginServer string `json:"originServer"`
+
+	// OriginSNI overrides the SNI sent to the origin. Defaults to OriginServer if omitted.
+	// Set to ":request_host_header:" to forward the incoming Host header as SNI.
+	// Requires a Cloudflare account entitlement — contact your Cloudflare account team to enable.
+	// +optional
+	OriginSNI *string `json:"originSNI,omitempty"`
+
+	// ZoneRef references the Zone resource that owns this custom hostname.
+	// The Zone must exist in the operator namespace.
+	// +kubebuilder:validation:Required
+	ZoneRef ZoneRef `json:"zoneRef"`
+
+	// SSL configures the SSL/TLS certificate settings for this custom hostname.
+	// +optional
+	SSL *CustomHostnameSSL `json:"ssl,omitempty"`
+}
+
+// ZoneRef references a Zone resource
+type ZoneRef struct {
+	// Name of the Zone resource
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Namespace of the Zone resource. Defaults to the operator namespace if omitted.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+}
+
+// CustomHostnameSSL configures SSL for a custom hostname
+type CustomHostnameSSL struct {
+	// Type of SSL validation. Defaults to "dv".
+	// +kubebuilder:validation:Enum=dv
+	// +kubebuilder:default=dv
+	// +optional
+	Type string `json:"type,omitempty"`
+
+	// Method of DCV (Domain Control Validation). Defaults to "http".
+	// +kubebuilder:validation:Enum=http;txt;email
+	// +kubebuilder:default=http
+	// +optional
+	Method string `json:"method,omitempty"`
+
+	// CertificateAuthority sets the CA for the certificate.
+	// Requires an enterprise plan. Omit if not applicable.
+	// +kubebuilder:validation:Enum=lets_encrypt;google;ssl_com
+	// +optional
+	CertificateAuthority string `json:"certificateAuthority,omitempty"`
+
+	// MinTLSVersion sets the minimum TLS version for this hostname.
+	// +kubebuilder:validation:Enum="1.0";"1.1";"1.2";"1.3"
+	// +optional
+	MinTLSVersion string `json:"minTLSVersion,omitempty"`
+}
+
+// CustomHostnameStatus defines the observed state of CustomHostname
+type CustomHostnameStatus struct {
+	// ID is the Cloudflare-assigned custom hostname ID, used for updates and deletes
+	// +optional
+	ID string `json:"id,omitempty"`
+
+	// SSL reflects the current SSL certificate state as reported by Cloudflare
+	// +optional
+	SSL *CustomHostnameSSLStatus `json:"ssl,omitempty"`
+
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// CustomHostnameSSLStatus reflects the SSL state from Cloudflare
+type CustomHostnameSSLStatus struct {
+	// Status is the certificate verification state (e.g. pending_validation, active, expired)
+	// +optional
+	Status string `json:"status,omitempty"`
+
+	// ExpiresOn is the certificate expiration time
+	// +optional
+	ExpiresOn *metav1.Time `json:"expiresOn,omitempty"`
+
+	// ValidationRecords contains the DCV tokens Cloudflare requires to complete SSL issuance.
+	// The customer must satisfy these before SSL becomes active.
+	// +optional
+	ValidationRecords []SSLValidationRecord `json:"validationRecords,omitempty"`
+
+	// ValidationErrors contains any errors encountered during SSL validation
+	// +optional
+	ValidationErrors []string `json:"validationErrors,omitempty"`
+}
+
+// SSLValidationRecord mirrors the Cloudflare API ssl.validation_records entry
+type SSLValidationRecord struct {
+	// TXTName is the DNS TXT record name the customer must create (txt method)
+	// +optional
+	TXTName string `json:"txtName,omitempty"`
+
+	// TXTValue is the value of the DNS TXT record (txt method)
+	// +optional
+	TXTValue string `json:"txtValue,omitempty"`
+
+	// HTTPUrl is the URL where the token must be served (http method)
+	// +optional
+	HTTPUrl string `json:"httpUrl,omitempty"`
+
+	// HTTPBody is the content that must be served at HTTPUrl (http method)
+	// +optional
+	HTTPBody string `json:"httpBody,omitempty"`
+
+	// Emails lists contact addresses used for email-based validation (email method)
+	// +optional
+	Emails []string `json:"emails,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Hostname",type=string,JSONPath=`.spec.hostname`
+// +kubebuilder:printcolumn:name="Origin",type=string,JSONPath=`.spec.originServer`
+// +kubebuilder:printcolumn:name="SSL",type=string,JSONPath=`.status.ssl.status`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+
+// CustomHostname is the Schema for the customhostnames API
+type CustomHostname struct {
+	metav1.TypeMeta `json:",inline"`
+
+	// +optional
+	metav1.ObjectMeta `json:"metadata,omitzero"`
+
+	// +required
+	Spec CustomHostnameSpec `json:"spec"`
+
+	// +optional
+	Status CustomHostnameStatus `json:"status,omitzero"`
+}
+
+// +kubebuilder:object:root=true
+
+// CustomHostnameList contains a list of CustomHostname
+type CustomHostnameList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitzero"`
+	Items           []CustomHostname `json:"items"`
+}
+
+func init() {
+	SchemeBuilder.Register(&CustomHostname{}, &CustomHostnameList{})
+}

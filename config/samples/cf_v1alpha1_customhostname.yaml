@@ -1,0 +1,30 @@
+apiVersion: cf.cf-edge.io/v1alpha1
+kind: CustomHostname
+metadata:
+  name: rpc-meridian
+  namespace: my-app-namespace
+spec:
+  hostname: rpc-meridian.t.conduit.xyz
+  originServer: rpc-g3-testnet-0-htg77tqpha.t.conduit.xyz
+  zoneRef:
+    name: t-conduit-xyz
+    # namespace defaults to operator namespace (cf-edge-operator-system) if omitted
+  ssl:
+    type: dv
+    method: http
+---
+# With explicit SNI override:
+apiVersion: cf.cf-edge.io/v1alpha1
+kind: CustomHostname
+metadata:
+  name: rpc-meridian-sni
+  namespace: my-app-namespace
+spec:
+  hostname: rpc-meridian.t.conduit.xyz
+  originServer: rpc-g3-testnet-0-htg77tqpha.t.conduit.xyz
+  originSNI: sni.internal.conduit.xyz
+  zoneRef:
+    name: t-conduit-xyz
+  ssl:
+    type: dv
+    method: http

@@ -1,0 +1,18 @@
+apiVersion: cf.cf-edge.io/v1alpha1
+kind: Zone
+metadata:
+  name: t-conduit-xyz
+  namespace: cf-edge-operator-system
+spec:
+  id: "<your-cloudflare-zone-id>"
+  credentialsRef:
+    name: cloudflare-api-token
+    key: apiToken
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cloudflare-api-token
+  namespace: cf-edge-operator-system
+stringData:
+  apiToken: "<your-cloudflare-api-token>"

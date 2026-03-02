@@ -1,0 +1,25 @@
+image:
+  repository: ghcr.io/mrozentsvayg/cf-edge-operator
+  tag: ""  # defaults to chart appVersion
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+# Enable leader election (required when running multiple replicas)
+leaderElect: true
+
+# Namespace where Zone CRs are managed.
+# Defaults to the release namespace if left empty.
+operatorNamespace: ""
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+serviceAccount:
+  # Defaults to the release name if left empty.
+  name: ""
