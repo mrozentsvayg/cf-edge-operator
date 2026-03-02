@@ -115,9 +115,52 @@ CustomHostname CR (app namespace)
 
 App namespaces never hold Cloudflare credentials.
 
+## Delete Policy
+
+The `--delete-policy` flag controls behavior when a CustomHostname CR is deleted:
+
+- **`always`** (default): delete from Cloudflare by `status.id` regardless of current state. Treats 404 as success.
+- **`own-only`**: look up the current Cloudflare state via `findByHostname` before deleting. Only deletes if the current CF ID matches `status.id`. If IDs differ or the hostname is not found, releases the finalizer without touching Cloudflare.
+
+### When to use `own-only`
+
+**Migration from external-dns:** During the transition period, external-dns and cf-edge-operator may both be active for the same zone. External-dns can delete and recreate a hostname (new CF ID), leaving `status.id` stale. If a CR is deleted during this window:
+
+- `always`: tries to delete by stale ID → 404 → releases. The live hostname survives by accident.
+- `own-only`: looks up current CF state, sees ID mismatch → releases without any CF API call. Explicitly safe.
+
+**Recommended:** deploy cf-edge-operator with `--delete-policy=own-only` during any migration phase where another tool may concurrently manage the same CF zone.
+
+See [docs/migration.md](migration.md) for the full migration guide.
+
+## Observability
+
+### Status fields
+
+| Field | Purpose |
+|-------|---------|
+| `status.id` | CF custom hostname ID, used for updates and deletes |
+| `status.ssl` | SSL state (status, expiresOn, validationRecords) |
+| `status.createCount` | How many times this hostname was (re)created in CF. Values > 1 indicate external deletions. |
+| `status.consecutiveErrors` | Consecutive reconcile failures. Resets to 0 on success. |
+
+### Prometheus metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `cf_edge_operator_customhostname_creates_total` | counter | Successful CF POST calls |
+| `cf_edge_operator_customhostname_updates_total` | counter | Drift corrections (PATCH) |
+| `cf_edge_operator_customhostname_deletes_total` | counter | Successful CF DELETE calls |
+| `cf_edge_operator_unhealthy_customhostnames` | gauge | CRs with `consecutiveErrors > 0` |
+| `cf_edge_operator_zone_orphans{zone}` | gauge | CF hostnames with no corresponding CR |
+| `cf_edge_operator_api_duration_seconds{operation}` | histogram | CF API call latency |
+| `cf_edge_operator_api_errors_total` | counter | Total CF API errors |
+| `cf_edge_operator_api_errors_by_code_total{operation,status_code}` | counter | CF API errors by operation and HTTP status |
+
+Controller-runtime also exposes `controller_runtime_reconcile_total` and `controller_runtime_reconcile_time_seconds` per controller.
+
 ## Future Work
 
-- **`status.createCount`** — track how many times a hostname has been recreated in Cloudflare. A high count indicates an external entity is repeatedly deleting it. Useful for alerting.
-- **Prometheus metrics** — `creates_total`, `deletes_total`, `updates_total` (drift corrections), `orphans_total` (per zone), `ssl_status` gauge. controller-runtime already exposes a metrics endpoint.
-- **`--delete-policy` flag** — control delete behavior when origin has drifted from spec at deletion time. `always` (default): delete by ID regardless. `own-only`: only delete if current CF origin matches `spec.originServer`, otherwise release finalizer without deleting.
-- **Precise delete via `findByHostname`** — look up current CF state before deleting. If ID matches `status.id` → delete. If ID differs → another entity owns it, release finalizer. Eliminates reliance on 404 handling.
+- **SSL provisioning duration metric** — time from CR creation to `ssl.status == active`. Requires `status.sslProvisioningStartedAt` field set on first create.
+- **`--delete-policy` per-CR override** — allow spec-level override of the operator-wide delete policy.
+- **CI integration tests** — end-to-end tests against a dedicated CF zone with real API credentials.
