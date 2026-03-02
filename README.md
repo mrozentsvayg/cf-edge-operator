@@ -1,135 +1,139 @@
 # cf-edge-operator
-// TODO(user): Add simple overview of use/purpose
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+A Kubernetes operator for managing [Cloudflare for SaaS](https://developers.cloudflare.com/cloudflare-for-platforms/cloudflare-for-saas/) custom hostnames. It handles custom hostname lifecycle (create, update, delete), SSL provisioning, Origin SNI overrides, and drift detection — things that don't belong in external-dns.
 
-## Getting Started
+## Quick Start
 
-### Prerequisites
-- go version v1.24.6+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+### 1. Install
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
-
-```sh
-make docker-build docker-push IMG=<some-registry>/cf-edge-operator:tag
+```bash
+helm install cf-edge-operator oci://ghcr.io/mrozentsvayg/cf-edge-operator/charts/cf-edge-operator \
+  --namespace cf-edge-operator-system \
+  --create-namespace \
+  --set image.tag=latest
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+Or point ArgoCD at the chart path in this repo.
 
-**Install the CRDs into the cluster:**
+### 2. Create a Cloudflare API token secret
 
-```sh
-make install
+```bash
+kubectl create secret generic cloudflare-api-token \
+  --namespace cf-edge-operator-system \
+  --from-literal=apiToken=<your-token>
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+The token needs `Zone:Custom Hostnames:Edit` and `Zone:Zone:Read` permissions.
 
-```sh
-make deploy IMG=<some-registry>/cf-edge-operator:tag
+### 3. Create a Zone CR
+
+```yaml
+apiVersion: cf.cf-edge.io/v1alpha1
+kind: Zone
+metadata:
+  name: my-zone
+  namespace: cf-edge-operator-system
+spec:
+  id: "<cloudflare-zone-id>"
+  credentialsRef:
+    name: cloudflare-api-token
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
+### 4. Create a CustomHostname CR
 
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
-
-```sh
-kubectl apply -k config/samples/
+```yaml
+apiVersion: cf.cf-edge.io/v1alpha1
+kind: CustomHostname
+metadata:
+  name: customer-acme
+  namespace: my-app
+spec:
+  hostname: api.acme.com
+  originServer: origin.internal.example.com
+  zoneRef:
+    name: my-zone
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
+### 5. Check status
 
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
-
-```sh
-kubectl delete -k config/samples/
+```bash
+kubectl get customhostnames -A
+# NAME            HOSTNAME       ORIGIN                        SSL                  READY   CREATES   ERRORS
+# customer-acme   api.acme.com   origin.internal.example.com   pending_validation   False   1         0
 ```
 
-**Delete the APIs(CRDs) from the cluster:**
+`Ready=True` when SSL becomes active (may take minutes to hours depending on DCV method).
 
-```sh
-make uninstall
-```
+---
 
-**UnDeploy the controller from the cluster:**
+## CRD Reference
 
-```sh
-make undeploy
-```
+### Zone
 
-## Project Distribution
+| Field | Required | Description |
+|-------|----------|-------------|
+| `spec.id` | yes | Cloudflare zone ID |
+| `spec.credentialsRef.name` | yes | Secret name containing the API token |
+| `spec.credentialsRef.key` | no | Secret key, defaults to `apiToken` |
 
-Following the options to release and provide this solution to the users.
+### CustomHostname
 
-### By providing a bundle with all YAML files
+| Field | Required | Description |
+|-------|----------|-------------|
+| `spec.hostname` | yes | The custom hostname (e.g. `api.acme.com`) |
+| `spec.originServer` | yes | Origin the hostname routes to. Must belong to the zone. |
+| `spec.originSNI` | no | SNI sent to the origin. Defaults to `originServer`. Requires CF account entitlement. |
+| `spec.zoneRef.name` | yes | Zone CR name |
+| `spec.zoneRef.namespace` | no | Zone CR namespace. Defaults to the operator namespace. |
+| `spec.ssl.type` | no | DV type. Default: `dv` |
+| `spec.ssl.method` | no | DCV method: `http`, `txt`, or `email`. Default: `http` |
+| `spec.ssl.certificateAuthority` | no | CA: `lets_encrypt`, `google`, `ssl_com`. Enterprise only. |
+| `spec.ssl.minTLSVersion` | no | `1.0`, `1.1`, `1.2`, or `1.3` |
 
-1. Build the installer for the image built and published in the registry:
+### Status fields
 
-```sh
-make build-installer IMG=<some-registry>/cf-edge-operator:tag
-```
+| Field | Description |
+|-------|-------------|
+| `status.id` | Cloudflare-assigned hostname ID |
+| `status.ssl.status` | SSL state: `pending_validation`, `active`, `expired`, etc. |
+| `status.ssl.validationRecords` | DCV tokens to complete SSL issuance |
+| `status.createCount` | How many times the hostname was (re)created. Values > 1 indicate external deletions. |
+| `status.consecutiveErrors` | Consecutive reconcile failures. Resets to 0 on success. |
 
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
+---
 
-2. Using the installer
+## Helm Values
 
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
+| Value | Default | Description |
+|-------|---------|-------------|
+| `image.repository` | `ghcr.io/mrozentsvayg/cf-edge-operator` | Image repository |
+| `image.tag` | chart appVersion | Image tag |
+| `operatorNamespace` | release namespace | Namespace where Zone CRs live |
+| `deletePolicy` | `always` | `always` or `own-only`. See [docs/architecture.md](docs/architecture.md#delete-policy). |
+| `leaderElect` | `true` | Enable leader election (required for HA) |
+| `replicaCount` | `1` | Number of replicas |
+| `resources.limits.cpu` | `500m` | CPU limit |
+| `resources.limits.memory` | `128Mi` | Memory limit |
 
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/cf-edge-operator/<tag or branch>/dist/install.yaml
-```
+---
 
-### By providing a Helm Chart
+## Migrating from external-dns
 
-1. Build the chart using the optional helm plugin
+If you currently use external-dns annotations to manage Cloudflare custom hostnames, see [docs/migration.md](docs/migration.md) for the step-by-step migration guide. Use `--delete-policy=own-only` during migration.
 
-```sh
-kubebuilder edit --plugins=helm/v2-alpha
-```
+---
 
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
+## Architecture
 
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
+See [docs/architecture.md](docs/architecture.md) for the coordinator/worker design, drift detection, API efficiency, and observability reference.
 
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
+## Metrics
 
-**NOTE:** Run `make help` for more information on all potential `make` targets
+Metrics are exposed on `:8080/metrics` (HTTP). Key metrics:
 
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+- `cf_edge_operator_customhostname_creates_total` — successful hostname creations
+- `cf_edge_operator_unhealthy_customhostnames` — gauge of CRs with consecutive errors
+- `cf_edge_operator_api_errors_total` — Cloudflare API error count
+- `cf_edge_operator_api_duration_seconds{operation}` — CF API latency histogram
 
-## License
-
-Copyright 2026.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
+Controller-runtime exposes `controller_runtime_reconcile_total` and `controller_runtime_reconcile_time_seconds` per controller.
