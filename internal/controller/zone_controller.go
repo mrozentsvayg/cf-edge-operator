@@ -104,6 +104,15 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, fmt.Errorf("failed to list CustomHostname CRs: %w", err)
 	}
 
+	// Update unhealthy gauge from the full CR list (all zones) on every reconcile.
+	unhealthy := 0
+	for i := range chList.Items {
+		if chList.Items[i].Status.ConsecutiveErrors > 0 {
+			unhealthy++
+		}
+	}
+	unhealthyCustomHostnames.Set(float64(unhealthy))
+
 	// Enqueue CRs that have drifted from Cloudflare state, and build a set of
 	// known CR hostnames for orphan detection in the next pass.
 	crHostnames := make(map[string]bool, len(chList.Items))

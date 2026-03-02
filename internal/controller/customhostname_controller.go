@@ -75,12 +75,12 @@ func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	cf, zoneID, zoneName, err := r.buildCloudflareClient(ctx, &ch)
 	if err != nil {
 		log.Error(err, "failed to build Cloudflare client")
-		return ctrl.Result{}, r.setCondition(ctx, &ch, metav1.ConditionFalse, "ZoneError", err.Error())
+		return ctrl.Result{}, r.setError(ctx, &ch, "ZoneError", err.Error())
 	}
 
 	// Validate that the origin server belongs to the zone — Cloudflare for SaaS is zone-scoped.
 	if zoneName != "" && !strings.HasSuffix(ch.Spec.OriginServer, "."+zoneName) && ch.Spec.OriginServer != zoneName {
-		return ctrl.Result{}, r.setCondition(ctx, &ch, metav1.ConditionFalse, "OriginNotInZone",
+		return ctrl.Result{}, r.setError(ctx, &ch, "OriginNotInZone",
 			fmt.Sprintf("originServer %q must belong to zone %q", ch.Spec.OriginServer, zoneName))
 	}
 
@@ -110,7 +110,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	existing, err := r.findByHostname(ctx, cf, zoneID, ch.Spec.Hostname)
 	if err != nil {
 		log.Error(err, "failed to look up custom hostname", "hostname", ch.Spec.Hostname)
-		return ctrl.Result{}, r.setCondition(ctx, ch, metav1.ConditionFalse, "LookupFailed", err.Error())
+		return ctrl.Result{}, r.setError(ctx, ch, "LookupFailed", err.Error())
 	}
 
 	if existing == nil {
@@ -137,7 +137,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 		recordCFCall("update", editStart, &editErr)
 		if editErr != nil {
 			log.Error(editErr, "failed to update custom hostname", "id", existing.ID)
-			return ctrl.Result{}, r.setCondition(ctx, ch, metav1.ConditionFalse, "UpdateFailed", editErr.Error())
+			return ctrl.Result{}, r.setError(ctx, ch, "UpdateFailed", editErr.Error())
 		}
 		customHostnameUpdatesTotal.Inc()
 	}
@@ -172,11 +172,12 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudfl
 	recordCFCall("create", createStart, &err)
 	if err != nil {
 		log.Error(err, "failed to create custom hostname", "hostname", ch.Spec.Hostname)
-		return ctrl.Result{}, r.setCondition(ctx, ch, metav1.ConditionFalse, "CreateFailed", err.Error())
+		return ctrl.Result{}, r.setError(ctx, ch, "CreateFailed", err.Error())
 	}
 
 	log.Info("custom hostname created", "hostname", ch.Spec.Hostname, "id", resp.ID)
 	customHostnameCreatesTotal.Inc()
+	ch.Status.CreateCount++
 	ch.Status.ID = resp.ID
 	ch.Status.SSL = sslStatusFromNew(resp)
 	if err := r.Status().Update(ctx, ch); err != nil {
@@ -233,6 +234,7 @@ func (r *CustomHostnameReconciler) findByHostname(ctx context.Context, cf *cloud
 }
 
 func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, ch *cfv1alpha1.CustomHostname) (ctrl.Result, error) {
+	ch.Status.ConsecutiveErrors = 0
 	if ch.Status.SSL != nil && ch.Status.SSL.Status == "active" {
 		return ctrl.Result{}, r.setCondition(ctx, ch, metav1.ConditionTrue, "Ready", "Custom hostname is active")
 	}
@@ -244,6 +246,12 @@ func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, ch *cfv1a
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: requeuePendingSSL}, nil
+}
+
+// setError increments ConsecutiveErrors, sets a Ready=False condition, and updates status.
+func (r *CustomHostnameReconciler) setError(ctx context.Context, ch *cfv1alpha1.CustomHostname, reason, message string) error {
+	ch.Status.ConsecutiveErrors++
+	return r.setCondition(ctx, ch, metav1.ConditionFalse, reason, message)
 }
 
 func (r *CustomHostnameReconciler) setCondition(ctx context.Context, ch *cfv1alpha1.CustomHostname, status metav1.ConditionStatus, reason, message string) error {

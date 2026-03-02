@@ -95,6 +95,16 @@ type CustomHostnameStatus struct {
 	// +optional
 	SSL *CustomHostnameSSLStatus `json:"ssl,omitempty"`
 
+	// CreateCount tracks how many times this hostname has been (re)created in Cloudflare.
+	// A value greater than 1 indicates external deletions occurred (e.g. via CF dashboard).
+	// +optional
+	CreateCount int32 `json:"createCount,omitempty"`
+
+	// ConsecutiveErrors is the number of consecutive reconcile failures.
+	// Resets to 0 on the next successful reconcile.
+	// +optional
+	ConsecutiveErrors int32 `json:"consecutiveErrors,omitempty"`
+
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -150,6 +160,8 @@ type SSLValidationRecord struct {
 // +kubebuilder:printcolumn:name="Origin",type=string,JSONPath=`.spec.originServer`
 // +kubebuilder:printcolumn:name="SSL",type=string,JSONPath=`.status.ssl.status`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Creates",type=integer,JSONPath=`.status.createCount`
+// +kubebuilder:printcolumn:name="Errors",type=integer,JSONPath=`.status.consecutiveErrors`
 
 // CustomHostname is the Schema for the customhostnames API
 type CustomHostname struct {
