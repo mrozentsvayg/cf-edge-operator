@@ -16,38 +16,33 @@ Represents a Cloudflare custom hostname with origin server and optional SNI over
 
 Two controllers with clearly separated responsibilities:
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│ Zone Controller (Coordinator — reads only)                   │
-│                                                             │
-│  Triggers: Zone CR changes, CustomHostname CR changes,      │
-│            periodic requeue (5 min)                         │
-│                                                             │
-│  1. Bulk paginated GET /zones/:id/custom_hostnames          │
-│     → ~10 API calls for 1000 hostnames (100/page)          │
-│  2. List all CustomHostname CRs for this zone               │
-│  3. Diff desired vs actual                                  │
-│  4. Enqueue drifted CustomHostname CRs for reconciliation   │
-│     (never writes to Cloudflare)                            │
-└─────────────────────┬───────────────────────────────────────┘
-                      │ enqueues via event channel
-                      ▼
-┌─────────────────────────────────────────────────────────────┐
-│ CustomHostname Controller (Worker — writes only)             │
-│                                                             │
-│  Triggers: CR spec changes (generation predicate),          │
-│            enqueue from Zone controller                     │
-│                                                             │
-│  1. List(hostname=spec.hostname) → 1 Cloudflare API call   │
-│  2. Found → adopt ID, update if drifted (PATCH)            │
-│     Not found → create (POST)                              │
-│  3. Update status (ID, SSL state, validation records)       │
-│  4. Requeue after 30s while SSL pending, else done          │
-│  5. On delete: DELETE from Cloudflare, remove finalizer     │
-│                                                             │
-│  Failures: requeue only this CR with exponential backoff    │
-│            (blast radius = one hostname)                    │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    ZC["**Zone Controller** *(Coordinator — reads only)*
+
+    Triggers: Zone/CustomHostname CR changes, periodic 5 min
+
+    1. Bulk paginated GET /zones/:id/custom_hostnames
+       → ~10 API calls for 1000 hostnames
+    2. List all CustomHostname CRs for this zone
+    3. Diff desired vs actual
+    4. Enqueue drifted CRs *(never writes to Cloudflare)*"]
+
+    CHC["**CustomHostname Controller** *(Worker — writes only)*
+
+    Triggers: CR spec changes (generation predicate),
+              enqueue from Zone controller
+
+    1. List(hostname) → 1 Cloudflare API call
+    2. Found → adopt ID, PATCH if drifted
+       Not found → POST
+    3. Update status (ID, SSL state, validation records)
+    4. Requeue 30s while SSL pending, else done
+    5. On delete: DELETE from Cloudflare, remove finalizer
+
+    Failures: requeue only this CR (blast radius = one hostname)"]
+
+    ZC -->|"enqueues via event channel"| CHC
 ```
 
 ## Why This Split
