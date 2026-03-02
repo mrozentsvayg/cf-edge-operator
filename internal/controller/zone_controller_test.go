@@ -71,4 +71,3 @@ func TestHasDrift(t *testing.T) {
 		})
 	}
 }
-
