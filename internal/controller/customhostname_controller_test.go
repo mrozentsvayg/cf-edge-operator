@@ -206,4 +206,3 @@ func TestSSLStatusFromList(t *testing.T) {
 		})
 	}
 }
-
