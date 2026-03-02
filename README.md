@@ -28,7 +28,7 @@ The token needs `Zone:Custom Hostnames:Edit` and `Zone:Zone:Read` permissions.
 ### 3. Create a Zone CR
 
 ```yaml
-apiVersion: cf.cf-edge.io/v1alpha1
+apiVersion: domains.cf-edge.io/v1alpha1
 kind: Zone
 metadata:
   name: my-zone
@@ -42,7 +42,7 @@ spec:
 ### 4. Create a CustomHostname CR
 
 ```yaml
-apiVersion: cf.cf-edge.io/v1alpha1
+apiVersion: saas.cf-edge.io/v1alpha1
 kind: CustomHostname
 metadata:
   name: customer-acme
@@ -136,4 +136,3 @@ Metrics are exposed on `:8080/metrics` (HTTP). Key metrics:
 - `cf_edge_operator_api_errors_total` — Cloudflare API error count
 - `cf_edge_operator_api_duration_seconds{operation}` — CF API latency histogram
 
-Controller-runtime exposes `controller_runtime_reconcile_total` and `controller_runtime_reconcile_time_seconds` per controller.

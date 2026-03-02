@@ -21,44 +21,44 @@ import (
 
 	"github.com/cloudflare/cloudflare-go/v6/custom_hostnames"
 
-	cfv1alpha1 "github.com/mrozentsvayg/cf-edge-operator/api/v1alpha1"
+	saasv1alpha1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1alpha1"
 )
 
 func TestHasDrift(t *testing.T) {
 	sni := "sni.example.com"
 	tests := []struct {
 		name string
-		ch   cfv1alpha1.CustomHostname
+		ch   saasv1alpha1.CustomHostname
 		cfCH custom_hostnames.CustomHostnameListResponse
 		want bool
 	}{
 		{
 			name: "no drift",
-			ch:   cfv1alpha1.CustomHostname{Spec: cfv1alpha1.CustomHostnameSpec{OriginServer: "origin.example.com"}},
+			ch:   saasv1alpha1.CustomHostname{Spec: saasv1alpha1.CustomHostnameSpec{OriginServer: "origin.example.com"}},
 			cfCH: custom_hostnames.CustomHostnameListResponse{CustomOriginServer: "origin.example.com"},
 			want: false,
 		},
 		{
 			name: "origin server drift",
-			ch:   cfv1alpha1.CustomHostname{Spec: cfv1alpha1.CustomHostnameSpec{OriginServer: "new.example.com"}},
+			ch:   saasv1alpha1.CustomHostname{Spec: saasv1alpha1.CustomHostnameSpec{OriginServer: "new.example.com"}},
 			cfCH: custom_hostnames.CustomHostnameListResponse{CustomOriginServer: "old.example.com"},
 			want: true,
 		},
 		{
 			name: "sni set and matches",
-			ch:   cfv1alpha1.CustomHostname{Spec: cfv1alpha1.CustomHostnameSpec{OriginServer: "origin.example.com", OriginSNI: &sni}},
+			ch:   saasv1alpha1.CustomHostname{Spec: saasv1alpha1.CustomHostnameSpec{OriginServer: "origin.example.com", OriginSNI: &sni}},
 			cfCH: custom_hostnames.CustomHostnameListResponse{CustomOriginServer: "origin.example.com", CustomOriginSNI: sni},
 			want: false,
 		},
 		{
 			name: "sni set and differs",
-			ch:   cfv1alpha1.CustomHostname{Spec: cfv1alpha1.CustomHostnameSpec{OriginServer: "origin.example.com", OriginSNI: &sni}},
+			ch:   saasv1alpha1.CustomHostname{Spec: saasv1alpha1.CustomHostnameSpec{OriginServer: "origin.example.com", OriginSNI: &sni}},
 			cfCH: custom_hostnames.CustomHostnameListResponse{CustomOriginServer: "origin.example.com", CustomOriginSNI: "other.example.com"},
 			want: true,
 		},
 		{
 			name: "sni not spec'd, cf has sni set",
-			ch:   cfv1alpha1.CustomHostname{Spec: cfv1alpha1.CustomHostnameSpec{OriginServer: "origin.example.com"}},
+			ch:   saasv1alpha1.CustomHostname{Spec: saasv1alpha1.CustomHostnameSpec{OriginServer: "origin.example.com"}},
 			cfCH: custom_hostnames.CustomHostnameListResponse{CustomOriginServer: "origin.example.com", CustomOriginSNI: sni},
 			want: false,
 		},

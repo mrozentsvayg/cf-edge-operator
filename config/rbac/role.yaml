@@ -13,9 +13,8 @@ rules:
   - list
   - watch
 - apiGroups:
-  - cf.cf-edge.io
+  - domains.cf-edge.io
   resources:
-  - customhostnames
   - zones
   verbs:
   - create
@@ -26,17 +25,41 @@ rules:
   - update
   - watch
 - apiGroups:
-  - cf.cf-edge.io
+  - domains.cf-edge.io
   resources:
-  - customhostnames/finalizers
   - zones/finalizers
   verbs:
   - update
 - apiGroups:
-  - cf.cf-edge.io
+  - domains.cf-edge.io
+  resources:
+  - zones/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - saas.cf-edge.io
+  resources:
+  - customhostnames
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - saas.cf-edge.io
+  resources:
+  - customhostnames/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - saas.cf-edge.io
   resources:
   - customhostnames/status
-  - zones/status
   verbs:
   - get
   - patch

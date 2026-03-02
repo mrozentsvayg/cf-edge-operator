@@ -41,11 +41,12 @@ import (
 	"github.com/cloudflare/cloudflare-go/v6/custom_hostnames"
 	"github.com/cloudflare/cloudflare-go/v6/option"
 
-	cfv1alpha1 "github.com/mrozentsvayg/cf-edge-operator/api/v1alpha1"
+	domainsv1alpha1 "github.com/mrozentsvayg/cf-edge-operator/api/domains/v1alpha1"
+	saasv1alpha1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1alpha1"
 )
 
 const (
-	finalizerName     = "cf.cf-edge.io/customhostname"
+	finalizerName     = "saas.cf-edge.io/customhostname"
 	requeuePendingSSL = 30 * time.Second
 )
 
@@ -68,16 +69,16 @@ type CustomHostnameReconciler struct {
 	DeletePolicy string
 }
 
-// +kubebuilder:rbac:groups=cf.cf-edge.io,resources=customhostnames,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=cf.cf-edge.io,resources=customhostnames/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=cf.cf-edge.io,resources=customhostnames/finalizers,verbs=update
-// +kubebuilder:rbac:groups=cf.cf-edge.io,resources=zones,verbs=get;list;watch
+// +kubebuilder:rbac:groups=saas.cf-edge.io,resources=customhostnames,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=saas.cf-edge.io,resources=customhostnames/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=saas.cf-edge.io,resources=customhostnames/finalizers,verbs=update
+// +kubebuilder:rbac:groups=domains.cf-edge.io,resources=zones,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	var ch cfv1alpha1.CustomHostname
+	var ch saasv1alpha1.CustomHostname
 	if err := r.Get(ctx, req.NamespacedName, &ch); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -113,7 +114,7 @@ func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	return r.reconcileCloudflareState(ctx, cf, zoneID, &ch)
 }
 
-func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context, cf *cloudflare.Client, zoneID string, ch *cfv1alpha1.CustomHostname) (ctrl.Result, error) {
+func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context, cf *cloudflare.Client, zoneID string, ch *saasv1alpha1.CustomHostname) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// Single Cloudflare API call: find existing hostname by name
@@ -159,7 +160,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	return r.requeueOrReady(ctx, ch)
 }
 
-func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudflare.Client, zoneID string, ch *cfv1alpha1.CustomHostname) (ctrl.Result, error) {
+func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudflare.Client, zoneID string, ch *saasv1alpha1.CustomHostname) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	params := custom_hostnames.CustomHostnameNewParams{
@@ -169,7 +170,7 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudfl
 	// Default to DV + HTTP if not specified — SSL is always required for custom hostnames.
 	sslSpec := ch.Spec.SSL
 	if sslSpec == nil {
-		sslSpec = &cfv1alpha1.CustomHostnameSSL{Type: "dv", Method: "http"}
+		sslSpec = &saasv1alpha1.CustomHostnameSSL{Type: "dv", Method: "http"}
 	}
 	params.SSL = cloudflare.F(buildSSLParams(sslSpec))
 	opts := []option.RequestOption{option.WithJSONSet("custom_origin_server", ch.Spec.OriginServer)}
@@ -196,7 +197,7 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudfl
 	return r.requeueOrReady(ctx, ch)
 }
 
-func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudflare.Client, zoneID string, ch *cfv1alpha1.CustomHostname) (ctrl.Result, error) {
+func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudflare.Client, zoneID string, ch *saasv1alpha1.CustomHostname) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	if controllerutil.ContainsFinalizer(ch, finalizerName) && ch.Status.ID != "" {
@@ -278,7 +279,7 @@ func (r *CustomHostnameReconciler) findByHostname(ctx context.Context, cf *cloud
 	return nil, err
 }
 
-func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, ch *cfv1alpha1.CustomHostname) (ctrl.Result, error) {
+func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, ch *saasv1alpha1.CustomHostname) (ctrl.Result, error) {
 	ch.Status.ConsecutiveErrors = 0
 	if ch.Status.SSL != nil && ch.Status.SSL.Status == "active" {
 		return ctrl.Result{}, r.setCondition(ctx, ch, metav1.ConditionTrue, "Ready", "Custom hostname is active")
@@ -294,12 +295,12 @@ func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, ch *cfv1a
 }
 
 // setError increments ConsecutiveErrors, sets a Ready=False condition, and updates status.
-func (r *CustomHostnameReconciler) setError(ctx context.Context, ch *cfv1alpha1.CustomHostname, reason, message string) error {
+func (r *CustomHostnameReconciler) setError(ctx context.Context, ch *saasv1alpha1.CustomHostname, reason, message string) error {
 	ch.Status.ConsecutiveErrors++
 	return r.setCondition(ctx, ch, metav1.ConditionFalse, reason, message)
 }
 
-func (r *CustomHostnameReconciler) setCondition(ctx context.Context, ch *cfv1alpha1.CustomHostname, status metav1.ConditionStatus, reason, message string) error {
+func (r *CustomHostnameReconciler) setCondition(ctx context.Context, ch *saasv1alpha1.CustomHostname, status metav1.ConditionStatus, reason, message string) error {
 	apimeta.SetStatusCondition(&ch.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
 		Status:             status,
@@ -313,12 +314,12 @@ func (r *CustomHostnameReconciler) setCondition(ctx context.Context, ch *cfv1alp
 	return nil
 }
 
-func (r *CustomHostnameReconciler) buildCloudflareClient(ctx context.Context, ch *cfv1alpha1.CustomHostname) (*cloudflare.Client, string, string, error) {
+func (r *CustomHostnameReconciler) buildCloudflareClient(ctx context.Context, ch *saasv1alpha1.CustomHostname) (*cloudflare.Client, string, string, error) {
 	zoneNS := ch.Spec.ZoneRef.Namespace
 	if zoneNS == "" {
 		zoneNS = r.OperatorNamespace
 	}
-	var zone cfv1alpha1.Zone
+	var zone domainsv1alpha1.Zone
 	if err := r.Get(ctx, types.NamespacedName{Name: ch.Spec.ZoneRef.Name, Namespace: zoneNS}, &zone); err != nil {
 		return nil, "", "", fmt.Errorf("zone %q not found: %w", ch.Spec.ZoneRef.Name, err)
 	}
@@ -337,14 +338,14 @@ func (r *CustomHostnameReconciler) buildCloudflareClient(ctx context.Context, ch
 	return cloudflare.NewClient(option.WithAPIToken(string(token))), zone.Spec.ID, zone.Status.Name, nil
 }
 
-func sniDrifted(currentSNI string, ch *cfv1alpha1.CustomHostname) bool {
+func sniDrifted(currentSNI string, ch *saasv1alpha1.CustomHostname) bool {
 	if ch.Spec.OriginSNI == nil {
 		return currentSNI != "" && currentSNI != ch.Spec.OriginServer
 	}
 	return currentSNI != *ch.Spec.OriginSNI
 }
 
-func buildSSLParams(ssl *cfv1alpha1.CustomHostnameSSL) custom_hostnames.CustomHostnameNewParamsSSL {
+func buildSSLParams(ssl *saasv1alpha1.CustomHostnameSSL) custom_hostnames.CustomHostnameNewParamsSSL {
 	p := custom_hostnames.CustomHostnameNewParamsSSL{}
 	if ssl.Type != "" {
 		p.Type = cloudflare.F(custom_hostnames.DomainValidationType(ssl.Type))
@@ -363,14 +364,14 @@ func buildSSLParams(ssl *cfv1alpha1.CustomHostnameSSL) custom_hostnames.CustomHo
 	return p
 }
 
-func sslStatusFromNew(resp *custom_hostnames.CustomHostnameNewResponse) *cfv1alpha1.CustomHostnameSSLStatus {
-	s := &cfv1alpha1.CustomHostnameSSLStatus{Status: string(resp.SSL.Status)}
+func sslStatusFromNew(resp *custom_hostnames.CustomHostnameNewResponse) *saasv1alpha1.CustomHostnameSSLStatus {
+	s := &saasv1alpha1.CustomHostnameSSLStatus{Status: string(resp.SSL.Status)}
 	if !resp.SSL.ExpiresOn.IsZero() {
 		t := metav1.NewTime(resp.SSL.ExpiresOn)
 		s.ExpiresOn = &t
 	}
 	for _, vr := range resp.SSL.ValidationRecords {
-		s.ValidationRecords = append(s.ValidationRecords, cfv1alpha1.SSLValidationRecord{
+		s.ValidationRecords = append(s.ValidationRecords, saasv1alpha1.SSLValidationRecord{
 			TXTName:  vr.TXTName,
 			TXTValue: vr.TXTValue,
 			HTTPUrl:  vr.HTTPURL,
@@ -384,14 +385,14 @@ func sslStatusFromNew(resp *custom_hostnames.CustomHostnameNewResponse) *cfv1alp
 	return s
 }
 
-func sslStatusFromList(resp *custom_hostnames.CustomHostnameListResponse) *cfv1alpha1.CustomHostnameSSLStatus {
-	s := &cfv1alpha1.CustomHostnameSSLStatus{Status: string(resp.SSL.Status)}
+func sslStatusFromList(resp *custom_hostnames.CustomHostnameListResponse) *saasv1alpha1.CustomHostnameSSLStatus {
+	s := &saasv1alpha1.CustomHostnameSSLStatus{Status: string(resp.SSL.Status)}
 	if !resp.SSL.ExpiresOn.IsZero() {
 		t := metav1.NewTime(resp.SSL.ExpiresOn)
 		s.ExpiresOn = &t
 	}
 	for _, vr := range resp.SSL.ValidationRecords {
-		s.ValidationRecords = append(s.ValidationRecords, cfv1alpha1.SSLValidationRecord{
+		s.ValidationRecords = append(s.ValidationRecords, saasv1alpha1.SSLValidationRecord{
 			TXTName:  vr.TXTName,
 			TXTValue: vr.TXTValue,
 			HTTPUrl:  vr.HTTPURL,
@@ -419,7 +420,7 @@ func sslStatusFromList(resp *custom_hostnames.CustomHostnameListResponse) *cfv1a
 func fastWritePredicate() predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
-			ch, ok := e.Object.(*cfv1alpha1.CustomHostname)
+			ch, ok := e.Object.(*saasv1alpha1.CustomHostname)
 			if !ok {
 				return true
 			}
@@ -438,7 +439,7 @@ func fastWritePredicate() predicate.Predicate {
 // driftEvents is the channel through which the Zone coordinator sends CRs needing reconciliation.
 func (r *CustomHostnameReconciler) SetupWithManager(mgr ctrl.Manager, driftEvents <-chan event.GenericEvent) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&cfv1alpha1.CustomHostname{}, builder.WithPredicates(fastWritePredicate())).
+		For(&saasv1alpha1.CustomHostname{}, builder.WithPredicates(fastWritePredicate())).
 		WatchesRawSource(source.Channel(driftEvents, &handler.EnqueueRequestForObject{})).
 		Named("customhostname").
 		Complete(r)

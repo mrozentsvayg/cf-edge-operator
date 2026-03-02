@@ -1,4 +1,4 @@
-apiVersion: cf.cf-edge.io/v1alpha1
+apiVersion: domains.cf-edge.io/v1alpha1
 kind: Zone
 metadata:
   name: t-conduit-xyz

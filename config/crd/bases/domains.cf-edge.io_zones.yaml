@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: zones.cf.cf-edge.io
+  name: zones.domains.cf-edge.io
 spec:
-  group: cf.cf-edge.io
+  group: domains.cf-edge.io
   names:
     kind: Zone
     listKind: ZoneList

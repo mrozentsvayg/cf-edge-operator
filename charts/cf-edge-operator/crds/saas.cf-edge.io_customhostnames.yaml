@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: customhostnames.cf.cf-edge.io
+  name: customhostnames.saas.cf-edge.io
 spec:
-  group: cf.cf-edge.io
+  group: saas.cf-edge.io
   names:
     kind: CustomHostname
     listKind: CustomHostnameList
@@ -27,6 +27,12 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
+    - jsonPath: .status.createCount
+      name: Creates
+      type: integer
+    - jsonPath: .status.consecutiveErrors
+      name: Errors
+      type: integer
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -188,6 +194,18 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              consecutiveErrors:
+                description: |-
+                  ConsecutiveErrors is the number of consecutive reconcile failures.
+                  Resets to 0 on the next successful reconcile.
+                format: int32
+                type: integer
+              createCount:
+                description: |-
+                  CreateCount tracks how many times this hostname has been (re)created in Cloudflare.
+                  A value greater than 1 indicates external deletions occurred (e.g. via CF dashboard).
+                format: int32
+                type: integer
               id:
                 description: ID is the Cloudflare-assigned custom hostname ID, used
                   for updates and deletes
