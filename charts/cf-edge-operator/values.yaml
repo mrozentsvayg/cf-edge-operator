@@ -31,3 +31,10 @@ resources:
 serviceAccount:
   # Defaults to the release name if left empty.
   name: ""
+
+# PodDisruptionBudget ensures at least one replica remains available during
+# voluntary disruptions (node drains, rolling updates). Requires replicaCount > 1
+# to have any effect.
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1

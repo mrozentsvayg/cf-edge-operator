@@ -117,6 +117,14 @@ kubectl get customhostnames -A
 | `replicaCount` | `1` | Number of replicas |
 | `resources.limits.cpu` | `500m` | CPU limit |
 | `resources.limits.memory` | `128Mi` | Memory limit |
+| `podDisruptionBudget.enabled` | `false` | Create a PodDisruptionBudget (recommended when `replicaCount > 1`) |
+| `podDisruptionBudget.minAvailable` | `1` | Minimum available replicas during voluntary disruptions |
+
+> **CRD upgrades:** Helm does not update CRDs on `helm upgrade`. When upgrading to a new chart version, apply CRDs manually first:
+> ```bash
+> kubectl apply -f charts/cf-edge-operator/crds/
+> helm upgrade cf-edge-operator charts/cf-edge-operator ...
+> ```
 
 ---
 
