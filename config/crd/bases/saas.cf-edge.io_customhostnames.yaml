@@ -271,6 +271,13 @@ spec:
                       type: object
                     type: array
                 type: object
+              sslProvisioningStartedAt:
+                description: |-
+                  SSLProvisioningStartedAt records when the hostname was created (or recreated) in Cloudflare.
+                  Used to measure SSL provisioning duration (time until ssl.status == active).
+                  Reset on each recreation so it always reflects the most recent provisioning cycle.
+                format: date-time
+                type: string
             type: object
         required:
         - spec
