@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	saasv1alpha1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1alpha1"
 )
@@ -133,6 +134,96 @@ func TestDetectConflict(t *testing.T) {
 			t.Error("expected no conflict for different hostname")
 		}
 	})
+}
+
+func TestFastWritePredicateTerminating(t *testing.T) {
+	pred := fastWritePredicate()
+	now := metav1.Now()
+
+	tests := []struct {
+		name string
+		ch   saasv1alpha1.CustomHostname
+		want bool
+	}{
+		{
+			name: "new CR, no ID → let through",
+			ch:   saasv1alpha1.CustomHostname{},
+			want: true,
+		},
+		{
+			name: "existing CR, has ID → block (Zone controller handles drift)",
+			ch:   saasv1alpha1.CustomHostname{Status: saasv1alpha1.CustomHostnameStatus{ID: "cf-id-abc"}},
+			want: false,
+		},
+		{
+			name: "terminating CR with ID → let through (must remove finalizer)",
+			ch: saasv1alpha1.CustomHostname{
+				ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now},
+				Status:     saasv1alpha1.CustomHostnameStatus{ID: "cf-id-abc"},
+			},
+			want: true,
+		},
+		{
+			name: "terminating CR without ID → let through",
+			ch:   saasv1alpha1.CustomHostname{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now}},
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := pred.Create(event.CreateEvent{Object: &tt.ch})
+			if got != tt.want {
+				t.Errorf("fastWritePredicate.Create() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleDeleteDryRun(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = saasv1alpha1.AddToScheme(scheme)
+
+	now := metav1.Now()
+	ch := &saasv1alpha1.CustomHostname{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "test-ch",
+			Namespace:         "default",
+			Finalizers:        []string{finalizerName},
+			DeletionTimestamp: &now,
+		},
+		Spec:   saasv1alpha1.CustomHostnameSpec{Hostname: "test.example.com"},
+		Status: saasv1alpha1.CustomHostnameStatus{ID: "cf-id-123"},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(ch).
+		Build()
+
+	r := &CustomHostnameReconciler{Client: c, Scheme: scheme, DryRun: true}
+
+	ctx := context.Background()
+	result, err := r.handleDelete(ctx, nil, "zone-id", ch)
+	if err != nil {
+		t.Fatalf("handleDelete returned error: %v", err)
+	}
+	if result.Requeue || result.RequeueAfter != 0 {
+		t.Errorf("expected no requeue in dry-run, got %+v", result)
+	}
+
+	// The finalizer must still be present — dry-run must not mutate K8s.
+	// If this fails it means dry-run removed the finalizer, which would
+	// silently orphan the CF hostname when the CR disappears from K8s.
+	var got saasv1alpha1.CustomHostname
+	if err := c.Get(ctx, client.ObjectKeyFromObject(ch), &got); err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	for _, f := range got.Finalizers {
+		if f == finalizerName {
+			return // finalizer present — correct
+		}
+	}
+	t.Error("dry-run: finalizer was removed; CR would disappear from K8s while CF hostname stays (orphan bug)")
 }
 
 func TestShouldDeleteInCF(t *testing.T) {
