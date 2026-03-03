@@ -51,6 +51,8 @@ type ZoneReconciler struct {
 	// CustomHostnameEvents receives CRs that need reconciliation due to drift detected
 	// during the bulk Cloudflare list. The CustomHostname controller watches this channel.
 	CustomHostnameEvents chan<- event.GenericEvent
+	// DryRun mirrors the operator-wide dry-run flag for logging purposes.
+	DryRun bool
 }
 
 // +kubebuilder:rbac:groups=domains.cf-edge.io,resources=zones,verbs=get;list;watch;create;update;patch;delete
@@ -129,6 +131,8 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			log.Info("drift detected, enqueuing CustomHostname", "hostname", ch.Spec.Hostname, "exists", exists)
 			r.CustomHostnameEvents <- event.GenericEvent{Object: ch}
 			drifted++
+		} else if r.DryRun {
+			log.V(1).Info("dry-run: no changes needed", "hostname", ch.Spec.Hostname)
 		}
 	}
 
