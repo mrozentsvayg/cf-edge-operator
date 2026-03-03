@@ -51,6 +51,10 @@ const (
 	// hostnameField is the field indexer key for spec.hostname.
 	// Used to detect duplicate CRs claiming the same Cloudflare custom hostname in O(1).
 	hostnameField = "spec.hostname"
+
+	// Shared strings referenced in >1 place; single-use strings stay as literals.
+	conditionReady         = "Ready"
+	reasonHostnameConflict = "HostnameConflict"
 )
 
 // CustomHostnameReconciler reconciles a CustomHostname object.
@@ -125,10 +129,10 @@ func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Always resolve current state from Cloudflare by hostname
 	// This makes reconciliation idempotent across restarts and crash-recovery scenarios
-	return r.reconcileCloudflareState(ctx, cf, zoneID, &ch)
+	return r.reconcileCloudflareState(ctx, cf, zoneID, zoneName, &ch)
 }
 
-func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context, cf *cloudflare.Client, zoneID string, ch *saasv1alpha1.CustomHostname) (ctrl.Result, error) {
+func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context, cf *cloudflare.Client, zoneID, zoneName string, ch *saasv1alpha1.CustomHostname) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// Single Cloudflare API call: find existing hostname by name
@@ -140,7 +144,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 
 	if existing == nil {
 		// Not in Cloudflare — create it
-		return r.handleCreate(ctx, cf, zoneID, ch)
+		return r.handleCreate(ctx, cf, zoneID, zoneName, ch)
 	}
 
 	// Exists — adopt ID and sync if drifted
@@ -176,10 +180,10 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	if err := r.Status().Update(ctx, ch); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to update status: %w", err)
 	}
-	return r.requeueOrReady(ctx, ch)
+	return r.requeueOrReady(ctx, zoneName, ch)
 }
 
-func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudflare.Client, zoneID string, ch *saasv1alpha1.CustomHostname) (ctrl.Result, error) {
+func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudflare.Client, zoneID, zoneName string, ch *saasv1alpha1.CustomHostname) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	params := custom_hostnames.CustomHostnameNewParams{
@@ -210,15 +214,28 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudfl
 		return ctrl.Result{}, r.setError(ctx, ch, "CreateFailed", err.Error())
 	}
 
-	log.Info("custom hostname created", "hostname", ch.Spec.Hostname, "id", resp.ID)
-	customHostnameOperationsTotal.WithLabelValues("create").Inc()
+	// Distinguish initial create from recreation after external deletion.
+	// createCount > 0 means the hostname existed before and was deleted externally.
+	isRecreation := ch.Status.CreateCount > 0
+	op := "create"
+	if isRecreation {
+		op = "recreate"
+		log.Info("custom hostname recreated", "hostname", ch.Spec.Hostname, "id", resp.ID)
+	} else {
+		log.Info("custom hostname created", "hostname", ch.Spec.Hostname, "id", resp.ID)
+	}
+	customHostnameOperationsTotal.WithLabelValues(op).Inc()
+
+	// Reset SSL provisioning timer on every (re)create so the metric reflects the current cycle.
+	now := metav1.Now()
+	ch.Status.SSLProvisioningStartedAt = &now
 	ch.Status.CreateCount++
 	ch.Status.ID = resp.ID
 	ch.Status.SSL = sslStatusFromNew(resp)
 	if err := r.Status().Update(ctx, ch); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to update status after create: %w", err)
 	}
-	return r.requeueOrReady(ctx, ch)
+	return r.requeueOrReady(ctx, zoneName, ch)
 }
 
 func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudflare.Client, zoneID string, ch *saasv1alpha1.CustomHostname) (ctrl.Result, error) {
@@ -324,10 +341,30 @@ func (r *CustomHostnameReconciler) findByHostname(ctx context.Context, cf *cloud
 	return nil, err
 }
 
-func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, ch *saasv1alpha1.CustomHostname) (ctrl.Result, error) {
+func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneName string, ch *saasv1alpha1.CustomHostname) (ctrl.Result, error) {
 	ch.Status.ConsecutiveErrors = 0
 	if ch.Status.SSL != nil && ch.Status.SSL.Status == "active" {
-		return ctrl.Result{}, r.setCondition(ctx, ch, metav1.ConditionTrue, "Ready", "Custom hostname is active")
+		// Observe SSL provisioning duration on first transition to active.
+		// Guard against double-counting on operator restart: skip if Ready=True is already set.
+		if ch.Status.SSLProvisioningStartedAt != nil {
+			alreadyReady := false
+			for _, cond := range ch.Status.Conditions {
+				if cond.Type == conditionReady && cond.Status == metav1.ConditionTrue {
+					alreadyReady = true
+					break
+				}
+			}
+			if !alreadyReady {
+				method := "http"
+				if ch.Spec.SSL != nil && ch.Spec.SSL.Method != "" {
+					method = ch.Spec.SSL.Method
+				}
+				sslProvisioningDuration.WithLabelValues(zoneName, ch.Spec.Hostname, method).Observe(
+					time.Since(ch.Status.SSLProvisioningStartedAt.Time).Seconds(),
+				)
+			}
+		}
+		return ctrl.Result{}, r.setCondition(ctx, ch, metav1.ConditionTrue, conditionReady, "Custom hostname is active")
 	}
 	sslStatus := "unknown"
 	if ch.Status.SSL != nil {
@@ -373,7 +410,7 @@ func (r *CustomHostnameReconciler) detectConflict(ctx context.Context, ch *saasv
 // this CR via the "hostname missing from CF" path, and the next successful reconcile replaces
 // the condition with Ready.
 func (r *CustomHostnameReconciler) setConflict(ctx context.Context, ch *saasv1alpha1.CustomHostname, message string) error {
-	return r.setCondition(ctx, ch, metav1.ConditionFalse, "HostnameConflict", message)
+	return r.setCondition(ctx, ch, metav1.ConditionFalse, reasonHostnameConflict, message)
 }
 
 // setError increments ConsecutiveErrors, sets a Ready=False condition, and updates status.
@@ -384,7 +421,7 @@ func (r *CustomHostnameReconciler) setError(ctx context.Context, ch *saasv1alpha
 
 func (r *CustomHostnameReconciler) setCondition(ctx context.Context, ch *saasv1alpha1.CustomHostname, status metav1.ConditionStatus, reason, message string) error {
 	apimeta.SetStatusCondition(&ch.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
+		Type:               conditionReady,
 		Status:             status,
 		Reason:             reason,
 		Message:            message,

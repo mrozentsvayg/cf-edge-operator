@@ -113,6 +113,12 @@ type CustomHostnameStatus struct {
 	// +optional
 	ConsecutiveErrors int32 `json:"consecutiveErrors,omitempty"`
 
+	// SSLProvisioningStartedAt records when the hostname was created (or recreated) in Cloudflare.
+	// Used to measure SSL provisioning duration (time until ssl.status == active).
+	// Reset on each recreation so it always reflects the most recent provisioning cycle.
+	// +optional
+	SSLProvisioningStartedAt *metav1.Time `json:"sslProvisioningStartedAt,omitempty"`
+
 	// +listType=map
 	// +listMapKey=type
 	// +optional

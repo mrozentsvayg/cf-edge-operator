@@ -101,6 +101,7 @@ kubectl get customhostnames -A
 | `status.createCount` | How many times the hostname was (re)created. Values > 1 indicate external deletions. |
 | `status.consecutiveErrors` | Consecutive reconcile failures. Resets to 0 on success. |
 | `status.conditions[Ready].reason` | `HostnameConflict` when another CR already owns this hostname in Cloudflare. Clears automatically when the owning CR is deleted. |
+| `status.sslProvisioningStartedAt` | Timestamp set on each create/recreate in Cloudflare. Source for the `ssl_provisioning_duration_seconds` metric. |
 
 ---
 
@@ -133,7 +134,8 @@ See [docs/architecture.md](docs/architecture.md) for the coordinator/worker desi
 
 Metrics are exposed on `:8080/metrics` (HTTP). Key metrics:
 
-- `cf_edge_operator_customhostname_operations_total{operation}` — successful CF write operations (create, update, delete)
+- `cf_edge_operator_customhostname_operations_total{operation}` — successful CF write operations (create, recreate, update, delete)
+- `cf_edge_operator_ssl_provisioning_duration_seconds{zone,hostname,method}` — time from CF create to `ssl.status == active` (1m–1w buckets)
 - `cf_edge_operator_customhostnames{zone,state}` — CRs by zone and state (ready/pending/unhealthy/conflict); sum = total CRs in zone
 - `cf_edge_operator_zone_customhostnames{zone,type}` — CF custom hostnames by type (managed/orphan); sum = CF quota usage for the zone
 - `cf_edge_operator_api_errors_total` — Cloudflare API error count

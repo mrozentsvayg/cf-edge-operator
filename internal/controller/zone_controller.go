@@ -227,7 +227,7 @@ func (r *ZoneReconciler) fetchAPIToken(ctx context.Context, zone *domainsv1alpha
 
 func (r *ZoneReconciler) setReady(ctx context.Context, zone *domainsv1alpha1.Zone, status metav1.ConditionStatus, reason, message string) error {
 	meta.SetStatusCondition(&zone.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
+		Type:               conditionReady,
 		Status:             status,
 		Reason:             reason,
 		Message:            message,
@@ -248,7 +248,7 @@ func crState(ch *saasv1alpha1.CustomHostname) string {
 		return "conflict"
 	}
 	for _, cond := range ch.Status.Conditions {
-		if cond.Type == "Ready" && cond.Status == metav1.ConditionTrue {
+		if cond.Type == conditionReady && cond.Status == metav1.ConditionTrue {
 			return "ready"
 		}
 	}
@@ -263,7 +263,7 @@ func crState(ch *saasv1alpha1.CustomHostname) string {
 // preventing back-and-forth updates between two CRs claiming the same hostname.
 func isHostnameConflict(ch *saasv1alpha1.CustomHostname) bool {
 	for _, cond := range ch.Status.Conditions {
-		if cond.Type == "Ready" && cond.Reason == "HostnameConflict" {
+		if cond.Type == conditionReady && cond.Reason == reasonHostnameConflict {
 			return true
 		}
 	}
