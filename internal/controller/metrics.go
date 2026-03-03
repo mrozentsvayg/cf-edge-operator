@@ -10,31 +10,28 @@ import (
 )
 
 var (
-	customHostnameCreatesTotal = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "cf_edge_operator_customhostname_creates_total",
-		Help: "Total number of custom hostnames created in Cloudflare.",
-	})
-	customHostnameUpdatesTotal = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "cf_edge_operator_customhostname_updates_total",
-		Help: "Total number of custom hostnames updated (drift corrections) in Cloudflare.",
-	})
-	customHostnameDeletesTotal = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "cf_edge_operator_customhostname_deletes_total",
-		Help: "Total number of custom hostnames deleted from Cloudflare.",
-	})
-	// unhealthyCustomHostnames is the number of CustomHostname CRs with consecutive reconcile errors.
-	// Useful for alerting: "some hostnames are stuck failing".
-	unhealthyCustomHostnames = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "cf_edge_operator_unhealthy_customhostnames",
-		Help: "Number of CustomHostname CRs with consecutive reconcile errors (consecutiveErrors > 0).",
-	})
+	// customHostnameOperationsTotal counts successful CF write operations by type.
+	// Pre-initialized for create, update, delete so all series appear at startup.
+	customHostnameOperationsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "cf_edge_operator_customhostname_operations_total",
+		Help: "Total number of successful Cloudflare write operations by type (create, update, delete).",
+	}, []string{"operation"})
 
-	// zoneOrphans tracks custom hostnames in Cloudflare that have no corresponding CR.
-	// Label: zone name (from zone.status.name).
-	zoneOrphans = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "cf_edge_operator_zone_orphans",
-		Help: "Number of custom hostnames in Cloudflare with no corresponding CR, per zone.",
-	}, []string{"zone"})
+	// customHostnames counts CustomHostname CRs by zone and state.
+	// States are mutually exclusive: conflict > ready > unhealthy > pending.
+	// Sum across states equals total CRs in that zone.
+	customHostnames = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "cf_edge_operator_customhostnames",
+		Help: "Number of CustomHostname CRs by zone and state (ready, pending, unhealthy, conflict).",
+	}, []string{"zone", "state"})
+
+	// zoneCustomHostnames counts Cloudflare custom hostnames by zone and type.
+	// managed: hostname has a corresponding CR; orphan: hostname has no CR.
+	// Sum across types equals total CF quota usage for that zone.
+	zoneCustomHostnames = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "cf_edge_operator_zone_customhostnames",
+		Help: "Number of Cloudflare custom hostnames by zone and type (managed, orphan). Sum = CF quota usage.",
+	}, []string{"zone", "type"})
 
 	// cfAPICallDuration observes Cloudflare API call latency by operation.
 	cfAPICallDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
@@ -58,18 +55,19 @@ var (
 
 func init() {
 	crtlmetrics.Registry.MustRegister(
-		customHostnameCreatesTotal,
-		customHostnameUpdatesTotal,
-		customHostnameDeletesTotal,
-		unhealthyCustomHostnames,
-		zoneOrphans,
+		customHostnameOperationsTotal,
+		customHostnames,
+		zoneCustomHostnames,
 		cfAPICallDuration,
 		cfAPIErrorsTotal,
 		cfAPIErrorsByCode,
 	)
-	// Pre-initialize duration histogram for known operations so they appear in /metrics from startup.
+	// Pre-initialize counters and histograms so they appear in /metrics from startup.
 	for _, op := range []string{"create", "update", "delete", "list"} {
 		cfAPICallDuration.WithLabelValues(op)
+	}
+	for _, op := range []string{"create", "update", "delete"} {
+		customHostnameOperationsTotal.WithLabelValues(op)
 	}
 }
 

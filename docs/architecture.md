@@ -18,31 +18,9 @@ Two controllers with clearly separated responsibilities:
 
 ```mermaid
 flowchart TD
-    ZC["**Zone Controller** *(Coordinator — reads only)*
-
-    Triggers: Zone/CustomHostname CR changes, periodic 5 min
-
-    1. Bulk paginated GET /zones/:id/custom_hostnames
-       → ~10 API calls for 1000 hostnames
-    2. List all CustomHostname CRs for this zone
-    3. Diff desired vs actual
-    4. Enqueue drifted CRs *(never writes to Cloudflare)*"]
-
-    CHC["**CustomHostname Controller** *(Worker — writes only)*
-
-    Triggers: CR spec changes (generation predicate),
-              enqueue from Zone controller
-
-    1. List(hostname) → 1 Cloudflare API call
-    2. Found → adopt ID, PATCH if drifted
-       Not found → POST
-    3. Update status (ID, SSL state, validation records)
-    4. Requeue 30s while SSL pending, else done
-    5. On delete: DELETE from Cloudflare, remove finalizer
-
-    Failures: requeue only this CR (blast radius = one hostname)"]
-
-    ZC -->|"enqueues via event channel"| CHC
+    ZC["**Zone Controller** — Coordinator (reads only)\nTriggers: Zone/CustomHostname CR changes, periodic 5 min\n1. Bulk paginated GET /zones/:id/custom_hostnames (~10 calls / 1000 hostnames)\n2. List all CustomHostname CRs for this zone\n3. Diff desired vs actual\n4. Enqueue drifted CRs — never writes to Cloudflare"]
+    CHC["**CustomHostname Controller** — Worker (writes only)\nTriggers: CR spec changes, or enqueue from Zone controller\n1. findByHostname → 1 Cloudflare API call\n2. Found: adopt ID, PATCH if drifted — Not found: POST\n3. Update status (ID, SSL state, validation records)\n4. Requeue 30 s while SSL pending, else done\n5. On delete: DELETE from Cloudflare, remove finalizer\nFailures: requeue only this CR (blast radius = one hostname)"]
+    ZC -->|"event channel"| CHC
 ```
 
 ## Why This Split
@@ -138,16 +116,15 @@ See [docs/migration.md](migration.md) for the full migration guide.
 | `status.ssl` | SSL state (status, expiresOn, validationRecords) |
 | `status.createCount` | How many times this hostname was (re)created in CF. Values > 1 indicate external deletions. |
 | `status.consecutiveErrors` | Consecutive reconcile failures. Resets to 0 on success. |
+| `status.conditions[Ready].reason` | `HostnameConflict` when another CR already owns this hostname in Cloudflare. Clears automatically when the owning CR is deleted. |
 
 ### Prometheus metrics
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `cf_edge_operator_customhostname_creates_total` | counter | Successful CF POST calls |
-| `cf_edge_operator_customhostname_updates_total` | counter | Drift corrections (PATCH) |
-| `cf_edge_operator_customhostname_deletes_total` | counter | Successful CF DELETE calls |
-| `cf_edge_operator_unhealthy_customhostnames` | gauge | CRs with `consecutiveErrors > 0` |
-| `cf_edge_operator_zone_orphans{zone}` | gauge | CF hostnames with no corresponding CR |
+| `cf_edge_operator_customhostname_operations_total{operation}` | counter | Successful CF write operations; `operation`: create, update, delete |
+| `cf_edge_operator_customhostnames{zone,state}` | gauge | CRs by zone and state (ready/pending/unhealthy/conflict). Sum = total CRs in zone |
+| `cf_edge_operator_zone_customhostnames{zone,type}` | gauge | CF custom hostnames by type (managed/orphan). Sum = CF quota usage for the zone |
 | `cf_edge_operator_api_duration_seconds{operation}` | histogram | CF API call latency |
 | `cf_edge_operator_api_errors_total` | counter | Total CF API errors |
 | `cf_edge_operator_api_errors_by_code_total{operation,status_code}` | counter | CF API errors by operation and HTTP status |

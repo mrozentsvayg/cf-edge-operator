@@ -107,14 +107,9 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, fmt.Errorf("failed to list CustomHostname CRs: %w", err)
 	}
 
-	// Update unhealthy gauge from the full CR list (all zones) on every reconcile.
-	unhealthy := 0
-	for i := range chList.Items {
-		if chList.Items[i].Status.ConsecutiveErrors > 0 {
-			unhealthy++
-		}
-	}
-	unhealthyCustomHostnames.Set(float64(unhealthy))
+	// Count CR states for this zone. States are mutually exclusive: conflict > ready > unhealthy > pending.
+	// See crState() for the classification logic.
+	stateCounts := map[string]int{"ready": 0, "pending": 0, "unhealthy": 0, "conflict": 0}
 
 	// Enqueue CRs that have drifted from Cloudflare state, and build a set of
 	// known CR hostnames for orphan detection in the next pass.
@@ -125,29 +120,51 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		if !r.refersToZone(ch, &zone) {
 			continue
 		}
+		stateCounts[crState(ch)]++
 		crHostnames[ch.Spec.Hostname] = true
 		cfCH, exists := cfHostnames[ch.Spec.Hostname]
-		if !exists || hasDrift(ch, cfCH) {
-			log.Info("drift detected, enqueuing CustomHostname", "hostname", ch.Spec.Hostname, "exists", exists)
+		if !exists {
+			// Hostname missing from CF: always enqueue, even if the CR previously had a
+			// HostnameConflict condition. This is the self-healing path: when the owning CR
+			// is deleted and CF removes the hostname, the previously-conflicted CR can now
+			// provision it, clearing the conflict condition on its next successful reconcile.
+			log.Info("hostname missing from CF, enqueuing", "hostname", ch.Spec.Hostname)
 			r.CustomHostnameEvents <- event.GenericEvent{Object: ch}
 			drifted++
+		} else if hasDrift(ch, cfCH) {
+			if isHostnameConflict(ch) {
+				// Another CR owns this hostname. Skip to avoid thrashing CF state back and forth.
+				log.Info("skipping drift enqueue: hostname conflict", "hostname", ch.Spec.Hostname)
+			} else {
+				log.Info("drift detected, enqueuing CustomHostname", "hostname", ch.Spec.Hostname)
+				r.CustomHostnameEvents <- event.GenericEvent{Object: ch}
+				drifted++
+			}
 		} else if r.DryRun {
 			log.V(1).Info("dry-run: no changes needed", "hostname", ch.Spec.Hostname)
 		}
 	}
 
+	// Publish per-zone CR state counts.
+	for state, count := range stateCounts {
+		customHostnames.WithLabelValues(zone.Status.Name, state).Set(float64(count))
+	}
+
 	// Log orphans: custom hostnames in Cloudflare with no corresponding CR.
 	// Visible at --zap-log-level=1 (debug). Useful for auditing manual
 	// Cloudflare changes or planning migration to CRs.
-	orphanCount := 0
+	managedCount, orphanCount := 0, 0
 	for hostname, cfCH := range cfHostnames {
-		if !crHostnames[hostname] {
+		if crHostnames[hostname] {
+			managedCount++
+		} else {
 			log.V(1).Info("orphan: custom hostname in Cloudflare has no CR",
 				"hostname", hostname, "origin", cfCH.CustomOriginServer)
 			orphanCount++
 		}
 	}
-	zoneOrphans.WithLabelValues(zone.Status.Name).Set(float64(orphanCount))
+	zoneCustomHostnames.WithLabelValues(zone.Status.Name, "managed").Set(float64(managedCount))
+	zoneCustomHostnames.WithLabelValues(zone.Status.Name, "orphan").Set(float64(orphanCount))
 
 	if drifted > 0 {
 		log.Info("drift detection complete", "zoneID", zone.Spec.ID, "drifted", drifted, "total", len(cfHostnames))
@@ -220,6 +237,37 @@ func (r *ZoneReconciler) setReady(ctx context.Context, zone *domainsv1alpha1.Zon
 		return fmt.Errorf("failed to update zone conditions: %w", err)
 	}
 	return nil
+}
+
+// crState classifies a CustomHostname CR into one of four mutually exclusive states
+// used for the customHostnames gauge. Priority: conflict > ready > unhealthy > pending.
+// ready is checked before unhealthy: Ready=True means CF confirmed the hostname active,
+// which is more authoritative than the operator-side error counter.
+func crState(ch *saasv1alpha1.CustomHostname) string {
+	if isHostnameConflict(ch) {
+		return "conflict"
+	}
+	for _, cond := range ch.Status.Conditions {
+		if cond.Type == "Ready" && cond.Status == metav1.ConditionTrue {
+			return "ready"
+		}
+	}
+	if ch.Status.ConsecutiveErrors > 0 {
+		return "unhealthy"
+	}
+	return "pending"
+}
+
+// isHostnameConflict reports whether the CR has been marked as a duplicate hostname conflict.
+// Such CRs are skipped by drift detection when the hostname already exists in CF,
+// preventing back-and-forth updates between two CRs claiming the same hostname.
+func isHostnameConflict(ch *saasv1alpha1.CustomHostname) bool {
+	for _, cond := range ch.Status.Conditions {
+		if cond.Type == "Ready" && cond.Reason == "HostnameConflict" {
+			return true
+		}
+	}
+	return false
 }
 
 // SetupWithManager sets up the controller with the Manager.

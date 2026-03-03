@@ -48,6 +48,9 @@ import (
 const (
 	finalizerName     = "saas.cf-edge.io/customhostname"
 	requeuePendingSSL = 30 * time.Second
+	// hostnameField is the field indexer key for spec.hostname.
+	// Used to detect duplicate CRs claiming the same Cloudflare custom hostname in O(1).
+	hostnameField = "spec.hostname"
 )
 
 // CustomHostnameReconciler reconciles a CustomHostname object.
@@ -111,6 +114,15 @@ func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	// Conflict detection: reject if another CR already owns this hostname in Cloudflare.
+	// O(1) via field index. Returns early without any CF API call; no requeue scheduled
+	// (the Zone controller skips drift-enqueue for conflict CRs, so this stays quiet until
+	// the conflict resolves — at which point the Zone controller re-enqueues via the
+	// "hostname missing from CF" path).
+	if conflicted, err := r.detectConflict(ctx, &ch); err != nil || conflicted {
+		return ctrl.Result{}, err
+	}
+
 	// Always resolve current state from Cloudflare by hostname
 	// This makes reconciliation idempotent across restarts and crash-recovery scenarios
 	return r.reconcileCloudflareState(ctx, cf, zoneID, &ch)
@@ -157,7 +169,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 			log.Error(editErr, "failed to update custom hostname", "id", existing.ID)
 			return ctrl.Result{}, r.setError(ctx, ch, "UpdateFailed", editErr.Error())
 		}
-		customHostnameUpdatesTotal.Inc()
+		customHostnameOperationsTotal.WithLabelValues("update").Inc()
 	}
 
 	ch.Status.SSL = sslStatusFromList(existing)
@@ -199,7 +211,7 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudfl
 	}
 
 	log.Info("custom hostname created", "hostname", ch.Spec.Hostname, "id", resp.ID)
-	customHostnameCreatesTotal.Inc()
+	customHostnameOperationsTotal.WithLabelValues("create").Inc()
 	ch.Status.CreateCount++
 	ch.Status.ID = resp.ID
 	ch.Status.SSL = sslStatusFromNew(resp)
@@ -257,7 +269,7 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 			}
 		} else {
 			log.Info("custom hostname deleted from Cloudflare", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
-			customHostnameDeletesTotal.Inc()
+			customHostnameOperationsTotal.WithLabelValues("delete").Inc()
 		}
 	}
 
@@ -310,6 +322,43 @@ func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, ch *saasv
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: requeuePendingSSL}, nil
+}
+
+// detectConflict checks whether another CR already owns this hostname in Cloudflare (i.e. has a
+// CF ID assigned). If so, it marks this CR with a HostnameConflict condition and returns true.
+// The caller should return immediately on (true, nil) — no requeue is scheduled.
+// Self-healing: when the owning CR is deleted, the Zone controller re-enqueues this CR via the
+// "hostname missing from CF" path, at which point detectConflict finds no peer with an ID and
+// returns false, allowing normal provisioning to proceed.
+func (r *CustomHostnameReconciler) detectConflict(ctx context.Context, ch *saasv1alpha1.CustomHostname) (bool, error) {
+	log := logf.FromContext(ctx)
+	var peers saasv1alpha1.CustomHostnameList
+	if err := r.List(ctx, &peers, client.MatchingFields{hostnameField: ch.Spec.Hostname}); err != nil {
+		return false, err
+	}
+	for i := range peers.Items {
+		peer := &peers.Items[i]
+		if peer.UID == ch.UID {
+			continue
+		}
+		if peer.Status.ID != "" {
+			log.Info("hostname conflict: already managed by another CR",
+				"hostname", ch.Spec.Hostname, "owner", peer.Namespace+"/"+peer.Name)
+			err := r.setConflict(ctx, ch,
+				fmt.Sprintf("hostname %q already managed by %s/%s", ch.Spec.Hostname, peer.Namespace, peer.Name))
+			return true, err
+		}
+	}
+	return false, nil
+}
+
+// setConflict sets a HostnameConflict condition on the CR without incrementing ConsecutiveErrors
+// and without scheduling a requeue. The condition clears itself when the conflict resolves:
+// once the owning CR is deleted and CF removes the hostname, the Zone controller re-enqueues
+// this CR via the "hostname missing from CF" path, and the next successful reconcile replaces
+// the condition with Ready.
+func (r *CustomHostnameReconciler) setConflict(ctx context.Context, ch *saasv1alpha1.CustomHostname, message string) error {
+	return r.setCondition(ctx, ch, metav1.ConditionFalse, "HostnameConflict", message)
 }
 
 // setError increments ConsecutiveErrors, sets a Ready=False condition, and updates status.
@@ -456,6 +505,16 @@ func fastWritePredicate() predicate.Predicate {
 // SetupWithManager sets up the controller with the Manager.
 // driftEvents is the channel through which the Zone coordinator sends CRs needing reconciliation.
 func (r *CustomHostnameReconciler) SetupWithManager(mgr ctrl.Manager, driftEvents <-chan event.GenericEvent) error {
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&saasv1alpha1.CustomHostname{},
+		hostnameField,
+		func(o client.Object) []string {
+			return []string{o.(*saasv1alpha1.CustomHostname).Spec.Hostname}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to index CustomHostname by %s: %w", hostnameField, err)
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&saasv1alpha1.CustomHostname{}, builder.WithPredicates(fastWritePredicate())).
 		WatchesRawSource(source.Channel(driftEvents, &handler.EnqueueRequestForObject{})).
