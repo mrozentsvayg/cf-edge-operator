@@ -17,6 +17,9 @@ operatorNamespace: ""
 # "own-only": only delete if the current Cloudflare ID matches status.id.
 deletePolicy: "always"
 
+# Dry-run mode: log what would happen without writing to Cloudflare.
+dryRun: false
+
 resources:
   limits:
     cpu: 500m

@@ -67,6 +67,8 @@ type CustomHostnameReconciler struct {
 	OperatorNamespace string
 	// DeletePolicy controls delete behavior: "always" (default) or "own-only".
 	DeletePolicy string
+	// DryRun skips all Cloudflare write operations and logs what would happen instead.
+	DryRun bool
 }
 
 // +kubebuilder:rbac:groups=saas.cf-edge.io,resources=customhostnames,verbs=get;list;watch;create;update;patch;delete
@@ -143,6 +145,11 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 		if ch.Spec.OriginSNI != nil && *ch.Spec.OriginSNI != ch.Spec.OriginServer {
 			opts = append(opts, option.WithJSONSet("custom_origin_sni", *ch.Spec.OriginSNI))
 		}
+		if r.DryRun {
+			log.Info("dry-run: would update custom hostname", "hostname", ch.Spec.Hostname,
+				"currentOrigin", existing.CustomOriginServer, "desiredOrigin", ch.Spec.OriginServer)
+			return ctrl.Result{}, nil
+		}
 		editStart := time.Now()
 		_, editErr := cf.CustomHostnames.Edit(ctx, existing.ID, editParams, opts...)
 		recordCFCall("update", editStart, &editErr)
@@ -178,6 +185,11 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudfl
 		opts = append(opts, option.WithJSONSet("custom_origin_sni", *ch.Spec.OriginSNI))
 	}
 
+	if r.DryRun {
+		log.Info("dry-run: would create custom hostname", "hostname", ch.Spec.Hostname, "origin", ch.Spec.OriginServer)
+		return ctrl.Result{}, nil
+	}
+
 	createStart := time.Now()
 	resp, err := cf.CustomHostnames.New(ctx, params, opts...)
 	recordCFCall("create", createStart, &err)
@@ -199,6 +211,12 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudfl
 
 func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudflare.Client, zoneID string, ch *saasv1alpha1.CustomHostname) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
+
+	if r.DryRun {
+		log.Info("dry-run: would delete custom hostname from Cloudflare", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
+		controllerutil.RemoveFinalizer(ch, finalizerName)
+		return ctrl.Result{}, r.Update(ctx, ch)
+	}
 
 	if controllerutil.ContainsFinalizer(ch, finalizerName) && ch.Status.ID != "" {
 		// For own-only policy: look up current CF state before deleting.
