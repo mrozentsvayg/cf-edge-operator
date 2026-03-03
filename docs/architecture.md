@@ -18,8 +18,8 @@ Two controllers with clearly separated responsibilities:
 
 ```mermaid
 flowchart TD
-    ZC["**Zone Controller** — Coordinator (reads only)<br/>Triggers: Zone/CustomHostname CR changes, periodic 5 min<br/>1. Bulk paginated GET /zones/:id/custom_hostnames (~10 calls / 1000 hostnames)<br/>2. List all CustomHostname CRs for this zone<br/>3. Diff desired vs actual<br/>4. Enqueue drifted CRs — never writes to Cloudflare"]
-    CHC["**CustomHostname Controller** — Worker (writes only)<br/>Triggers: CR spec changes, or enqueue from Zone controller<br/>1. findByHostname → 1 Cloudflare API call<br/>2. Found: adopt ID, PATCH if drifted — Not found: POST<br/>3. Update status (ID, SSL state, validation records)<br/>4. Requeue 30 s while SSL pending, else done<br/>5. On delete: DELETE from Cloudflare, remove finalizer<br/>Failures: requeue only this CR (blast radius = one hostname)"]
+    ZC["**Zone Controller** — Coordinator, reads only — triggers: Zone/CH CR changes + every 5 min<br/>1. Bulk paginated GET /zones/:id/custom_hostnames  (~10 API calls per 1000 hostnames)<br/>2. List all CustomHostname CRs · diff desired vs actual<br/>3. Enqueue drifted CRs via event channel — never writes to Cloudflare"]
+    CHC["**CustomHostname Controller** — Worker, writes only — triggers: spec change or Zone enqueue<br/>1. findByHostname → 1 Cloudflare API call · Found: adopt ID, PATCH if drifted · Not found: POST<br/>2. Update status (ID, SSL state, validation records) · requeue 30 s while SSL pending<br/>3. On delete: DELETE from Cloudflare, remove finalizer · failures requeue this CR only"]
     ZC -->|"event channel"| CHC
 ```
 
