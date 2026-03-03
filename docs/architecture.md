@@ -14,7 +14,7 @@ Represents a Cloudflare custom hostname with origin server and optional SNI over
 
 ## Controller Architecture: Coordinator / Worker Split
 
-Two controllers with clearly separated responsibilities:
+Two controllers with clearly separated responsibilities. The coordinator/worker pattern is designed to extend to additional Cloudflare resource types (WAF rules, routing, etc.) — each would follow the same split with its own worker controller and API group.
 
 ```mermaid
 sequenceDiagram
@@ -22,7 +22,7 @@ sequenceDiagram
     participant CF as Cloudflare API
     participant CHC as CustomHostname Controller (Worker)
 
-    Note over ZC: every 5 min · Zone/CH CR changes
+    Note over ZC: every 5 min · Zone/CustomHostname CR changes
     ZC->>CF: bulk GET custom_hostnames (~10 calls / 1000 hostnames)
     CF-->>ZC: hostname list with current state
     ZC->>ZC: diff desired (CRs) vs actual (CF)
@@ -101,6 +101,8 @@ CustomHostname CR (app namespace)
 
 App namespaces never hold Cloudflare credentials.
 
+**Why Zone is namespace-scoped, not cluster-scoped:** Secrets are namespace-scoped in Kubernetes; keeping the Zone CR in the same namespace as its Secret keeps RBAC simple (a Role suffices, no ClusterRole needed). App teams still get cluster-wide reach in practice — `zoneRef.namespace` defaults to `--operator-namespace`, so they can omit the namespace entirely and the operator resolves it. Cluster-scoped Zones would grant no UX benefit while complicating credential access patterns.
+
 ## Delete Policy
 
 The `--delete-policy` flag controls behavior when a CustomHostname CR is deleted:
@@ -149,3 +151,4 @@ Controller-runtime also exposes `controller_runtime_reconcile_total` and `contro
 - **SSL provisioning duration metric** — time from CR creation to `ssl.status == active`. Requires `status.sslProvisioningStartedAt` field set on first create.
 - **`--delete-policy` per-CR override** — allow spec-level override of the operator-wide delete policy.
 - **CI integration tests** — end-to-end tests against a dedicated CF zone with real API credentials.
+- **Additional CF resource types** — WAF rules, routing, and other Cloudflare primitives via dedicated API groups (e.g. `security.cf-edge.io`, `routing.cf-edge.io`), each with its own worker controller following the coordinator/worker pattern.
