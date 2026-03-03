@@ -89,6 +89,7 @@ kubectl get customhostnames -A
 | `spec.ssl.method` | no | DCV method: `http`, `txt`, or `email`. Default: `http` |
 | `spec.ssl.certificateAuthority` | no | CA: `lets_encrypt`, `google`, `ssl_com`. Enterprise only. |
 | `spec.ssl.minTLSVersion` | no | `1.0`, `1.1`, `1.2`, or `1.3` |
+| `spec.deletePolicy` | no | Per-CR delete policy: `always` or `own-only`. Overrides `--delete-policy`. Useful during migration to protect against deleting hostnames managed by other tools. |
 
 ### Status fields
 

@@ -105,7 +105,7 @@ App namespaces never hold Cloudflare credentials.
 
 ## Delete Policy
 
-The `--delete-policy` flag controls behavior when a CustomHostname CR is deleted:
+The `--delete-policy` flag sets the operator-wide default behavior when a CustomHostname CR is deleted. Individual CRs can override it via `spec.deletePolicy`:
 
 - **`always`** (default): delete from Cloudflare by `status.id` regardless of current state. Treats 404 as success.
 - **`own-only`**: look up the current Cloudflare state via `findByHostname` before deleting. Only deletes if the current CF ID matches `status.id`. If IDs differ or the hostname is not found, releases the finalizer without touching Cloudflare.
@@ -149,6 +149,5 @@ Controller-runtime also exposes `controller_runtime_reconcile_total` and `contro
 ## Future Work
 
 - **SSL provisioning duration metric** — time from CR creation to `ssl.status == active`. Requires `status.sslProvisioningStartedAt` field set on first create.
-- **`--delete-policy` per-CR override** — allow spec-level override of the operator-wide delete policy.
 - **CI integration tests** — end-to-end tests against a dedicated CF zone with real API credentials.
 - **Additional CF resource types** — WAF rules, routing, and other Cloudflare primitives via dedicated API groups (e.g. `security.cf-edge.io`, `routing.cf-edge.io`), each with its own worker controller following the coordinator/worker pattern.

@@ -224,6 +224,27 @@ func TestHandleDeleteDryRun(t *testing.T) {
 	}
 }
 
+func TestEffectiveDeletePolicy(t *testing.T) {
+	tests := []struct {
+		name            string
+		crPolicy        string
+		operatorDefault string
+		want            string
+	}{
+		{"cr not set, uses operator default", "", "always", "always"},
+		{"cr not set, own-only default", "", "own-only", "own-only"},
+		{"cr overrides to own-only", "own-only", "always", "own-only"},
+		{"cr overrides to always", "always", "own-only", "always"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := effectiveDeletePolicy(tt.crPolicy, tt.operatorDefault); got != tt.want {
+				t.Errorf("effectiveDeletePolicy() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestShouldDeleteInCF(t *testing.T) {
 	matched := &custom_hostnames.CustomHostnameListResponse{ID: "abc123"}
 	different := &custom_hostnames.CustomHostnameListResponse{ID: "xyz999"}
