@@ -225,9 +225,13 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 	log := logf.FromContext(ctx)
 
 	if r.DryRun {
+		// Do NOT remove the finalizer — the CR stays in Terminating state while dry-run
+		// is active. When the operator restarts without --dry-run, deletion proceeds normally.
+		// Returning nil (no requeue) is intentional: the dry-run message fires once per
+		// deletion attempt and then stays quiet. The 30 s SSL-pending requeue cycle is
+		// also dropped here, so no further reconciles are scheduled for this CR.
 		log.Info("dry-run: would delete custom hostname from Cloudflare", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
-		controllerutil.RemoveFinalizer(ch, finalizerName)
-		return ctrl.Result{}, r.Update(ctx, ch)
+		return ctrl.Result{}, nil
 	}
 
 	if controllerutil.ContainsFinalizer(ch, finalizerName) && ch.Status.ID != "" {
@@ -481,6 +485,9 @@ func sslStatusFromList(resp *custom_hostnames.CustomHostnameListResponse) *saasv
 //     Zone coordinator's periodic bulk-list handle drift detection.
 //   - status.ID == "" → genuinely new CR (or crash-recovery case); let it through
 //     for immediate provisioning.
+//   - DeletionTimestamp set → terminating CR; always let it through regardless of
+//     status.ID so the finalizer is removed and the CR can be fully deleted.
+//     Without this, a restart with a terminating CR would leave it stuck forever.
 //
 // NOTE: this predicate is coupled to status.ID as the "seen before" signal.
 // If the state model changes (e.g. ID moved to a different field), update this predicate.
@@ -489,6 +496,12 @@ func fastWritePredicate() predicate.Predicate {
 		CreateFunc: func(e event.CreateEvent) bool {
 			ch, ok := e.Object.(*saasv1alpha1.CustomHostname)
 			if !ok {
+				return true
+			}
+			// Always process CRs with a DeletionTimestamp — they need finalizer removal.
+			// Without this, a terminating CR with status.ID set would be silently skipped
+			// on operator restart, leaving the finalizer in place forever.
+			if !ch.DeletionTimestamp.IsZero() {
 				return true
 			}
 			return ch.Status.ID == ""
