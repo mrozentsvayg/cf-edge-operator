@@ -33,6 +33,9 @@ spec:
         - --metrics-secure=false
         - --operator-namespace={{ include "cf-edge-operator.operatorNamespace" . }}
         - --delete-policy={{ .Values.deletePolicy }}
+        {{- if .Values.dryRun }}
+        - --dry-run
+        {{- end }}
         {{- if .Values.leaderElect }}
         - --leader-elect
         {{- end }}
