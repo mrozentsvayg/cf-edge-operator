@@ -46,6 +46,14 @@ type CustomHostnameSpec struct {
 	// SSL configures the SSL/TLS certificate settings for this custom hostname.
 	// +optional
 	SSL *CustomHostnameSSL `json:"ssl,omitempty"`
+
+	// DeletePolicy overrides the operator-wide --delete-policy for this CR.
+	// "always" deletes from Cloudflare unconditionally; "own-only" skips deletion if the
+	// current CF hostname ID differs from status.id (safe during migrations from other tools).
+	// If not set, the operator-wide default applies.
+	// +kubebuilder:validation:Enum=always;own-only
+	// +optional
+	DeletePolicy string `json:"deletePolicy,omitempty"`
 }
 
 // ZoneRef references a Zone resource

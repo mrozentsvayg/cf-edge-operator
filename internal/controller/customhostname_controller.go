@@ -237,7 +237,8 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 	if controllerutil.ContainsFinalizer(ch, finalizerName) && ch.Status.ID != "" {
 		// For own-only policy: look up current CF state before deleting.
 		// If another entity now owns this hostname (different ID), release the finalizer without deleting.
-		if r.DeletePolicy == DeletePolicyOwnOnly {
+		// spec.deletePolicy takes precedence over the operator-wide --delete-policy flag.
+		if effectiveDeletePolicy(ch.Spec.DeletePolicy, r.DeletePolicy) == DeletePolicyOwnOnly {
 			current, err := r.findByHostname(ctx, cf, zoneID, ch.Spec.Hostname)
 			if err != nil {
 				log.Error(err, "failed to look up hostname before delete", "hostname", ch.Spec.Hostname)
@@ -279,6 +280,16 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 
 	controllerutil.RemoveFinalizer(ch, finalizerName)
 	return ctrl.Result{}, r.Update(ctx, ch)
+}
+
+// effectiveDeletePolicy returns the delete policy to apply for this CR.
+// spec.deletePolicy takes precedence over the operator-wide --delete-policy flag,
+// allowing per-CR override without restarting the operator.
+func effectiveDeletePolicy(crPolicy, operatorDefault string) string {
+	if crPolicy != "" {
+		return crPolicy
+	}
+	return operatorDefault
 }
 
 // shouldDeleteInCF returns true if the hostname should be deleted from Cloudflare.

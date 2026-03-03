@@ -58,6 +58,16 @@ spec:
           spec:
             description: CustomHostnameSpec defines the desired state of CustomHostname
             properties:
+              deletePolicy:
+                description: |-
+                  DeletePolicy overrides the operator-wide --delete-policy for this CR.
+                  "always" deletes from Cloudflare unconditionally; "own-only" skips deletion if the
+                  current CF hostname ID differs from status.id (safe during migrations from other tools).
+                  If not set, the operator-wide default applies.
+                enum:
+                - always
+                - own-only
+                type: string
               hostname:
                 description: Hostname is the custom hostname to register with Cloudflare
                   (e.g. customer.example.com)
