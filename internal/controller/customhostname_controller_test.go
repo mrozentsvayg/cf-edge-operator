@@ -17,15 +17,123 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/cloudflare/cloudflare-go/v6/custom_hostnames"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	saasv1alpha1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1alpha1"
 )
+
+func TestDetectConflict(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = saasv1alpha1.AddToScheme(scheme)
+
+	indexer := func(o client.Object) []string {
+		return []string{o.(*saasv1alpha1.CustomHostname).Spec.Hostname}
+	}
+	makeReconciler := func(objs ...client.Object) *CustomHostnameReconciler {
+		c := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithIndex(&saasv1alpha1.CustomHostname{}, hostnameField, indexer).
+			WithStatusSubresource(&saasv1alpha1.CustomHostname{}).
+			WithObjects(objs...).
+			Build()
+		return &CustomHostnameReconciler{Client: c, Scheme: scheme}
+	}
+
+	owner := &saasv1alpha1.CustomHostname{
+		ObjectMeta: metav1.ObjectMeta{Name: "owner", Namespace: "default", UID: types.UID("uid-owner")},
+		Spec:       saasv1alpha1.CustomHostnameSpec{Hostname: "api.acme.com"},
+		Status:     saasv1alpha1.CustomHostnameStatus{ID: "cf-id-abc"},
+	}
+	ctx := context.Background()
+
+	t.Run("no conflict: sole CR for hostname", func(t *testing.T) {
+		r := makeReconciler(owner)
+		conflicted, err := r.detectConflict(ctx, owner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if conflicted {
+			t.Error("expected no conflict for sole CR")
+		}
+	})
+
+	t.Run("conflict detected: peer has CF ID", func(t *testing.T) {
+		duplicate := &saasv1alpha1.CustomHostname{
+			ObjectMeta: metav1.ObjectMeta{Name: "duplicate", Namespace: "default", UID: types.UID("uid-dup")},
+			Spec:       saasv1alpha1.CustomHostnameSpec{Hostname: "api.acme.com"},
+		}
+		r := makeReconciler(owner, duplicate)
+
+		conflicted, err := r.detectConflict(ctx, duplicate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !conflicted {
+			t.Error("expected conflict to be detected")
+		}
+		// HostnameConflict condition must be set on the duplicate
+		var got saasv1alpha1.CustomHostname
+		if err := r.Get(ctx, client.ObjectKeyFromObject(duplicate), &got); err != nil {
+			t.Fatal(err)
+		}
+		if !isHostnameConflict(&got) {
+			t.Errorf("expected HostnameConflict condition, got: %v", got.Status.Conditions)
+		}
+		// Duplicate must not have adopted the CF ID
+		if got.Status.ID != "" {
+			t.Errorf("expected empty status.id on duplicate, got %q", got.Status.ID)
+		}
+	})
+
+	t.Run("no conflict: peer has no CF ID yet", func(t *testing.T) {
+		// Both CRs are brand-new — neither has a CF ID. Let both through;
+		// CF will reject one, and the conflict is detected on the next reconcile.
+		a := &saasv1alpha1.CustomHostname{
+			ObjectMeta: metav1.ObjectMeta{Name: "cr-a", Namespace: "default", UID: types.UID("uid-a")},
+			Spec:       saasv1alpha1.CustomHostnameSpec{Hostname: "api.acme.com"},
+		}
+		b := &saasv1alpha1.CustomHostname{
+			ObjectMeta: metav1.ObjectMeta{Name: "cr-b", Namespace: "default", UID: types.UID("uid-b")},
+			Spec:       saasv1alpha1.CustomHostnameSpec{Hostname: "api.acme.com"},
+		}
+		r := makeReconciler(a, b)
+
+		conflicted, err := r.detectConflict(ctx, b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if conflicted {
+			t.Error("expected no conflict when no peer has a CF ID")
+		}
+	})
+
+	t.Run("no conflict: different hostname", func(t *testing.T) {
+		other := &saasv1alpha1.CustomHostname{
+			ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "default", UID: types.UID("uid-other")},
+			Spec:       saasv1alpha1.CustomHostnameSpec{Hostname: "other.acme.com"},
+			Status:     saasv1alpha1.CustomHostnameStatus{ID: "cf-id-xyz"},
+		}
+		r := makeReconciler(owner, other)
+
+		conflicted, err := r.detectConflict(ctx, owner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if conflicted {
+			t.Error("expected no conflict for different hostname")
+		}
+	})
+}
 
 func TestShouldDeleteInCF(t *testing.T) {
 	matched := &custom_hostnames.CustomHostnameListResponse{ID: "abc123"}
