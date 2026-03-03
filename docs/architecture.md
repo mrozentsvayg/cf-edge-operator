@@ -17,10 +17,23 @@ Represents a Cloudflare custom hostname with origin server and optional SNI over
 Two controllers with clearly separated responsibilities:
 
 ```mermaid
-flowchart TD
-    ZC["**Zone Controller** — Coordinator, reads only — triggers: Zone/CH CR changes + every 5 min<br/>1. Bulk paginated GET /zones/:id/custom_hostnames  (~10 API calls per 1000 hostnames)<br/>2. List all CustomHostname CRs · diff desired vs actual<br/>3. Enqueue drifted CRs via event channel — never writes to Cloudflare"]
-    CHC["**CustomHostname Controller** — Worker, writes only — triggers: spec change or Zone enqueue<br/>1. findByHostname → 1 Cloudflare API call · Found: adopt ID, PATCH if drifted · Not found: POST<br/>2. Update status (ID, SSL state, validation records) · requeue 30 s while SSL pending<br/>3. On delete: DELETE from Cloudflare, remove finalizer · failures requeue this CR only"]
-    ZC -->|"event channel"| CHC
+sequenceDiagram
+    participant ZC as Zone Controller (Coordinator)
+    participant CF as Cloudflare API
+    participant CHC as CustomHostname Controller (Worker)
+
+    Note over ZC: every 5 min · Zone/CH CR changes
+    ZC->>CF: bulk GET custom_hostnames (~10 calls / 1000 hostnames)
+    CF-->>ZC: hostname list with current state
+    ZC->>ZC: diff desired (CRs) vs actual (CF)
+    ZC->>CHC: enqueue drifted CRs via event channel
+
+    Note over CHC: per enqueue · spec change
+    CHC->>CF: findByHostname (1 API call)
+    CF-->>CHC: current state or not found
+    CHC->>CF: POST / PATCH / DELETE
+    CF-->>CHC: result
+    CHC->>CHC: update status · requeue if SSL pending
 ```
 
 ## Why This Split
