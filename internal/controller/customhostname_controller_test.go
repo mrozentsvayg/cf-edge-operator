@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -207,7 +208,7 @@ func TestHandleDeleteDryRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleDelete returned error: %v", err)
 	}
-	if result.Requeue || result.RequeueAfter != 0 {
+	if result.RequeueAfter != 0 {
 		t.Errorf("expected no requeue in dry-run, got %+v", result)
 	}
 
@@ -218,12 +219,9 @@ func TestHandleDeleteDryRun(t *testing.T) {
 	if err := c.Get(ctx, client.ObjectKeyFromObject(ch), &got); err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
-	for _, f := range got.Finalizers {
-		if f == finalizerName {
-			return // finalizer present — correct
-		}
+	if !slices.Contains(got.Finalizers, finalizerName) {
+		t.Error("dry-run: finalizer was removed; CR would disappear from K8s while CF hostname stays (orphan bug)")
 	}
-	t.Error("dry-run: finalizer was removed; CR would disappear from K8s while CF hostname stays (orphan bug)")
 }
 
 func TestShouldDeleteInCF(t *testing.T) {
