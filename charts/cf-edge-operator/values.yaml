@@ -38,3 +38,28 @@ serviceAccount:
 podDisruptionBudget:
   enabled: false
   minAvailable: 1
+
+# ServiceMonitor for Prometheus Operator. Requires prometheus-operator to be installed.
+# The ServiceMonitor targets the metrics Service created by this chart (port 8080).
+# Sets job="cf-edge-operator" on scraped series via the app.kubernetes.io/name label.
+serviceMonitor:
+  enabled: false
+  # Namespace for the ServiceMonitor. Defaults to the release namespace.
+  namespace: ""
+  # Scrape interval.
+  interval: "30s"
+  # Additional labels to add to the ServiceMonitor (e.g., to match a Prometheus selector).
+  additionalLabels: {}
+
+# PrometheusRule with alert definitions. Requires prometheus-operator to be installed.
+# Alert expressions use job="cf-edge-operator", matching the ServiceMonitor above.
+prometheusRule:
+  enabled: false
+  # Namespace for the PrometheusRule. Defaults to the release namespace.
+  namespace: ""
+  # Additional labels (e.g., to match a Prometheus ruleSelector).
+  additionalLabels: {}
+  # Base URL for runbook links appended to alert annotations.
+  # Example: "https://wiki.example.com/runbooks/cf-edge-operator"
+  # Leave empty to omit runbook_url annotations.
+  runbookUrl: ""

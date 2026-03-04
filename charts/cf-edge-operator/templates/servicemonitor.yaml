@@ -1,0 +1,24 @@
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "cf-edge-operator.name" . }}
+  namespace: {{ .Values.serviceMonitor.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "cf-edge-operator.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  # Sets job="cf-edge-operator" on all scraped series (via the app.kubernetes.io/name label).
+  # The PrometheusRule alert expressions rely on this value.
+  jobLabel: "app.kubernetes.io/name"
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cf-edge-operator
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  endpoints:
+  - port: metrics
+    interval: {{ .Values.serviceMonitor.interval | default "30s" }}
+    path: /metrics
+{{- end }}

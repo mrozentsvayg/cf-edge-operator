@@ -147,6 +147,20 @@ See [docs/migration.md](migration.md) for the full migration guide.
 
 Controller-runtime also exposes `controller_runtime_reconcile_total` and `controller_runtime_reconcile_time_seconds` per controller.
 
+### Alerting
+
+The Helm chart ships a `PrometheusRule` (disabled by default) with four alerts:
+
+| Alert | Fires when |
+|-------|------------|
+| `CfEdgeOperatorDown` | Metrics endpoint unreachable for 2 min |
+| `CfEdgeOperatorUnhealthyHostnames` | Any CR in `unhealthy` state for 5 min |
+| `CfEdgeOperatorConflictHostnames` | Any CR in `conflict` state for 5 min |
+| `CfEdgeOperatorHighAPIErrorRate` | Cloudflare 5xx error rate > 0.1/s for 5 min |
+| `CfEdgeOperatorSSLProvisioningStalled` | Any CR in `pending` state for 24 h |
+
+Enable with `prometheusRule.enabled=true`. See [docs/runbook.md](runbook.md) for investigation and resolution steps per alert.
+
 ## Future Work
 
 - **CI integration tests** — end-to-end tests against a dedicated CF zone with real API credentials.
