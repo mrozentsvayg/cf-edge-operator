@@ -22,7 +22,7 @@ spec:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
-      terminationGracePeriodSeconds: 10
+      terminationGracePeriodSeconds: 30
       containers:
       - name: manager
         image: {{ include "cf-edge-operator.image" . }}
@@ -33,6 +33,9 @@ spec:
         - --metrics-secure=false
         - --operator-namespace={{ include "cf-edge-operator.operatorNamespace" . }}
         - --delete-policy={{ .Values.deletePolicy }}
+        - --drift-interval={{ .Values.driftInterval }}
+        - --drift-buffer={{ .Values.driftBuffer }}
+        - --ssl-poll-interval={{ .Values.sslPollInterval }}
         {{- if .Values.dryRun }}
         - --dry-run
         {{- end }}

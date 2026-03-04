@@ -4,6 +4,8 @@
 
 cf-edge-operator manages Cloudflare for SaaS (custom hostnames, Origin SNI overrides) via Kubernetes CRDs. It deliberately excludes DNS record management, which belongs to external-dns or similar tools.
 
+See also: [docs/operations.md](operations.md) for configuration flags, performance tuning, and HA setup. [docs/runbook.md](runbook.md) for alert investigation.
+
 ## CRDs
 
 ### Zone (`domains.cf-edge.io/v1beta1`)
@@ -22,7 +24,7 @@ sequenceDiagram
     participant CF as Cloudflare API
     participant CHC as CustomHostname Controller (Worker)
 
-    Note over ZC: every 5 min · Zone/CustomHostname CR changes
+    Note over ZC: every --drift-interval (default 1m) · Zone/CustomHostname CR changes
     ZC->>CF: bulk GET custom_hostnames (~10 calls / 1000 hostnames)
     CF-->>ZC: hostname list with current state
     ZC->>ZC: diff desired (CRs) vs actual (CF)

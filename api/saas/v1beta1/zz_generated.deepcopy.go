@@ -164,6 +164,10 @@ func (in *CustomHostnameStatus) DeepCopyInto(out *CustomHostnameStatus) {
 		*out = new(CustomHostnameSSLStatus)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.SSLProvisioningStartedAt != nil {
+		in, out := &in.SSLProvisioningStartedAt, &out.SSLProvisioningStartedAt
+		*out = (*in).DeepCopy()
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))
