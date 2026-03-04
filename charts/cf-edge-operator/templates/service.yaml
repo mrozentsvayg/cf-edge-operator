@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cf-edge-operator.name" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cf-edge-operator.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: cf-edge-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+  - name: metrics
+    port: 8080
+    targetPort: 8080

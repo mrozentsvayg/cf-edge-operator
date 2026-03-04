@@ -1,0 +1,115 @@
+{{- if .Values.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "cf-edge-operator.name" . }}
+  namespace: {{ .Values.prometheusRule.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "cf-edge-operator.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+  - name: cf-edge-operator
+    rules:
+
+    # Fires when the operator metrics endpoint is unreachable. Custom hostname
+    # management is fully suspended while the operator is down.
+    - alert: CfEdgeOperatorDown
+      expr: >-
+        absent(up{job="cf-edge-operator"})
+        or up{job="cf-edge-operator"} == 0
+      for: 2m
+      labels:
+        severity: critical
+      annotations:
+        summary: cf-edge-operator is not running
+        description: >-
+          The operator metrics endpoint has been unreachable for 2 minutes.
+          Custom hostname management (create, update, delete, drift detection) is suspended.
+          {{- if .Values.prometheusRule.runbookUrl }}
+        runbook_url: {{ .Values.prometheusRule.runbookUrl }}/CfEdgeOperatorDown
+        {{- end }}
+
+    # Fires when one or more CustomHostname CRs have consecutive reconcile failures.
+    # The CR's status.consecutiveErrors field shows the failure count.
+    - alert: CfEdgeOperatorUnhealthyHostnames
+      expr: >-
+        sum by (zone) (cf_edge_operator_customhostnames{state="unhealthy"}) > 0
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: >-
+          {{`{{ $value }}`}} unhealthy custom hostname(s) in zone {{`{{ $labels.zone }}`}}
+        description: >-
+          One or more CustomHostname CRs in zone {{`{{ $labels.zone }}`}} have consecutive
+          reconcile failures (status.consecutiveErrors > 0, Ready=False). The operator is
+          retrying with exponential backoff. Check operator logs for the specific hostnames.
+        {{- if .Values.prometheusRule.runbookUrl }}
+        runbook_url: {{ .Values.prometheusRule.runbookUrl }}/CfEdgeOperatorUnhealthyHostnames
+        {{- end }}
+
+    # Fires when two or more CRs claim the same Cloudflare hostname.
+    # Only the first CR to create the hostname in Cloudflare is active; duplicate CRs
+    # are marked HostnameConflict and are not reconciled until the conflict resolves.
+    - alert: CfEdgeOperatorConflictHostnames
+      expr: >-
+        sum by (zone) (cf_edge_operator_customhostnames{state="conflict"}) > 0
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: >-
+          {{`{{ $value }}`}} conflicted custom hostname(s) in zone {{`{{ $labels.zone }}`}}
+        description: >-
+          Two or more CustomHostname CRs in zone {{`{{ $labels.zone }}`}} claim the same
+          Cloudflare hostname. The duplicate CR(s) are inactive and marked HostnameConflict.
+          Delete the duplicate CR to resolve. The conflict clears automatically on the next
+          zone drift detection cycle after the owning CR is removed.
+        {{- if .Values.prometheusRule.runbookUrl }}
+        runbook_url: {{ .Values.prometheusRule.runbookUrl }}/CfEdgeOperatorConflictHostnames
+        {{- end }}
+
+    # Fires when the Cloudflare API returns sustained 5xx errors. 4xx errors (e.g., 409
+    # conflict, 404 not found) are expected and are not counted here.
+    - alert: CfEdgeOperatorHighAPIErrorRate
+      expr: >-
+        sum(rate(cf_edge_operator_api_errors_by_code_total{status_code=~"5.."}[5m])) > 0.1
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: >-
+          Elevated Cloudflare API 5xx error rate ({{`{{ $value | humanize }}`}}/s)
+        description: >-
+          The operator is receiving sustained 5xx errors from the Cloudflare API (>6/min).
+          This may indicate a Cloudflare service degradation or an API token problem.
+          Check https://www.cloudflarestatus.com and the operator logs.
+        {{- if .Values.prometheusRule.runbookUrl }}
+        runbook_url: {{ .Values.prometheusRule.runbookUrl }}/CfEdgeOperatorHighAPIErrorRate
+        {{- end }}
+
+    # Fires when hostnames remain in a non-ready state for over 24 hours. Cloudflare SSL
+    # provisioning normally completes within minutes to a few hours.
+    # Note: this alert may fire during large batch provisioning. Add a silence during
+    # planned migrations.
+    - alert: CfEdgeOperatorSSLProvisioningStalled
+      expr: >-
+        sum by (zone) (cf_edge_operator_customhostnames{state="pending"}) > 0
+      for: 24h
+      labels:
+        severity: warning
+      annotations:
+        summary: >-
+          {{`{{ $value }}`}} hostname(s) pending SSL in zone {{`{{ $labels.zone }}`}} for >24h
+        description: >-
+          At least one hostname in zone {{`{{ $labels.zone }}`}} has been in a non-ready state
+          for over 24 hours. Check status.ssl.validationRecords on the affected
+          CustomHostname CR(s) to obtain DCV tokens and verify DNS/HTTP validation is
+          correctly set up.
+        {{- if .Values.prometheusRule.runbookUrl }}
+        runbook_url: {{ .Values.prometheusRule.runbookUrl }}/CfEdgeOperatorSSLProvisioningStalled
+        {{- end }}
+{{- end }}
