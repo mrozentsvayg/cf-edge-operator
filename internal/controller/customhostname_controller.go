@@ -120,6 +120,7 @@ func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		if err := r.Update(ctx, &ch); err != nil {
 			return ctrl.Result{}, err
 		}
+		log.V(1).Info("added finalizer", "hostname", ch.Spec.Hostname)
 		return ctrl.Result{Requeue: true}, nil
 	}
 
@@ -347,6 +348,7 @@ func (r *CustomHostnameReconciler) findByHostname(ctx context.Context, cf *cloud
 }
 
 func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneName string, ch *saasv1beta1.CustomHostname) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
 	ch.Status.ConsecutiveErrors = 0
 	if ch.Status.SSL != nil && ch.Status.SSL.Status == "active" {
 		// Observe SSL provisioning duration on first transition to active.
@@ -364,9 +366,9 @@ func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneName 
 				if ch.Spec.SSL != nil && ch.Spec.SSL.Method != "" {
 					method = ch.Spec.SSL.Method
 				}
-				sslProvisioningDuration.WithLabelValues(zoneName, ch.Spec.Hostname, method).Observe(
-					time.Since(ch.Status.SSLProvisioningStartedAt.Time).Seconds(),
-				)
+				duration := time.Since(ch.Status.SSLProvisioningStartedAt.Time)
+				sslProvisioningDuration.WithLabelValues(zoneName, ch.Spec.Hostname, method).Observe(duration.Seconds())
+				log.Info("SSL provisioning complete", "hostname", ch.Spec.Hostname, "duration", duration.Round(time.Second), "method", method)
 			}
 		}
 		return ctrl.Result{}, r.setCondition(ctx, ch, metav1.ConditionTrue, conditionReady, "Custom hostname is active")
@@ -378,6 +380,7 @@ func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneName 
 	if err := r.setCondition(ctx, ch, metav1.ConditionFalse, "SSLPending", fmt.Sprintf("SSL status: %s", sslStatus)); err != nil {
 		return ctrl.Result{}, err
 	}
+	log.V(1).Info("SSL pending, requeuing", "hostname", ch.Spec.Hostname, "ssl_status", sslStatus)
 	return ctrl.Result{RequeueAfter: r.SSLPollInterval}, nil
 }
 
