@@ -26,10 +26,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/cloudflare/cloudflare-go/v6"
 	"github.com/cloudflare/cloudflare-go/v6/custom_hostnames"
@@ -73,19 +76,24 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	apiToken, err := r.fetchAPIToken(ctx, &zone)
 	if err != nil {
 		log.Error(err, "failed to fetch API token")
+		zoneReady.WithLabelValues(zone.Name).Set(0)
 		return ctrl.Result{}, r.setReady(ctx, &zone, metav1.ConditionFalse, "SecretError", err.Error())
 	}
 
 	cf := cloudflare.NewClient(option.WithAPIToken(apiToken))
 
 	// Validate credentials and populate zone name
+	zoneGetStart := time.Now()
 	zoneDetails, err := cf.Zones.Get(ctx, zones.ZoneGetParams{
 		ZoneID: cloudflare.F(zone.Spec.ID),
 	})
+	recordCFCall(cfResourceZone, cfOpGet, zoneGetStart, &err)
 	if err != nil {
 		log.Error(err, "failed to fetch zone from Cloudflare", "zoneID", zone.Spec.ID)
+		zoneReady.WithLabelValues(zone.Name).Set(0)
 		return ctrl.Result{}, r.setReady(ctx, &zone, metav1.ConditionFalse, "CloudflareError", err.Error())
 	}
+	zoneReady.WithLabelValues(zone.Name).Set(1)
 	zone.Status.Name = zoneDetails.Name
 	if err := r.Status().Update(ctx, &zone); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to update zone status: %w", err)
@@ -184,7 +192,7 @@ func (r *ZoneReconciler) listCloudflareHostnames(ctx context.Context, cf *cloudf
 		result[ch.Hostname] = ch
 	}
 	err := pager.Err()
-	recordCFCall("list", start, &err)
+	recordCFCall(cfResourceCustomHostname, cfOpList, start, &err)
 	return result, err
 }
 
@@ -275,5 +283,11 @@ func (r *ZoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&domainsv1beta1.Zone{}).
 		Named("zone").
+		WithOptions(controller.Options{
+			RateLimiter: workqueue.NewTypedWithMaxWaitRateLimiter(
+				workqueue.DefaultTypedControllerRateLimiter[reconcile.Request](),
+				30*time.Second,
+			),
+		}).
 		Complete(r)
 }

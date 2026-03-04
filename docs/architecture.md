@@ -137,22 +137,23 @@ See [docs/migration.md](migration.md) for the full migration guide.
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `cf_edge_operator_customhostname_operations_total{operation}` | counter | Successful CF write operations; `operation`: create, recreate, update, delete |
+| `cf_edge_operator_zone_ready{zone_cr}` | gauge | 1 if Zone CR credentials are valid and CF API is reachable, 0 otherwise. Uses CR name (always available, even on failure). |
+| `cf_edge_operator_operations_total{resource,operation}` | counter | Successful CF write operations; `resource`: customhostname; `operation`: create, recreate, update, delete |
 | `cf_edge_operator_customhostnames{zone,state}` | gauge | CRs by zone and state (ready/pending/unhealthy/conflict). Sum = total CRs in zone |
 | `cf_edge_operator_zone_customhostnames{zone,type}` | gauge | CF custom hostnames by type (managed/orphan). Sum = CF quota usage for the zone |
-| `cf_edge_operator_api_duration_seconds{operation}` | histogram | CF API call latency |
-| `cf_edge_operator_api_errors_total` | counter | Total CF API errors |
-| `cf_edge_operator_api_errors_by_code_total{operation,status_code}` | counter | CF API errors by operation and HTTP status |
+| `cf_edge_operator_api_duration_seconds{resource,operation}` | histogram | CF API call latency; `resource`: customhostname, zone; `operation`: get, list, create, update, delete |
+| `cf_edge_operator_api_errors_by_code_total{resource,operation,status_code}` | counter | CF API errors by resource, operation, and HTTP status code (`unknown` for non-HTTP errors) |
 | `cf_edge_operator_ssl_provisioning_duration_seconds{zone,hostname,method}` | histogram | Time from CF create to `ssl.status == active`. Buckets span 1m–1w. |
 
 Controller-runtime also exposes `controller_runtime_reconcile_total` and `controller_runtime_reconcile_time_seconds` per controller.
 
 ### Alerting
 
-The Helm chart ships a `PrometheusRule` (disabled by default) with four alerts:
+The Helm chart ships a `PrometheusRule` (disabled by default):
 
 | Alert | Fires when |
 |-------|------------|
+| `CfEdgeOperatorZoneNotReady` | Zone CR unhealthy (bad secret or CF API error) for 5 min |
 | `CfEdgeOperatorDown` | Metrics endpoint unreachable for 2 min |
 | `CfEdgeOperatorUnhealthyHostnames` | Any CR in `unhealthy` state for 5 min |
 | `CfEdgeOperatorConflictHostnames` | Any CR in `conflict` state for 5 min |

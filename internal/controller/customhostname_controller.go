@@ -27,14 +27,17 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/cloudflare/cloudflare-go/v6"
@@ -168,12 +171,12 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 		}
 		editStart := time.Now()
 		_, editErr := cf.CustomHostnames.Edit(ctx, existing.ID, editParams, opts...)
-		recordCFCall("update", editStart, &editErr)
+		recordCFCall(cfResourceCustomHostname, cfOpUpdate, editStart, &editErr)
 		if editErr != nil {
 			log.Error(editErr, "failed to update custom hostname", "id", existing.ID)
 			return ctrl.Result{}, r.setError(ctx, ch, "UpdateFailed", editErr.Error())
 		}
-		customHostnameOperationsTotal.WithLabelValues("update").Inc()
+		operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpUpdate).Inc()
 	}
 
 	ch.Status.SSL = sslStatusFromList(existing)
@@ -208,7 +211,7 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudfl
 
 	createStart := time.Now()
 	resp, err := cf.CustomHostnames.New(ctx, params, opts...)
-	recordCFCall("create", createStart, &err)
+	recordCFCall(cfResourceCustomHostname, cfOpCreate, createStart, &err)
 	if err != nil {
 		log.Error(err, "failed to create custom hostname", "hostname", ch.Spec.Hostname)
 		return ctrl.Result{}, r.setError(ctx, ch, "CreateFailed", err.Error())
@@ -217,14 +220,14 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudfl
 	// Distinguish initial create from recreation after external deletion.
 	// createCount > 0 means the hostname existed before and was deleted externally.
 	isRecreation := ch.Status.CreateCount > 0
-	op := "create"
+	op := cfOpCreate
 	if isRecreation {
-		op = "recreate"
+		op = cfOpRecreate
 		log.Info("custom hostname recreated", "hostname", ch.Spec.Hostname, "id", resp.ID)
 	} else {
 		log.Info("custom hostname created", "hostname", ch.Spec.Hostname, "id", resp.ID)
 	}
-	customHostnameOperationsTotal.WithLabelValues(op).Inc()
+	operationsTotal.WithLabelValues(cfResourceCustomHostname, op).Inc()
 
 	// Reset SSL provisioning timer on every (re)create so the metric reflects the current cycle.
 	now := metav1.Now()
@@ -279,7 +282,7 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 		_, delErr := cf.CustomHostnames.Delete(ctx, ch.Status.ID, custom_hostnames.CustomHostnameDeleteParams{
 			ZoneID: cloudflare.F(zoneID),
 		})
-		recordCFCall("delete", deleteStart, &delErr)
+		recordCFCall(cfResourceCustomHostname, cfOpDelete, deleteStart, &delErr)
 		if delErr != nil {
 			// 404 means the resource is already gone (e.g. deleted by another entity or stale ID).
 			// Treat as success — our specific resource no longer exists, remove finalizer.
@@ -291,7 +294,7 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 			}
 		} else {
 			log.Info("custom hostname deleted from Cloudflare", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
-			customHostnameOperationsTotal.WithLabelValues("delete").Inc()
+			operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpDelete).Inc()
 		}
 	}
 
@@ -332,12 +335,12 @@ func (r *CustomHostnameReconciler) findByHostname(ctx context.Context, cf *cloud
 		ch := pager.Current()
 		if ch.Hostname == hostname {
 			err := pager.Err()
-			recordCFCall("list", start, &err)
+			recordCFCall(cfResourceCustomHostname, cfOpGet, start, &err)
 			return &ch, err
 		}
 	}
 	err := pager.Err()
-	recordCFCall("list", start, &err)
+	recordCFCall(cfResourceCustomHostname, cfOpGet, start, &err)
 	return nil, err
 }
 
@@ -580,5 +583,11 @@ func (r *CustomHostnameReconciler) SetupWithManager(mgr ctrl.Manager, driftEvent
 		For(&saasv1beta1.CustomHostname{}, builder.WithPredicates(fastWritePredicate())).
 		WatchesRawSource(source.Channel(driftEvents, &handler.EnqueueRequestForObject{})).
 		Named("customhostname").
+		WithOptions(controller.Options{
+			RateLimiter: workqueue.NewTypedWithMaxWaitRateLimiter(
+				workqueue.DefaultTypedControllerRateLimiter[reconcile.Request](),
+				30*time.Second,
+			),
+		}).
 		Complete(r)
 }

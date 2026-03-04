@@ -9,15 +9,29 @@ import (
 	crtlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
+// Cloudflare API label values for cfAPICallDuration and cfAPIErrorsByCode.
+// Shared strings referenced in >1 place; single-use strings stay as literals.
+const (
+	cfResourceCustomHostname = "customhostname"
+	cfResourceZone           = "zone"
+
+	cfOpGet      = "get"
+	cfOpList     = "list"
+	cfOpCreate   = "create"
+	cfOpRecreate = "recreate"
+	cfOpUpdate   = "update"
+	cfOpDelete   = "delete"
+)
+
 var (
-	// customHostnameOperationsTotal counts successful CF write operations by type.
-	// "create" = first-time provisioning; "recreate" = recovery after external deletion;
-	// "update" = drift correction; "delete" = removal.
-	// Pre-initialized for all four values so all series appear at startup.
-	customHostnameOperationsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "cf_edge_operator_customhostname_operations_total",
-		Help: "Total number of successful Cloudflare write operations by type (create, recreate, update, delete).",
-	}, []string{"operation"})
+	// operationsTotal counts successful CF write operations by resource and type.
+	// CustomHostname operations: "create" = first-time provisioning; "recreate" = recovery
+	// after external deletion; "update" = drift correction; "delete" = removal.
+	// Pre-initialized for all known values so all series appear at startup.
+	operationsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "cf_edge_operator_operations_total",
+		Help: "Total number of successful Cloudflare write operations by resource and type.",
+	}, []string{"resource", "operation"})
 
 	// sslProvisioningDuration observes the time from CF hostname creation to ssl.status == active.
 	// Labels: zone (zone domain name), hostname (the custom hostname), method (DCV method).
@@ -46,55 +60,60 @@ var (
 		Help: "Number of Cloudflare custom hostnames by zone and type (managed, orphan). Sum = CF quota usage.",
 	}, []string{"zone", "type"})
 
-	// cfAPICallDuration observes Cloudflare API call latency by operation.
+	// zoneReady is 1 when the Zone CR credentials are valid and the Cloudflare API
+	// is reachable, 0 otherwise. Labeled by zone_cr (the Zone CR name, always
+	// available) rather than the CF domain name, which may not be known on failure.
+	zoneReady = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "cf_edge_operator_zone_ready",
+		Help: "1 if the Zone CR is healthy (credentials valid, Cloudflare API reachable), 0 otherwise.",
+	}, []string{"zone_cr"})
+
+	// cfAPICallDuration observes Cloudflare API call latency by resource and operation.
+	// resource: "customhostname" or "zone". operation: get, list, create, update, delete.
 	cfAPICallDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "cf_edge_operator_api_duration_seconds",
-		Help:    "Cloudflare API call duration in seconds, by operation.",
+		Help:    "Cloudflare API call duration in seconds, by resource and operation.",
 		Buckets: []float64{.05, .1, .25, .5, 1, 2.5, 5, 10},
-	}, []string{"operation"})
+	}, []string{"resource", "operation"})
 
-	// cfAPIErrorsTotal is a simple total count of all Cloudflare API errors.
-	cfAPIErrorsTotal = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "cf_edge_operator_api_errors_total",
-		Help: "Total number of Cloudflare API errors.",
-	})
-	// cfAPIErrorsByCode counts Cloudflare API errors by operation and HTTP status code.
+	// cfAPIErrorsByCode counts Cloudflare API errors by resource, operation, and HTTP status code.
 	// Only appears in /metrics when errors have occurred.
 	cfAPIErrorsByCode = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "cf_edge_operator_api_errors_by_code_total",
-		Help: "Cloudflare API errors by operation and HTTP status code.",
-	}, []string{"operation", "status_code"})
+		Help: "Cloudflare API errors by resource, operation, and HTTP status code.",
+	}, []string{"resource", "operation", "status_code"})
 )
 
 func init() {
 	crtlmetrics.Registry.MustRegister(
-		customHostnameOperationsTotal,
+		operationsTotal,
 		sslProvisioningDuration,
 		customHostnames,
 		zoneCustomHostnames,
+		zoneReady,
 		cfAPICallDuration,
-		cfAPIErrorsTotal,
 		cfAPIErrorsByCode,
 	)
 	// Pre-initialize counters and histograms so they appear in /metrics from startup.
-	for _, op := range []string{"create", "update", "delete", "list"} {
-		cfAPICallDuration.WithLabelValues(op)
+	for _, op := range []string{cfOpList, cfOpGet, cfOpCreate, cfOpUpdate, cfOpDelete} {
+		cfAPICallDuration.WithLabelValues(cfResourceCustomHostname, op)
 	}
-	for _, op := range []string{"create", "recreate", "update", "delete"} {
-		customHostnameOperationsTotal.WithLabelValues(op)
+	cfAPICallDuration.WithLabelValues(cfResourceZone, cfOpGet)
+	for _, op := range []string{cfOpCreate, cfOpRecreate, cfOpUpdate, cfOpDelete} {
+		operationsTotal.WithLabelValues(cfResourceCustomHostname, op)
 	}
 }
 
 // recordCFCall records duration and any error for a Cloudflare API call.
-// Call at the call site: defer recordCFCall("create", time.Now(), &err)
-func recordCFCall(operation string, start time.Time, err *error) {
-	cfAPICallDuration.WithLabelValues(operation).Observe(time.Since(start).Seconds())
+// Use cfResource* and cfOp* constants for resource and operation.
+// Call at the call site: defer recordCFCall(cfResourceCustomHostname, cfOpCreate, time.Now(), &err)
+func recordCFCall(resource, operation string, start time.Time, err *error) {
+	cfAPICallDuration.WithLabelValues(resource, operation).Observe(time.Since(start).Seconds())
 	if err != nil && *err != nil {
-		cfAPIErrorsTotal.Inc()
 		statusCode := "unknown"
 		if cfErr, ok := (*err).(*cloudflare.Error); ok {
 			statusCode = strconv.Itoa(cfErr.StatusCode)
 		}
-		cfAPIErrorsByCode.WithLabelValues(operation, statusCode).Inc()
+		cfAPIErrorsByCode.WithLabelValues(resource, operation, statusCode).Inc()
 	}
 }
