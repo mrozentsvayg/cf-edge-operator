@@ -1,0 +1,131 @@
+# cf-edge-operator Operations Guide
+
+Deployment configuration, performance tuning, and HA setup for production.
+
+## Configuration Flags
+
+All flags are set via Helm values, which are passed as container args in the Deployment.
+
+| Flag | Default | Helm value | Description |
+|------|---------|-----------|-------------|
+| `--operator-namespace` | `cf-edge-operator-system` | `operatorNamespace` | Namespace where Zone CRs are managed |
+| `--delete-policy` | `always` | `deletePolicy` | `always` or `own-only` — see [migration.md](migration.md) |
+| `--dry-run` | `false` | `dryRun` | Log CF operations without executing them |
+| `--drift-interval` | `1m` | `driftInterval` | How often the zone controller bulk-lists CF hostnames |
+| `--drift-buffer` | `1024` | `driftBuffer` | Internal channel buffer for drift events |
+| `--ssl-poll-interval` | `30s` | `sslPollInterval` | How often SSL-pending CRs are re-checked until active |
+| `--leader-elect` | `false` | `leaderElect` | Required when running multiple replicas |
+
+---
+
+## Performance Tuning
+
+### Drift Detection Interval (`--drift-interval`)
+
+Controls how often each Zone CR triggers a bulk list of Cloudflare custom hostnames to detect external changes (dashboard edits, other automation).
+
+| Interval | CF API list calls/hour (per zone) | External drift window |
+|----------|----------------------------------|-----------------------|
+| `30s` | ~120 | ≤30s |
+| `1m` *(default)* | ~60 | ≤1m |
+| `2m` | ~30 | ≤2m |
+| `5m` | ~12 | ≤5m |
+
+**Cloudflare API rate limit:** 1200 requests/5min = 240/min. At `1m` with 5 zones of 1000 hostnames each (~10 list calls per zone per cycle = 50 calls/min), you are well within limits.
+
+The actual wall-clock gap between cycles is `drift-interval + reconcile_execution_time`. Execution time is dominated by Cloudflare API latency (~1–5s for a paginated list). At the default `1m`, expect ~62–65s between cycle starts.
+
+**Recommendation:** Keep the default `1m` unless you have a specific SLA requirement for external drift detection. Only reduce below `1m` if you operate in an environment with frequent external CF changes and need sub-minute detection.
+
+### Drift Event Buffer (`--drift-buffer`)
+
+Size of the internal Go channel used by the zone controller to signal drifted CustomHostname CRs to the CustomHostname controller. If the channel is full, the zone controller **blocks** until space is available, delaying the remainder of that drift detection cycle.
+
+**Sizing guidance:**
+
+| Scenario | Recommended buffer |
+|----------|--------------------|
+| 1 zone, ≤100 CHs | 128 |
+| 1–3 zones, ≤500 CHs each | 1024 *(default)* |
+| 5+ zones, 1000+ CHs each | 4096+ |
+
+In practice the buffer rarely fills — drifted CRs are consumed quickly by the CustomHostname controller (~200–500ms per CR). Only increase if you see zone reconcile cycles taking longer than expected at high drift volumes.
+
+### Reconcile Error Backoff (fixed at 30s max)
+
+When a reconcile fails (e.g. Cloudflare API error, invalid credentials), controller-runtime applies exponential backoff before retrying. The operator caps this at **30 seconds** — after any number of failures, the maximum wait before the next retry is 30s.
+
+This is intentionally not configurable:
+- Raising it recreates the original controller-runtime default of ~16 minutes, causing slow recovery after fixing a configuration error
+- Lowering it risks hammering the Cloudflare API on persistent errors
+
+The 30s cap means any CR recovers within ≤30s of the underlying issue being fixed — either via its own backoff retry, or via the zone controller's drift detection cycle (≤`--drift-interval`), whichever fires first.
+
+### Memory and CPU Resources
+
+The operator's memory footprint is dominated by the controller-runtime informer cache, which holds all Zone and CustomHostname CR objects in memory.
+
+**Rough sizing:**
+
+| Scale | Approximate memory | CPU |
+|-------|--------------------|-----|
+| ≤100 CHs | 64Mi | minimal |
+| ~500 CHs | 80–100Mi | minimal |
+| ~1000 CHs | 100–128Mi *(default limit)* | minimal |
+| 5000+ CHs | 256Mi+ | low |
+
+The default `128Mi` limit is appropriate for most deployments. Increase if you observe OOMKilled events at scale. CPU usage is low — the operator is I/O-bound (Cloudflare API calls) rather than CPU-bound.
+
+```yaml
+# values.yaml — example for large deployments
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 10m
+    memory: 128Mi
+```
+
+---
+
+## High Availability
+
+### Multiple Replicas
+
+Running more than one replica requires leader election to prevent split-brain. Only the leader runs reconcile loops; followers stand by and take over within ~15s of a leader failure.
+
+```yaml
+# values.yaml
+replicaCount: 2
+leaderElect: true
+```
+
+### PodDisruptionBudget
+
+Enable the PDB to ensure at least one replica remains available during voluntary disruptions (node drains, rolling updates). Has no effect with `replicaCount: 1`.
+
+```yaml
+# values.yaml
+replicaCount: 2
+leaderElect: true
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+```
+
+---
+
+## Production Checklist
+
+Before going live:
+
+- [ ] Zone CR `spec.id` matches the actual Cloudflare zone ID (verify in CF dashboard)
+- [ ] Secret referenced by `spec.credentialsRef` exists and contains a valid API token with `Custom Hostnames: Edit` and `Zone: Read` permissions
+- [ ] `--delete-policy` set appropriately — use `own-only` during any migration window where another tool may manage the same zone (see [migration.md](migration.md))
+- [ ] `replicaCount ≥ 2` and `leaderElect: true` for HA
+- [ ] `podDisruptionBudget.enabled: true` if availability during node drains is required
+- [ ] `serviceMonitor.enabled: true` and `prometheusRule.enabled: true` if using Prometheus Operator
+- [ ] `prometheusRule.runbookUrl` set to point to your copy of [runbook.md](runbook.md)
+- [ ] Resource limits reviewed for your scale (see sizing table above)
+- [ ] CRD upgrade procedure understood: `helm upgrade` does NOT update CRDs; apply them manually before upgrading the chart (see [architecture.md](architecture.md))

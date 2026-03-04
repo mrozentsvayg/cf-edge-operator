@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -67,6 +68,9 @@ func main() {
 	var operatorNamespace string
 	var deletePolicy string
 	var dryRun bool
+	var driftInterval time.Duration
+	var driftBuffer int
+	var sslPollInterval time.Duration
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -91,6 +95,15 @@ func main() {
 			"'own-only': only delete if the current Cloudflare hostname ID matches status.id.")
 	flag.BoolVar(&dryRun, "dry-run", false,
 		"If set, skip all Cloudflare write operations and log what would happen instead.")
+	flag.DurationVar(&driftInterval, "drift-interval", time.Minute,
+		"How often the zone controller bulk-lists Cloudflare custom hostnames to detect external drift. "+
+			"Lower values reduce the window in which external changes go undetected.")
+	flag.IntVar(&driftBuffer, "drift-buffer", 1024,
+		"Buffer size of the internal channel used to enqueue drifted CustomHostname CRs. "+
+			"Increase if operating with many zones and very frequent drift cycles.")
+	flag.DurationVar(&sslPollInterval, "ssl-poll-interval", 30*time.Second,
+		"How often SSL-pending CustomHostname CRs are re-checked until ssl.status becomes active. "+
+			"Each pending CR generates one Cloudflare API call per interval.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	opts := zap.Options{
@@ -197,7 +210,7 @@ func main() {
 	}
 
 	// Shared channel: Zone coordinator sends drifted CustomHostname CRs to the worker
-	driftEvents := make(chan event.GenericEvent, 1024)
+	driftEvents := make(chan event.GenericEvent, driftBuffer)
 
 	if err := (&controller.CustomHostnameReconciler{
 		Client:            mgr.GetClient(),
@@ -205,6 +218,7 @@ func main() {
 		OperatorNamespace: operatorNamespace,
 		DeletePolicy:      deletePolicy,
 		DryRun:            dryRun,
+		SSLPollInterval:   sslPollInterval,
 	}).SetupWithManager(mgr, driftEvents); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "CustomHostname")
 		os.Exit(1)
@@ -214,6 +228,7 @@ func main() {
 		Scheme:               mgr.GetScheme(),
 		CustomHostnameEvents: driftEvents,
 		DryRun:               dryRun,
+		DriftInterval:        driftInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Zone")
 		os.Exit(1)

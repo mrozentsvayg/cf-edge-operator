@@ -49,8 +49,7 @@ import (
 )
 
 const (
-	finalizerName     = "saas.cf-edge.io/customhostname"
-	requeuePendingSSL = 30 * time.Second
+	finalizerName = "saas.cf-edge.io/customhostname"
 	// hostnameField is the field indexer key for spec.hostname.
 	// Used to detect duplicate CRs claiming the same Cloudflare custom hostname in O(1).
 	hostnameField = "spec.hostname"
@@ -79,6 +78,9 @@ type CustomHostnameReconciler struct {
 	DeletePolicy string
 	// DryRun skips all Cloudflare write operations and logs what would happen instead.
 	DryRun bool
+	// SSLPollInterval is how often SSL-pending CRs are re-checked until ssl.status becomes active.
+	// Set via --ssl-poll-interval (default: 30s).
+	SSLPollInterval time.Duration
 }
 
 // +kubebuilder:rbac:groups=saas.cf-edge.io,resources=customhostnames,verbs=get;list;watch;create;update;patch;delete
@@ -376,7 +378,7 @@ func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneName 
 	if err := r.setCondition(ctx, ch, metav1.ConditionFalse, "SSLPending", fmt.Sprintf("SSL status: %s", sslStatus)); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: requeuePendingSSL}, nil
+	return ctrl.Result{RequeueAfter: r.SSLPollInterval}, nil
 }
 
 // detectConflict checks whether another CR already owns this hostname in Cloudflare (i.e. has a

@@ -43,8 +43,6 @@ import (
 	saasv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1beta1"
 )
 
-const driftDetectionInterval = 5 * time.Minute
-
 // ZoneReconciler reconciles a Zone object.
 // It acts as the coordinator: periodically bulk-lists Cloudflare custom hostnames
 // and enqueues drifted CustomHostname CRs for the worker (CustomHostnameReconciler).
@@ -56,6 +54,9 @@ type ZoneReconciler struct {
 	CustomHostnameEvents chan<- event.GenericEvent
 	// DryRun mirrors the operator-wide dry-run flag for logging purposes.
 	DryRun bool
+	// DriftInterval controls how often the zone controller bulk-lists Cloudflare custom
+	// hostnames to detect external drift. Set via --drift-interval (default: 1m).
+	DriftInterval time.Duration
 }
 
 // +kubebuilder:rbac:groups=domains.cf-edge.io,resources=zones,verbs=get;list;watch;create;update;patch;delete
@@ -106,7 +107,7 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	cfHostnames, err := r.listCloudflareHostnames(ctx, cf, zone.Spec.ID)
 	if err != nil {
 		log.Error(err, "failed to list Cloudflare custom hostnames", "zoneID", zone.Spec.ID)
-		return ctrl.Result{RequeueAfter: driftDetectionInterval}, nil
+		return ctrl.Result{RequeueAfter: r.DriftInterval}, nil
 	}
 
 	// List all CustomHostname CRs referencing this zone (across all namespaces)
@@ -178,7 +179,7 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		log.Info("drift detection complete", "zoneID", zone.Spec.ID, "drifted", drifted, "total", len(cfHostnames))
 	}
 
-	return ctrl.Result{RequeueAfter: driftDetectionInterval}, nil
+	return ctrl.Result{RequeueAfter: r.DriftInterval}, nil
 }
 
 func (r *ZoneReconciler) listCloudflareHostnames(ctx context.Context, cf *cloudflare.Client, zoneID string) (map[string]custom_hostnames.CustomHostnameListResponse, error) {

@@ -110,11 +110,58 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+	go build -o bin/cf-edge-operator cmd/main.go
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go
+
+# dev-run: build and run the operator locally against the active kubeconfig.
+# Stops any existing instance first, waits for ports to free, then starts
+# the binary directly (not via go run) so the PID is the binary itself.
+# Verifies the health probe responds before returning.
+# Usage: make dev-run ARGS="--drift-interval=15s --zap-log-level=1"
+DEV_PROBE_PORT ?= 8081
+DEV_METRICS_PORT ?= 8080
+DEV_OPERATOR_NS ?= cf-edge-operator-system
+DEV_LOG ?= /tmp/cf-edge-operator.log
+
+.PHONY: dev-run
+dev-run: build ## Build and run locally; stop any existing instance first.
+	@echo "Stopping any running instance..."
+	@lsof -ti :$(DEV_PROBE_PORT) | xargs kill 2>/dev/null || true
+	@for i in $$(seq 1 20); do \
+		lsof -ti :$(DEV_PROBE_PORT) >/dev/null 2>&1 || break; \
+		echo "  waiting for port $(DEV_PROBE_PORT) to free..."; sleep 0.5; \
+	done
+	@lsof -ti :$(DEV_PROBE_PORT) >/dev/null 2>&1 \
+		&& { echo "ERROR: port $(DEV_PROBE_PORT) still in use"; exit 1; } || true
+	@echo "Starting operator (log: $(DEV_LOG))..."
+	@bin/cf-edge-operator \
+		--operator-namespace=$(DEV_OPERATOR_NS) \
+		--metrics-secure=false \
+		--metrics-bind-address=:$(DEV_METRICS_PORT) \
+		--health-probe-bind-address=:$(DEV_PROBE_PORT) \
+		$(ARGS) \
+		> $(DEV_LOG) 2>&1 & echo $$! > /tmp/cf-edge-operator.pid
+	@for i in $$(seq 1 20); do \
+		curl -sf http://localhost:$(DEV_PROBE_PORT)/healthz >/dev/null 2>&1 && break; \
+		sleep 0.5; \
+	done
+	@curl -sf http://localhost:$(DEV_PROBE_PORT)/healthz >/dev/null 2>&1 \
+		|| { echo "ERROR: operator did not become healthy. Check $(DEV_LOG)"; exit 1; }
+	@echo "Operator running (PID: $$(cat /tmp/cf-edge-operator.pid))"
+
+.PHONY: dev-stop
+dev-stop: ## Stop the locally running operator and verify it is gone.
+	@lsof -ti :$(DEV_PROBE_PORT) | xargs kill 2>/dev/null || true
+	@for i in $$(seq 1 10); do \
+		lsof -ti :$(DEV_PROBE_PORT) >/dev/null 2>&1 || { echo "Stopped"; exit 0; }; \
+		sleep 0.5; \
+	done
+	@lsof -ti :$(DEV_PROBE_PORT) >/dev/null 2>&1 \
+		&& { echo "ERROR: port $(DEV_PROBE_PORT) still in use after stop — something may have restarted it"; exit 1; } \
+		|| { echo "Stopped"; exit 0; }
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
