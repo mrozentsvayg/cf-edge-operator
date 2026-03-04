@@ -2,6 +2,42 @@
 
 This runbook covers the alert rules shipped with the operator's PrometheusRule. Each section describes what the alert means, how to investigate, and how to resolve.
 
+## CfEdgeOperatorZoneNotReady
+
+**Severity:** critical
+
+**Meaning:** A Zone CR has been unable to validate its credentials or reach the Cloudflare API for 5 minutes. Drift detection and CustomHostname reconciliation are fully suspended for that zone.
+
+**Investigate:**
+
+```bash
+# Check Zone CR status conditions
+kubectl get zones -n <operator-namespace>
+kubectl describe zone <zone_cr> -n <operator-namespace>
+
+# Check that the referenced secret exists and has the right key
+kubectl get secret <credentialsRef.name> -n <operator-namespace>
+kubectl get secret <credentialsRef.name> -n <operator-namespace> \
+  -o jsonpath='{.data.apiToken}' | base64 -d | wc -c  # should be non-zero
+
+# Operator logs for the zone reconcile errors
+kubectl logs -n <operator-namespace> -l app.kubernetes.io/name=cf-edge-operator \
+  | grep -E "(SecretError|CloudflareError|zone)"
+```
+
+**Common causes:**
+
+| Condition reason | Cause | Resolution |
+|-----------------|-------|------------|
+| `SecretError` | Secret missing, wrong name, or key absent | Verify `spec.credentialsRef.name` and `spec.credentialsRef.key` match the actual secret |
+| `CloudflareError` | Invalid API token, wrong zone ID, or CF API degradation | Verify `spec.id` matches the zone in the CF dashboard; check token permissions (`Custom Hostnames: Edit`, `Zone: Read`) |
+
+**Resolve:**
+
+Fix the secret name, zone ID, or API token. The Zone reconciler retries on its standard schedule; `zone_ready` will flip to 1 on the next successful reconcile.
+
+---
+
 ## CfEdgeOperatorDown
 
 **Severity:** critical
