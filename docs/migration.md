@@ -28,7 +28,7 @@ This ensures that if a `CustomHostname` CR is deleted during the transition, the
 ### Step 2: Create Zone CR
 
 ```yaml
-apiVersion: domains.cf-edge.io/v1alpha1
+apiVersion: domains.cf-edge.io/v1beta1
 kind: Zone
 metadata:
   name: my-zone
@@ -45,7 +45,7 @@ spec:
 The operator will call `findByHostname` on reconcile and adopt the existing CF hostname (created by external-dns). No new CF resource is created.
 
 ```yaml
-apiVersion: saas.cf-edge.io/v1alpha1
+apiVersion: saas.cf-edge.io/v1beta1
 kind: CustomHostname
 metadata:
   name: customer-acme

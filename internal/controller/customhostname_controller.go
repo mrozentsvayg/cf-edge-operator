@@ -41,8 +41,8 @@ import (
 	"github.com/cloudflare/cloudflare-go/v6/custom_hostnames"
 	"github.com/cloudflare/cloudflare-go/v6/option"
 
-	domainsv1alpha1 "github.com/mrozentsvayg/cf-edge-operator/api/domains/v1alpha1"
-	saasv1alpha1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1alpha1"
+	domainsv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/domains/v1beta1"
+	saasv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1beta1"
 )
 
 const (
@@ -87,7 +87,7 @@ type CustomHostnameReconciler struct {
 func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	var ch saasv1alpha1.CustomHostname
+	var ch saasv1beta1.CustomHostname
 	if err := r.Get(ctx, req.NamespacedName, &ch); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -132,7 +132,7 @@ func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	return r.reconcileCloudflareState(ctx, cf, zoneID, zoneName, &ch)
 }
 
-func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context, cf *cloudflare.Client, zoneID, zoneName string, ch *saasv1alpha1.CustomHostname) (ctrl.Result, error) {
+func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context, cf *cloudflare.Client, zoneID, zoneName string, ch *saasv1beta1.CustomHostname) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// Single Cloudflare API call: find existing hostname by name
@@ -183,7 +183,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	return r.requeueOrReady(ctx, zoneName, ch)
 }
 
-func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudflare.Client, zoneID, zoneName string, ch *saasv1alpha1.CustomHostname) (ctrl.Result, error) {
+func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudflare.Client, zoneID, zoneName string, ch *saasv1beta1.CustomHostname) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	params := custom_hostnames.CustomHostnameNewParams{
@@ -193,7 +193,7 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudfl
 	// Default to DV + HTTP if not specified — SSL is always required for custom hostnames.
 	sslSpec := ch.Spec.SSL
 	if sslSpec == nil {
-		sslSpec = &saasv1alpha1.CustomHostnameSSL{Type: "dv", Method: "http"}
+		sslSpec = &saasv1beta1.CustomHostnameSSL{Type: "dv", Method: "http"}
 	}
 	params.SSL = cloudflare.F(buildSSLParams(sslSpec))
 	opts := []option.RequestOption{option.WithJSONSet("custom_origin_server", ch.Spec.OriginServer)}
@@ -238,7 +238,7 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudfl
 	return r.requeueOrReady(ctx, zoneName, ch)
 }
 
-func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudflare.Client, zoneID string, ch *saasv1alpha1.CustomHostname) (ctrl.Result, error) {
+func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudflare.Client, zoneID string, ch *saasv1beta1.CustomHostname) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	if r.DryRun {
@@ -341,7 +341,7 @@ func (r *CustomHostnameReconciler) findByHostname(ctx context.Context, cf *cloud
 	return nil, err
 }
 
-func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneName string, ch *saasv1alpha1.CustomHostname) (ctrl.Result, error) {
+func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneName string, ch *saasv1beta1.CustomHostname) (ctrl.Result, error) {
 	ch.Status.ConsecutiveErrors = 0
 	if ch.Status.SSL != nil && ch.Status.SSL.Status == "active" {
 		// Observe SSL provisioning duration on first transition to active.
@@ -382,9 +382,9 @@ func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneName 
 // Self-healing: when the owning CR is deleted, the Zone controller re-enqueues this CR via the
 // "hostname missing from CF" path, at which point detectConflict finds no peer with an ID and
 // returns false, allowing normal provisioning to proceed.
-func (r *CustomHostnameReconciler) detectConflict(ctx context.Context, ch *saasv1alpha1.CustomHostname) (bool, error) {
+func (r *CustomHostnameReconciler) detectConflict(ctx context.Context, ch *saasv1beta1.CustomHostname) (bool, error) {
 	log := logf.FromContext(ctx)
-	var peers saasv1alpha1.CustomHostnameList
+	var peers saasv1beta1.CustomHostnameList
 	if err := r.List(ctx, &peers, client.MatchingFields{hostnameField: ch.Spec.Hostname}); err != nil {
 		return false, err
 	}
@@ -409,17 +409,17 @@ func (r *CustomHostnameReconciler) detectConflict(ctx context.Context, ch *saasv
 // once the owning CR is deleted and CF removes the hostname, the Zone controller re-enqueues
 // this CR via the "hostname missing from CF" path, and the next successful reconcile replaces
 // the condition with Ready.
-func (r *CustomHostnameReconciler) setConflict(ctx context.Context, ch *saasv1alpha1.CustomHostname, message string) error {
+func (r *CustomHostnameReconciler) setConflict(ctx context.Context, ch *saasv1beta1.CustomHostname, message string) error {
 	return r.setCondition(ctx, ch, metav1.ConditionFalse, reasonHostnameConflict, message)
 }
 
 // setError increments ConsecutiveErrors, sets a Ready=False condition, and updates status.
-func (r *CustomHostnameReconciler) setError(ctx context.Context, ch *saasv1alpha1.CustomHostname, reason, message string) error {
+func (r *CustomHostnameReconciler) setError(ctx context.Context, ch *saasv1beta1.CustomHostname, reason, message string) error {
 	ch.Status.ConsecutiveErrors++
 	return r.setCondition(ctx, ch, metav1.ConditionFalse, reason, message)
 }
 
-func (r *CustomHostnameReconciler) setCondition(ctx context.Context, ch *saasv1alpha1.CustomHostname, status metav1.ConditionStatus, reason, message string) error {
+func (r *CustomHostnameReconciler) setCondition(ctx context.Context, ch *saasv1beta1.CustomHostname, status metav1.ConditionStatus, reason, message string) error {
 	apimeta.SetStatusCondition(&ch.Status.Conditions, metav1.Condition{
 		Type:               conditionReady,
 		Status:             status,
@@ -433,12 +433,12 @@ func (r *CustomHostnameReconciler) setCondition(ctx context.Context, ch *saasv1a
 	return nil
 }
 
-func (r *CustomHostnameReconciler) buildCloudflareClient(ctx context.Context, ch *saasv1alpha1.CustomHostname) (*cloudflare.Client, string, string, error) {
+func (r *CustomHostnameReconciler) buildCloudflareClient(ctx context.Context, ch *saasv1beta1.CustomHostname) (*cloudflare.Client, string, string, error) {
 	zoneNS := ch.Spec.ZoneRef.Namespace
 	if zoneNS == "" {
 		zoneNS = r.OperatorNamespace
 	}
-	var zone domainsv1alpha1.Zone
+	var zone domainsv1beta1.Zone
 	if err := r.Get(ctx, types.NamespacedName{Name: ch.Spec.ZoneRef.Name, Namespace: zoneNS}, &zone); err != nil {
 		return nil, "", "", fmt.Errorf("zone %q not found: %w", ch.Spec.ZoneRef.Name, err)
 	}
@@ -457,14 +457,14 @@ func (r *CustomHostnameReconciler) buildCloudflareClient(ctx context.Context, ch
 	return cloudflare.NewClient(option.WithAPIToken(string(token))), zone.Spec.ID, zone.Status.Name, nil
 }
 
-func sniDrifted(currentSNI string, ch *saasv1alpha1.CustomHostname) bool {
+func sniDrifted(currentSNI string, ch *saasv1beta1.CustomHostname) bool {
 	if ch.Spec.OriginSNI == nil {
 		return currentSNI != "" && currentSNI != ch.Spec.OriginServer
 	}
 	return currentSNI != *ch.Spec.OriginSNI
 }
 
-func buildSSLParams(ssl *saasv1alpha1.CustomHostnameSSL) custom_hostnames.CustomHostnameNewParamsSSL {
+func buildSSLParams(ssl *saasv1beta1.CustomHostnameSSL) custom_hostnames.CustomHostnameNewParamsSSL {
 	p := custom_hostnames.CustomHostnameNewParamsSSL{}
 	if ssl.Type != "" {
 		p.Type = cloudflare.F(custom_hostnames.DomainValidationType(ssl.Type))
@@ -483,14 +483,14 @@ func buildSSLParams(ssl *saasv1alpha1.CustomHostnameSSL) custom_hostnames.Custom
 	return p
 }
 
-func sslStatusFromNew(resp *custom_hostnames.CustomHostnameNewResponse) *saasv1alpha1.CustomHostnameSSLStatus {
-	s := &saasv1alpha1.CustomHostnameSSLStatus{Status: string(resp.SSL.Status)}
+func sslStatusFromNew(resp *custom_hostnames.CustomHostnameNewResponse) *saasv1beta1.CustomHostnameSSLStatus {
+	s := &saasv1beta1.CustomHostnameSSLStatus{Status: string(resp.SSL.Status)}
 	if !resp.SSL.ExpiresOn.IsZero() {
 		t := metav1.NewTime(resp.SSL.ExpiresOn)
 		s.ExpiresOn = &t
 	}
 	for _, vr := range resp.SSL.ValidationRecords {
-		s.ValidationRecords = append(s.ValidationRecords, saasv1alpha1.SSLValidationRecord{
+		s.ValidationRecords = append(s.ValidationRecords, saasv1beta1.SSLValidationRecord{
 			TXTName:  vr.TXTName,
 			TXTValue: vr.TXTValue,
 			HTTPUrl:  vr.HTTPURL,
@@ -504,14 +504,14 @@ func sslStatusFromNew(resp *custom_hostnames.CustomHostnameNewResponse) *saasv1a
 	return s
 }
 
-func sslStatusFromList(resp *custom_hostnames.CustomHostnameListResponse) *saasv1alpha1.CustomHostnameSSLStatus {
-	s := &saasv1alpha1.CustomHostnameSSLStatus{Status: string(resp.SSL.Status)}
+func sslStatusFromList(resp *custom_hostnames.CustomHostnameListResponse) *saasv1beta1.CustomHostnameSSLStatus {
+	s := &saasv1beta1.CustomHostnameSSLStatus{Status: string(resp.SSL.Status)}
 	if !resp.SSL.ExpiresOn.IsZero() {
 		t := metav1.NewTime(resp.SSL.ExpiresOn)
 		s.ExpiresOn = &t
 	}
 	for _, vr := range resp.SSL.ValidationRecords {
-		s.ValidationRecords = append(s.ValidationRecords, saasv1alpha1.SSLValidationRecord{
+		s.ValidationRecords = append(s.ValidationRecords, saasv1beta1.SSLValidationRecord{
 			TXTName:  vr.TXTName,
 			TXTValue: vr.TXTValue,
 			HTTPUrl:  vr.HTTPURL,
@@ -542,7 +542,7 @@ func sslStatusFromList(resp *custom_hostnames.CustomHostnameListResponse) *saasv
 func fastWritePredicate() predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
-			ch, ok := e.Object.(*saasv1alpha1.CustomHostname)
+			ch, ok := e.Object.(*saasv1beta1.CustomHostname)
 			if !ok {
 				return true
 			}
@@ -568,16 +568,16 @@ func fastWritePredicate() predicate.Predicate {
 func (r *CustomHostnameReconciler) SetupWithManager(mgr ctrl.Manager, driftEvents <-chan event.GenericEvent) error {
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
-		&saasv1alpha1.CustomHostname{},
+		&saasv1beta1.CustomHostname{},
 		hostnameField,
 		func(o client.Object) []string {
-			return []string{o.(*saasv1alpha1.CustomHostname).Spec.Hostname}
+			return []string{o.(*saasv1beta1.CustomHostname).Spec.Hostname}
 		},
 	); err != nil {
 		return fmt.Errorf("failed to index CustomHostname by %s: %w", hostnameField, err)
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&saasv1alpha1.CustomHostname{}, builder.WithPredicates(fastWritePredicate())).
+		For(&saasv1beta1.CustomHostname{}, builder.WithPredicates(fastWritePredicate())).
 		WatchesRawSource(source.Channel(driftEvents, &handler.EnqueueRequestForObject{})).
 		Named("customhostname").
 		Complete(r)

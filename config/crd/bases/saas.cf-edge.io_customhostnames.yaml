@@ -33,7 +33,7 @@ spec:
     - jsonPath: .status.consecutiveErrors
       name: Errors
       type: integer
-    name: v1alpha1
+    name: v1beta1
     schema:
       openAPIV3Schema:
         description: CustomHostname is the Schema for the customhostnames API

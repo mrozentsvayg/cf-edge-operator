@@ -1,5 +1,5 @@
 ## Append samples of your project ##
 resources:
-- saas_v1alpha1_customhostname.yaml
-- domains_v1alpha1_zone.yaml
+- saas_v1beta1_customhostname.yaml
+- domains_v1beta1_zone.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

@@ -33,7 +33,7 @@ spec:
     - jsonPath: .status.consecutiveErrors
       name: Errors
       type: integer
-    name: v1alpha1
+    name: v1beta1
     schema:
       openAPIV3Schema:
         description: CustomHostname is the Schema for the customhostnames API
@@ -58,6 +58,16 @@ spec:
           spec:
             description: CustomHostnameSpec defines the desired state of CustomHostname
             properties:
+              deletePolicy:
+                description: |-
+                  DeletePolicy overrides the operator-wide --delete-policy for this CR.
+                  "always" deletes from Cloudflare unconditionally; "own-only" skips deletion if the
+                  current CF hostname ID differs from status.id (safe during migrations from other tools).
+                  If not set, the operator-wide default applies.
+                enum:
+                - always
+                - own-only
+                type: string
               hostname:
                 description: Hostname is the custom hostname to register with Cloudflare
                   (e.g. customer.example.com)
@@ -261,6 +271,13 @@ spec:
                       type: object
                     type: array
                 type: object
+              sslProvisioningStartedAt:
+                description: |-
+                  SSLProvisioningStartedAt records when the hostname was created (or recreated) in Cloudflare.
+                  Used to measure SSL provisioning duration (time until ssl.status == active).
+                  Reset on each recreation so it always reflects the most recent provisioning cycle.
+                format: date-time
+                type: string
             type: object
         required:
         - spec
