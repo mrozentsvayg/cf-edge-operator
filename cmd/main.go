@@ -36,8 +36,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	domainsv1alpha1 "github.com/mrozentsvayg/cf-edge-operator/api/domains/v1alpha1"
-	saasv1alpha1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1alpha1"
+	domainsv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/domains/v1beta1"
+	saasv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1beta1"
 	"github.com/mrozentsvayg/cf-edge-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
@@ -50,8 +50,8 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
-	utilruntime.Must(domainsv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(saasv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(domainsv1beta1.AddToScheme(scheme))
+	utilruntime.Must(saasv1beta1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 

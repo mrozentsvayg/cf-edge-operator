@@ -22,23 +22,23 @@ import (
 	"github.com/cloudflare/cloudflare-go/v6/custom_hostnames"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	saasv1alpha1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1alpha1"
+	saasv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1beta1"
 )
 
 func TestIsHostnameConflict(t *testing.T) {
 	tests := []struct {
 		name string
-		ch   saasv1alpha1.CustomHostname
+		ch   saasv1beta1.CustomHostname
 		want bool
 	}{
 		{
 			name: "no conditions",
-			ch:   saasv1alpha1.CustomHostname{},
+			ch:   saasv1beta1.CustomHostname{},
 			want: false,
 		},
 		{
 			name: "Ready=True",
-			ch: saasv1alpha1.CustomHostname{Status: saasv1alpha1.CustomHostnameStatus{
+			ch: saasv1beta1.CustomHostname{Status: saasv1beta1.CustomHostnameStatus{
 				Conditions: []metav1.Condition{
 					{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready"},
 				},
@@ -47,7 +47,7 @@ func TestIsHostnameConflict(t *testing.T) {
 		},
 		{
 			name: "Ready=False, HostnameConflict",
-			ch: saasv1alpha1.CustomHostname{Status: saasv1alpha1.CustomHostnameStatus{
+			ch: saasv1beta1.CustomHostname{Status: saasv1beta1.CustomHostnameStatus{
 				Conditions: []metav1.Condition{
 					{Type: "Ready", Status: metav1.ConditionFalse, Reason: "HostnameConflict"},
 				},
@@ -56,7 +56,7 @@ func TestIsHostnameConflict(t *testing.T) {
 		},
 		{
 			name: "Ready=False, other reason",
-			ch: saasv1alpha1.CustomHostname{Status: saasv1alpha1.CustomHostnameStatus{
+			ch: saasv1beta1.CustomHostname{Status: saasv1beta1.CustomHostnameStatus{
 				Conditions: []metav1.Condition{
 					{Type: "Ready", Status: metav1.ConditionFalse, Reason: "SSLPending"},
 				},
@@ -76,17 +76,17 @@ func TestIsHostnameConflict(t *testing.T) {
 func TestCRState(t *testing.T) {
 	tests := []struct {
 		name string
-		ch   saasv1alpha1.CustomHostname
+		ch   saasv1beta1.CustomHostname
 		want string
 	}{
 		{
 			name: "no conditions, no errors → pending",
-			ch:   saasv1alpha1.CustomHostname{},
+			ch:   saasv1beta1.CustomHostname{},
 			want: "pending",
 		},
 		{
 			name: "Ready=True, no errors → ready",
-			ch: saasv1alpha1.CustomHostname{Status: saasv1alpha1.CustomHostnameStatus{
+			ch: saasv1beta1.CustomHostname{Status: saasv1beta1.CustomHostnameStatus{
 				Conditions: []metav1.Condition{
 					{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready"},
 				},
@@ -95,7 +95,7 @@ func TestCRState(t *testing.T) {
 		},
 		{
 			name: "Ready=True with errors → ready (ready beats unhealthy)",
-			ch: saasv1alpha1.CustomHostname{Status: saasv1alpha1.CustomHostnameStatus{
+			ch: saasv1beta1.CustomHostname{Status: saasv1beta1.CustomHostnameStatus{
 				Conditions: []metav1.Condition{
 					{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready"},
 				},
@@ -105,7 +105,7 @@ func TestCRState(t *testing.T) {
 		},
 		{
 			name: "consecutiveErrors > 0, Ready=False → unhealthy",
-			ch: saasv1alpha1.CustomHostname{Status: saasv1alpha1.CustomHostnameStatus{
+			ch: saasv1beta1.CustomHostname{Status: saasv1beta1.CustomHostnameStatus{
 				Conditions: []metav1.Condition{
 					{Type: "Ready", Status: metav1.ConditionFalse, Reason: "CreateFailed"},
 				},
@@ -115,7 +115,7 @@ func TestCRState(t *testing.T) {
 		},
 		{
 			name: "Ready=False, no errors → pending",
-			ch: saasv1alpha1.CustomHostname{Status: saasv1alpha1.CustomHostnameStatus{
+			ch: saasv1beta1.CustomHostname{Status: saasv1beta1.CustomHostnameStatus{
 				Conditions: []metav1.Condition{
 					{Type: "Ready", Status: metav1.ConditionFalse, Reason: "SSLPending"},
 				},
@@ -124,7 +124,7 @@ func TestCRState(t *testing.T) {
 		},
 		{
 			name: "HostnameConflict → conflict (beats everything)",
-			ch: saasv1alpha1.CustomHostname{Status: saasv1alpha1.CustomHostnameStatus{
+			ch: saasv1beta1.CustomHostname{Status: saasv1beta1.CustomHostnameStatus{
 				Conditions: []metav1.Condition{
 					{Type: "Ready", Status: metav1.ConditionFalse, Reason: "HostnameConflict"},
 				},
@@ -146,37 +146,37 @@ func TestHasDrift(t *testing.T) {
 	sni := "sni.example.com"
 	tests := []struct {
 		name string
-		ch   saasv1alpha1.CustomHostname
+		ch   saasv1beta1.CustomHostname
 		cfCH custom_hostnames.CustomHostnameListResponse
 		want bool
 	}{
 		{
 			name: "no drift",
-			ch:   saasv1alpha1.CustomHostname{Spec: saasv1alpha1.CustomHostnameSpec{OriginServer: "origin.example.com"}},
+			ch:   saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: "origin.example.com"}},
 			cfCH: custom_hostnames.CustomHostnameListResponse{CustomOriginServer: "origin.example.com"},
 			want: false,
 		},
 		{
 			name: "origin server drift",
-			ch:   saasv1alpha1.CustomHostname{Spec: saasv1alpha1.CustomHostnameSpec{OriginServer: "new.example.com"}},
+			ch:   saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: "new.example.com"}},
 			cfCH: custom_hostnames.CustomHostnameListResponse{CustomOriginServer: "old.example.com"},
 			want: true,
 		},
 		{
 			name: "sni set and matches",
-			ch:   saasv1alpha1.CustomHostname{Spec: saasv1alpha1.CustomHostnameSpec{OriginServer: "origin.example.com", OriginSNI: &sni}},
+			ch:   saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: "origin.example.com", OriginSNI: &sni}},
 			cfCH: custom_hostnames.CustomHostnameListResponse{CustomOriginServer: "origin.example.com", CustomOriginSNI: sni},
 			want: false,
 		},
 		{
 			name: "sni set and differs",
-			ch:   saasv1alpha1.CustomHostname{Spec: saasv1alpha1.CustomHostnameSpec{OriginServer: "origin.example.com", OriginSNI: &sni}},
+			ch:   saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: "origin.example.com", OriginSNI: &sni}},
 			cfCH: custom_hostnames.CustomHostnameListResponse{CustomOriginServer: "origin.example.com", CustomOriginSNI: "other.example.com"},
 			want: true,
 		},
 		{
 			name: "sni not spec'd, cf has sni set",
-			ch:   saasv1alpha1.CustomHostname{Spec: saasv1alpha1.CustomHostnameSpec{OriginServer: "origin.example.com"}},
+			ch:   saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: "origin.example.com"}},
 			cfCH: custom_hostnames.CustomHostnameListResponse{CustomOriginServer: "origin.example.com", CustomOriginSNI: sni},
 			want: false,
 		},

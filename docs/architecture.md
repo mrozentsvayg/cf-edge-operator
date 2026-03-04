@@ -6,10 +6,10 @@ cf-edge-operator manages Cloudflare for SaaS (custom hostnames, Origin SNI overr
 
 ## CRDs
 
-### Zone (`domains.cf-edge.io/v1alpha1`)
+### Zone (`domains.cf-edge.io/v1beta1`)
 Represents a Cloudflare zone. Lives in the operator namespace. Holds zone ID and a reference to a secret containing the Cloudflare API token. All CustomHostname resources in app namespaces reference a Zone.
 
-### CustomHostname (`saas.cf-edge.io/v1alpha1`)
+### CustomHostname (`saas.cf-edge.io/v1beta1`)
 Represents a Cloudflare custom hostname with origin server and optional SNI override. Lives in app namespaces. References a Zone cross-namespace.
 
 ## Controller Architecture: Coordinator / Worker Split

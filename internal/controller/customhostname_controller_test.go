@@ -31,30 +31,30 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
-	saasv1alpha1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1alpha1"
+	saasv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1beta1"
 )
 
 func TestDetectConflict(t *testing.T) {
 	scheme := runtime.NewScheme()
-	_ = saasv1alpha1.AddToScheme(scheme)
+	_ = saasv1beta1.AddToScheme(scheme)
 
 	indexer := func(o client.Object) []string {
-		return []string{o.(*saasv1alpha1.CustomHostname).Spec.Hostname}
+		return []string{o.(*saasv1beta1.CustomHostname).Spec.Hostname}
 	}
 	makeReconciler := func(objs ...client.Object) *CustomHostnameReconciler {
 		c := fake.NewClientBuilder().
 			WithScheme(scheme).
-			WithIndex(&saasv1alpha1.CustomHostname{}, hostnameField, indexer).
-			WithStatusSubresource(&saasv1alpha1.CustomHostname{}).
+			WithIndex(&saasv1beta1.CustomHostname{}, hostnameField, indexer).
+			WithStatusSubresource(&saasv1beta1.CustomHostname{}).
 			WithObjects(objs...).
 			Build()
 		return &CustomHostnameReconciler{Client: c, Scheme: scheme}
 	}
 
-	owner := &saasv1alpha1.CustomHostname{
+	owner := &saasv1beta1.CustomHostname{
 		ObjectMeta: metav1.ObjectMeta{Name: "owner", Namespace: "default", UID: types.UID("uid-owner")},
-		Spec:       saasv1alpha1.CustomHostnameSpec{Hostname: "api.acme.com"},
-		Status:     saasv1alpha1.CustomHostnameStatus{ID: "cf-id-abc"},
+		Spec:       saasv1beta1.CustomHostnameSpec{Hostname: "api.acme.com"},
+		Status:     saasv1beta1.CustomHostnameStatus{ID: "cf-id-abc"},
 	}
 	ctx := context.Background()
 
@@ -70,9 +70,9 @@ func TestDetectConflict(t *testing.T) {
 	})
 
 	t.Run("conflict detected: peer has CF ID", func(t *testing.T) {
-		duplicate := &saasv1alpha1.CustomHostname{
+		duplicate := &saasv1beta1.CustomHostname{
 			ObjectMeta: metav1.ObjectMeta{Name: "duplicate", Namespace: "default", UID: types.UID("uid-dup")},
-			Spec:       saasv1alpha1.CustomHostnameSpec{Hostname: "api.acme.com"},
+			Spec:       saasv1beta1.CustomHostnameSpec{Hostname: "api.acme.com"},
 		}
 		r := makeReconciler(owner, duplicate)
 
@@ -84,7 +84,7 @@ func TestDetectConflict(t *testing.T) {
 			t.Error("expected conflict to be detected")
 		}
 		// HostnameConflict condition must be set on the duplicate
-		var got saasv1alpha1.CustomHostname
+		var got saasv1beta1.CustomHostname
 		if err := r.Get(ctx, client.ObjectKeyFromObject(duplicate), &got); err != nil {
 			t.Fatal(err)
 		}
@@ -100,13 +100,13 @@ func TestDetectConflict(t *testing.T) {
 	t.Run("no conflict: peer has no CF ID yet", func(t *testing.T) {
 		// Both CRs are brand-new — neither has a CF ID. Let both through;
 		// CF will reject one, and the conflict is detected on the next reconcile.
-		a := &saasv1alpha1.CustomHostname{
+		a := &saasv1beta1.CustomHostname{
 			ObjectMeta: metav1.ObjectMeta{Name: "cr-a", Namespace: "default", UID: types.UID("uid-a")},
-			Spec:       saasv1alpha1.CustomHostnameSpec{Hostname: "api.acme.com"},
+			Spec:       saasv1beta1.CustomHostnameSpec{Hostname: "api.acme.com"},
 		}
-		b := &saasv1alpha1.CustomHostname{
+		b := &saasv1beta1.CustomHostname{
 			ObjectMeta: metav1.ObjectMeta{Name: "cr-b", Namespace: "default", UID: types.UID("uid-b")},
-			Spec:       saasv1alpha1.CustomHostnameSpec{Hostname: "api.acme.com"},
+			Spec:       saasv1beta1.CustomHostnameSpec{Hostname: "api.acme.com"},
 		}
 		r := makeReconciler(a, b)
 
@@ -120,10 +120,10 @@ func TestDetectConflict(t *testing.T) {
 	})
 
 	t.Run("no conflict: different hostname", func(t *testing.T) {
-		other := &saasv1alpha1.CustomHostname{
+		other := &saasv1beta1.CustomHostname{
 			ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "default", UID: types.UID("uid-other")},
-			Spec:       saasv1alpha1.CustomHostnameSpec{Hostname: "other.acme.com"},
-			Status:     saasv1alpha1.CustomHostnameStatus{ID: "cf-id-xyz"},
+			Spec:       saasv1beta1.CustomHostnameSpec{Hostname: "other.acme.com"},
+			Status:     saasv1beta1.CustomHostnameStatus{ID: "cf-id-xyz"},
 		}
 		r := makeReconciler(owner, other)
 
@@ -143,30 +143,30 @@ func TestFastWritePredicateTerminating(t *testing.T) {
 
 	tests := []struct {
 		name string
-		ch   saasv1alpha1.CustomHostname
+		ch   saasv1beta1.CustomHostname
 		want bool
 	}{
 		{
 			name: "new CR, no ID → let through",
-			ch:   saasv1alpha1.CustomHostname{},
+			ch:   saasv1beta1.CustomHostname{},
 			want: true,
 		},
 		{
 			name: "existing CR, has ID → block (Zone controller handles drift)",
-			ch:   saasv1alpha1.CustomHostname{Status: saasv1alpha1.CustomHostnameStatus{ID: "cf-id-abc"}},
+			ch:   saasv1beta1.CustomHostname{Status: saasv1beta1.CustomHostnameStatus{ID: "cf-id-abc"}},
 			want: false,
 		},
 		{
 			name: "terminating CR with ID → let through (must remove finalizer)",
-			ch: saasv1alpha1.CustomHostname{
+			ch: saasv1beta1.CustomHostname{
 				ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now},
-				Status:     saasv1alpha1.CustomHostnameStatus{ID: "cf-id-abc"},
+				Status:     saasv1beta1.CustomHostnameStatus{ID: "cf-id-abc"},
 			},
 			want: true,
 		},
 		{
 			name: "terminating CR without ID → let through",
-			ch:   saasv1alpha1.CustomHostname{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now}},
+			ch:   saasv1beta1.CustomHostname{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now}},
 			want: true,
 		},
 	}
@@ -182,18 +182,18 @@ func TestFastWritePredicateTerminating(t *testing.T) {
 
 func TestHandleDeleteDryRun(t *testing.T) {
 	scheme := runtime.NewScheme()
-	_ = saasv1alpha1.AddToScheme(scheme)
+	_ = saasv1beta1.AddToScheme(scheme)
 
 	now := metav1.Now()
-	ch := &saasv1alpha1.CustomHostname{
+	ch := &saasv1beta1.CustomHostname{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              "test-ch",
 			Namespace:         "default",
 			Finalizers:        []string{finalizerName},
 			DeletionTimestamp: &now,
 		},
-		Spec:   saasv1alpha1.CustomHostnameSpec{Hostname: "test.example.com"},
-		Status: saasv1alpha1.CustomHostnameStatus{ID: "cf-id-123"},
+		Spec:   saasv1beta1.CustomHostnameSpec{Hostname: "test.example.com"},
+		Status: saasv1beta1.CustomHostnameStatus{ID: "cf-id-123"},
 	}
 
 	c := fake.NewClientBuilder().
@@ -215,7 +215,7 @@ func TestHandleDeleteDryRun(t *testing.T) {
 	// The finalizer must still be present — dry-run must not mutate K8s.
 	// If this fails it means dry-run removed the finalizer, which would
 	// silently orphan the CF hostname when the CR disappears from K8s.
-	var got saasv1alpha1.CustomHostname
+	var got saasv1beta1.CustomHostname
 	if err := c.Get(ctx, client.ObjectKeyFromObject(ch), &got); err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
@@ -307,14 +307,14 @@ func TestSSLStatusFromNew(t *testing.T) {
 	tests := []struct {
 		name string
 		resp custom_hostnames.CustomHostnameNewResponse
-		want saasv1alpha1.CustomHostnameSSLStatus
+		want saasv1beta1.CustomHostnameSSLStatus
 	}{
 		{
 			name: "status only",
 			resp: custom_hostnames.CustomHostnameNewResponse{
 				SSL: custom_hostnames.CustomHostnameNewResponseSSL{Status: "pending_validation"},
 			},
-			want: saasv1alpha1.CustomHostnameSSLStatus{Status: "pending_validation"},
+			want: saasv1beta1.CustomHostnameSSLStatus{Status: "pending_validation"},
 		},
 		{
 			name: "expires on set",
@@ -324,7 +324,7 @@ func TestSSLStatusFromNew(t *testing.T) {
 					ExpiresOn: expires,
 				},
 			},
-			want: saasv1alpha1.CustomHostnameSSLStatus{
+			want: saasv1beta1.CustomHostnameSSLStatus{
 				Status:    "active",
 				ExpiresOn: func() *metav1.Time { t := metav1.NewTime(expires); return &t }(),
 			},
@@ -339,9 +339,9 @@ func TestSSLStatusFromNew(t *testing.T) {
 					},
 				},
 			},
-			want: saasv1alpha1.CustomHostnameSSLStatus{
+			want: saasv1beta1.CustomHostnameSSLStatus{
 				Status: "pending_validation",
-				ValidationRecords: []saasv1alpha1.SSLValidationRecord{
+				ValidationRecords: []saasv1beta1.SSLValidationRecord{
 					{TXTName: "_cf-txt.example.com", TXTValue: "abc123", HTTPUrl: "http://example.com/.well-known/pki-validation/x.txt", HTTPBody: "body"},
 				},
 			},
@@ -354,7 +354,7 @@ func TestSSLStatusFromNew(t *testing.T) {
 					ValidationErrors: []custom_hostnames.CustomHostnameNewResponseSSLValidationError{{Message: "timed out"}},
 				},
 			},
-			want: saasv1alpha1.CustomHostnameSSLStatus{
+			want: saasv1beta1.CustomHostnameSSLStatus{
 				Status:           "validation_timed_out",
 				ValidationErrors: []string{"timed out"},
 			},
@@ -397,14 +397,14 @@ func TestSSLStatusFromList(t *testing.T) {
 	tests := []struct {
 		name string
 		resp custom_hostnames.CustomHostnameListResponse
-		want saasv1alpha1.CustomHostnameSSLStatus
+		want saasv1beta1.CustomHostnameSSLStatus
 	}{
 		{
 			name: "status only",
 			resp: custom_hostnames.CustomHostnameListResponse{
 				SSL: custom_hostnames.CustomHostnameListResponseSSL{Status: "pending_validation"},
 			},
-			want: saasv1alpha1.CustomHostnameSSLStatus{Status: "pending_validation"},
+			want: saasv1beta1.CustomHostnameSSLStatus{Status: "pending_validation"},
 		},
 		{
 			name: "expires on set",
@@ -414,7 +414,7 @@ func TestSSLStatusFromList(t *testing.T) {
 					ExpiresOn: expires,
 				},
 			},
-			want: saasv1alpha1.CustomHostnameSSLStatus{
+			want: saasv1beta1.CustomHostnameSSLStatus{
 				Status:    "active",
 				ExpiresOn: func() *metav1.Time { t := metav1.NewTime(expires); return &t }(),
 			},
@@ -429,9 +429,9 @@ func TestSSLStatusFromList(t *testing.T) {
 					},
 				},
 			},
-			want: saasv1alpha1.CustomHostnameSSLStatus{
+			want: saasv1beta1.CustomHostnameSSLStatus{
 				Status: "pending_validation",
-				ValidationRecords: []saasv1alpha1.SSLValidationRecord{
+				ValidationRecords: []saasv1beta1.SSLValidationRecord{
 					{TXTName: "_cf-txt.example.com", TXTValue: "abc123", HTTPUrl: "http://example.com/.well-known/pki-validation/x.txt", HTTPBody: "body"},
 				},
 			},
@@ -444,7 +444,7 @@ func TestSSLStatusFromList(t *testing.T) {
 					ValidationErrors: []custom_hostnames.CustomHostnameListResponseSSLValidationError{{Message: "timed out"}},
 				},
 			},
-			want: saasv1alpha1.CustomHostnameSSLStatus{
+			want: saasv1beta1.CustomHostnameSSLStatus{
 				Status:           "validation_timed_out",
 				ValidationErrors: []string{"timed out"},
 			},

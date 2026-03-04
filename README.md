@@ -28,7 +28,7 @@ The token needs `Zone:Custom Hostnames:Edit` and `Zone:Zone:Read` permissions.
 ### 3. Create a Zone CR
 
 ```yaml
-apiVersion: domains.cf-edge.io/v1alpha1
+apiVersion: domains.cf-edge.io/v1beta1
 kind: Zone
 metadata:
   name: my-zone
@@ -42,7 +42,7 @@ spec:
 ### 4. Create a CustomHostname CR
 
 ```yaml
-apiVersion: saas.cf-edge.io/v1alpha1
+apiVersion: saas.cf-edge.io/v1beta1
 kind: CustomHostname
 metadata:
   name: customer-acme
