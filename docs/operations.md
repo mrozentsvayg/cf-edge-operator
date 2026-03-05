@@ -120,7 +120,7 @@ podDisruptionBudget:
 Before going live:
 
 - [ ] Zone CR `spec.id` matches the actual Cloudflare zone ID (verify in CF dashboard)
-- [ ] Secret referenced by `spec.credentialsRef` exists and contains a valid API token with `Custom Hostnames: Edit` and `Zone: Read` permissions
+- [ ] Secret referenced by `spec.credentialsRef` exists and contains a valid API token with `Zone: Read` and `SSL and Certificates: Edit` permissions
 - [ ] `--delete-policy` set appropriately — use `own-only` during any migration window where another tool may manage the same zone (see [migration.md](migration.md))
 - [ ] `replicaCount ≥ 2` and `leaderElect: true` for HA
 - [ ] `podDisruptionBudget.enabled: true` if availability during node drains is required
