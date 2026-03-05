@@ -14,6 +14,11 @@ Represents a Cloudflare zone. Lives in the operator namespace. Holds zone ID and
 ### CustomHostname (`saas.cf-edge.io/v1beta1`)
 Represents a Cloudflare custom hostname with origin server and optional SNI override. Lives in app namespaces. References a Zone cross-namespace.
 
+Key spec fields:
+- `spec.hostname` — the custom hostname (e.g. `app.customer.com`)
+- `spec.originServer` — the origin server CF proxies to
+- `spec.originSNI` — (optional) overrides the SNI sent to the origin. If omitted, CF uses `originServer` as the SNI. The special value `:request_host_header:` instructs CF to forward the incoming request's Host header as the SNI — useful when the origin validates connections by the hostname. Requires an account-level entitlement from Cloudflare.
+
 ## Controller Architecture: Coordinator / Worker Split
 
 Two controllers with clearly separated responsibilities. The coordinator/worker pattern is designed to extend to additional Cloudflare resource types (WAF rules, routing, etc.) — each would follow the same split with its own worker controller and API group.

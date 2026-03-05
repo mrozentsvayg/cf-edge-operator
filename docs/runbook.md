@@ -30,7 +30,7 @@ kubectl logs -n <operator-namespace> -l app.kubernetes.io/name=cf-edge-operator 
 | Condition reason | Cause | Resolution |
 |-----------------|-------|------------|
 | `SecretError` | Secret missing, wrong name, or key absent | Verify `spec.credentialsRef.name` and `spec.credentialsRef.key` match the actual secret |
-| `CloudflareError` | Invalid API token, wrong zone ID, or CF API degradation | Verify `spec.id` matches the zone in the CF dashboard; check token permissions (`Custom Hostnames: Edit`, `Zone: Read`) |
+| `CloudflareError` | Invalid API token, wrong zone ID, or CF API degradation | Verify `spec.id` matches the zone in the CF dashboard; check token permissions (`Zone: Read`, `SSL and Certificates: Edit`) |
 
 **Resolve:**
 
@@ -94,7 +94,7 @@ kubectl logs -n <operator-namespace> -l app.kubernetes.io/name=cf-edge-operator 
 
 | Symptom | Cause | Resolution |
 |---------|-------|------------|
-| `403 Forbidden` from Cloudflare API | API token revoked or lacks permissions | Rotate the token in the Zone CR's secret; token needs `Custom Hostnames: Edit` |
+| `403 Forbidden` from Cloudflare API | API token revoked or lacks permissions | Rotate the token in the Zone CR's secret; token needs `Zone: Read` and `SSL and Certificates: Edit` |
 | `429 Too Many Requests` | CF API rate limit | Transient; operator backs off automatically. Check for unusual reconcile volume. |
 | `zone not found` or `500` | CF API service degradation | Check https://www.cloudflarestatus.com; operator will recover when CF is healthy. |
 | Kubernetes API errors | RBAC or network issue | Check operator RBAC and cluster network connectivity. |
