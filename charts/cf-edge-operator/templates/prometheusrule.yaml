@@ -15,7 +15,7 @@ spec:
     rules:
 
     # Fires when a Zone CR cannot reach the Cloudflare API or its credentials secret
-    # is missing/invalid. Drift detection and CH reconciliation are suspended for that zone.
+    # is missing/invalid. Drift detection and CustomHostname reconciliation are suspended for that zone.
     - alert: CfEdgeOperatorZoneNotReady
       expr: cf_edge_operator_zone_ready == 0
       for: 5m

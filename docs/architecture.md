@@ -2,7 +2,7 @@
 
 ## Overview
 
-cf-edge-operator manages Cloudflare for SaaS (custom hostnames, Origin SNI overrides) via Kubernetes CRDs. It deliberately excludes DNS record management, which belongs to external-dns or similar tools.
+cf-edge-operator manages Cloudflare (CF) for SaaS (custom hostnames, Origin Server Name Indication (SNI) overrides) via Kubernetes CRDs. It deliberately excludes DNS record management, which belongs to external-dns or similar tools.
 
 See also: [docs/operations.md](operations.md) for configuration flags, performance tuning, and HA setup. [docs/runbook.md](runbook.md) for alert investigation.
 
@@ -86,7 +86,7 @@ Cloudflare SSL verification is asynchronous (minutes to hours). SSL status trans
 - Each zone drift cycle compares the SSL status from Cloudflare against what is stored in the CustomHostname CR status
 - When the status differs (e.g., `pending_validation` → `active`), the CR is enqueued for the CustomHostname controller
 - `status.ssl.status` reflects current Cloudflare SSL state
-- `status.ssl.validationRecords` surfaces DCV tokens so operators can complete validation
+- `status.ssl.validationRecords` surfaces Domain Control Validation (DCV) tokens so operators can complete validation
 - While `ssl.status != "active"`: `Ready=False`; the next zone cycle detects the change
 - When `ssl.status == "active"`: `Ready=True`, SSL provisioning duration metric observed
 
@@ -174,4 +174,4 @@ Enable with `prometheusRule.enabled=true`. See [docs/runbook.md](runbook.md) for
 ## Future Work
 
 - **CI integration tests** — end-to-end tests against a dedicated CF zone with real API credentials.
-- **Additional CF resource types** — WAF rules, routing, and other Cloudflare primitives via dedicated API groups (e.g. `security.cf-edge.io`, `routing.cf-edge.io`), each with its own worker controller following the coordinator/worker pattern.
+- **Additional CF resource types** — Web Application Firewall (WAF) rules, routing, and other Cloudflare primitives via dedicated API groups (e.g. `security.cf-edge.io`, `routing.cf-edge.io`), each with its own worker controller following the coordinator/worker pattern.
