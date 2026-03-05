@@ -134,7 +134,7 @@ The CR with a non-empty `status.id` is the active one that owns the Cloudflare h
 
 1. Identify which CR should own the hostname (the one with `status.id` populated is currently active in Cloudflare).
 2. Delete the duplicate CR(s) with `Ready=False/HostnameConflict`.
-3. The conflict condition on the remaining CR clears automatically on the next zone drift detection cycle (within 5 minutes).
+3. The conflict condition on the remaining CR clears automatically on the next zone drift detection cycle (within `--drift-interval`, default 1m).
 
 If the duplicate was created intentionally (e.g., migration between namespaces), ensure the old CR is fully deleted before the new one is expected to become active.
 

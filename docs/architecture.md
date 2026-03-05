@@ -77,11 +77,13 @@ On operator restart:
 
 ## SSL Provisioning (Async)
 
-Cloudflare SSL verification is asynchronous (minutes to hours). The CustomHostname controller handles this via:
+Cloudflare SSL verification is asynchronous (minutes to hours). SSL status transitions are detected via the zone controller's periodic bulk list — no per-CR polling:
+- Each zone drift cycle compares the SSL status from Cloudflare against what is stored in the CustomHostname CR status
+- When the status differs (e.g., `pending_validation` → `active`), the CR is enqueued for the CustomHostname controller
 - `status.ssl.status` reflects current Cloudflare SSL state
 - `status.ssl.validationRecords` surfaces DCV tokens so operators can complete validation
-- While `ssl.status != "active"`: `Ready=False`, requeue after 30s
-- When `ssl.status == "active"`: `Ready=True`, no further requeue
+- While `ssl.status != "active"`: `Ready=False`; the next zone cycle detects the change
+- When `ssl.status == "active"`: `Ready=True`, SSL provisioning duration metric observed
 
 ## Cloudflare API Efficiency
 
