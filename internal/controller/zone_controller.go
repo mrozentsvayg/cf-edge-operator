@@ -70,6 +70,10 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	var zone domainsv1beta1.Zone
 	if err := r.Get(ctx, req.NamespacedName, &zone); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			// Zone deleted — remove the stale zoneReady gauge series.
+			zoneReady.DeleteLabelValues(req.Name)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
