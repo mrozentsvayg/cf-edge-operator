@@ -59,9 +59,6 @@ const (
 	reasonHostnameConflict = "HostnameConflict"
 )
 
-// CustomHostnameReconciler reconciles a CustomHostname object.
-// It acts as the worker: handles individual Cloudflare API writes (create/update/delete).
-// Triggered by spec changes and by the Zone coordinator via the event channel on drift detection.
 const (
 	DeletePolicyAlways  = "always"
 	DeletePolicyOwnOnly = "own-only"

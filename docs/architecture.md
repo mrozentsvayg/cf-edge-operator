@@ -18,6 +18,9 @@ Key spec fields:
 - `spec.hostname` — the custom hostname (e.g. `app.customer.com`)
 - `spec.originServer` — the origin server CF proxies to
 - `spec.originSNI` — (optional) overrides the SNI sent to the origin during TLS handshake. If omitted, the operator does not manage Origin SNI — CF uses its default (the origin server hostname) and external changes to the SNI are not corrected. When set, the operator enforces the value on every reconcile. The special value `:request_host_header:` instructs CF to forward the incoming request's Host header as the SNI — useful when the origin validates connections by the hostname. Requires an account-level entitlement from Cloudflare; setting this field on a zone without the entitlement produces a CF API error.
+- `spec.zoneRef` — references the Zone CR (name + optional namespace, defaults to operator namespace)
+- `spec.ssl` — (optional) SSL configuration: DCV type (`dv`), method (`http`/`txt`/`email`), CA, minTLSVersion. Defaults to `type: dv, method: http`.
+- `spec.deletePolicy` — (optional) per-CR override for the operator-wide `--delete-policy`. See [Delete Policy](#delete-policy).
 
 ## Controller Architecture: Coordinator / Worker Split
 

@@ -22,6 +22,7 @@ import (
 	"github.com/cloudflare/cloudflare-go/v6/custom_hostnames"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	domainsv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/domains/v1beta1"
 	saasv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1beta1"
 )
 
@@ -230,6 +231,46 @@ func TestHasDrift(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := hasDrift(&tt.ch, tt.cfCH); got != tt.want {
 				t.Errorf("hasDrift() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRefersToZone(t *testing.T) {
+	r := &ZoneReconciler{}
+	zone := &domainsv1beta1.Zone{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-zone", Namespace: "operator-ns"},
+	}
+	tests := []struct {
+		name string
+		ch   saasv1beta1.CustomHostname
+		want bool
+	}{
+		{
+			name: "matching name, empty namespace (defaults to zone ns)",
+			ch:   saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{ZoneRef: saasv1beta1.ZoneRef{Name: "my-zone"}}},
+			want: true,
+		},
+		{
+			name: "matching name and namespace",
+			ch:   saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{ZoneRef: saasv1beta1.ZoneRef{Name: "my-zone", Namespace: "operator-ns"}}},
+			want: true,
+		},
+		{
+			name: "matching name, wrong namespace",
+			ch:   saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{ZoneRef: saasv1beta1.ZoneRef{Name: "my-zone", Namespace: "other-ns"}}},
+			want: false,
+		},
+		{
+			name: "wrong name",
+			ch:   saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{ZoneRef: saasv1beta1.ZoneRef{Name: "other-zone"}}},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := r.refersToZone(&tt.ch, zone); got != tt.want {
+				t.Errorf("refersToZone() = %v, want %v", got, tt.want)
 			}
 		})
 	}

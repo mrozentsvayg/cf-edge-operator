@@ -117,8 +117,13 @@ kubectl get customhostnames -A
 | `replicaCount` | `1` | Number of replicas |
 | `resources.limits.cpu` | `500m` | CPU limit |
 | `resources.limits.memory` | `128Mi` | Memory limit |
+| `dryRun` | `false` | Log CF operations without executing them |
+| `driftInterval` | `1m` | How often the zone controller bulk-lists CF to detect drift |
+| `driftBuffer` | `1024` | Internal channel buffer for drift events |
 | `podDisruptionBudget.enabled` | `false` | Create a PodDisruptionBudget (recommended when `replicaCount > 1`) |
 | `podDisruptionBudget.minAvailable` | `1` | Minimum available replicas during voluntary disruptions |
+| `serviceMonitor.enabled` | `false` | Create a ServiceMonitor for Prometheus Operator |
+| `prometheusRule.enabled` | `false` | Create a PrometheusRule with alert definitions |
 
 > **CRD upgrades:** Helm does not update CRDs on `helm upgrade`. When upgrading to a new chart version, apply CRDs manually first:
 > ```bash

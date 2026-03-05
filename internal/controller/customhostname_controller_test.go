@@ -560,3 +560,88 @@ func TestSSLStatusFromList(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildSSLParams(t *testing.T) {
+	tests := []struct {
+		name       string
+		ssl        saasv1beta1.CustomHostnameSSL
+		wantType   bool
+		wantCA     bool
+		wantMinTLS bool
+	}{
+		{
+			name:     "defaults: type=dv, method=http",
+			ssl:      saasv1beta1.CustomHostnameSSL{Type: "dv", Method: "http"},
+			wantType: true,
+		},
+		{
+			name: "all fields set",
+			ssl: saasv1beta1.CustomHostnameSSL{
+				Type:                 "dv",
+				Method:               "txt",
+				CertificateAuthority: "google",
+				MinTLSVersion:        "1.2",
+			},
+			wantType:   true,
+			wantCA:     true,
+			wantMinTLS: true,
+		},
+		{
+			name: "empty fields not set",
+			ssl:  saasv1beta1.CustomHostnameSSL{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildSSLParams(&tt.ssl)
+			hasType := got.Type.Present
+			hasCA := got.CertificateAuthority.Present
+			hasMinTLS := got.Settings.Present
+			if hasType != tt.wantType {
+				t.Errorf("Type.IsPresent() = %v, want %v", hasType, tt.wantType)
+			}
+			if hasCA != tt.wantCA {
+				t.Errorf("CertificateAuthority.IsPresent() = %v, want %v", hasCA, tt.wantCA)
+			}
+			if hasMinTLS != tt.wantMinTLS {
+				t.Errorf("Settings.IsPresent() = %v, want %v", hasMinTLS, tt.wantMinTLS)
+			}
+		})
+	}
+}
+
+func TestFastWritePredicateUpdate(t *testing.T) {
+	pred := fastWritePredicate()
+
+	tests := []struct {
+		name   string
+		oldGen int64
+		newGen int64
+		want   bool
+	}{
+		{
+			name:   "generation changed → let through",
+			oldGen: 1,
+			newGen: 2,
+			want:   true,
+		},
+		{
+			name:   "generation unchanged (status-only update) → block",
+			oldGen: 1,
+			newGen: 1,
+			want:   false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			old := &saasv1beta1.CustomHostname{}
+			old.SetGeneration(tt.oldGen)
+			new := &saasv1beta1.CustomHostname{}
+			new.SetGeneration(tt.newGen)
+			got := pred.Update(event.UpdateEvent{ObjectOld: old, ObjectNew: new})
+			if got != tt.want {
+				t.Errorf("fastWritePredicate.Update() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
