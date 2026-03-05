@@ -114,6 +114,15 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
+	setupLog.Info("Configuration",
+		"operatorNamespace", operatorNamespace,
+		"deletePolicy", deletePolicy,
+		"dryRun", dryRun,
+		"driftInterval", driftInterval,
+		"driftBuffer", driftBuffer,
+		"sslPollInterval", sslPollInterval,
+		"leaderElect", enableLeaderElection,
+	)
 	if dryRun {
 		setupLog.Info("DRY-RUN mode enabled — no Cloudflare write operations will be performed")
 	}
