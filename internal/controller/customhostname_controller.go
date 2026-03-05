@@ -258,13 +258,14 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 		// For own-only policy: look up current CF state before deleting.
 		// If another entity now owns this hostname (different ID), release the finalizer without deleting.
 		// spec.deletePolicy takes precedence over the operator-wide --delete-policy flag.
-		if effectiveDeletePolicy(ch.Spec.DeletePolicy, r.DeletePolicy) == DeletePolicyOwnOnly {
+		policy := effectiveDeletePolicy(ch.Spec.DeletePolicy, r.DeletePolicy)
+		if policy == DeletePolicyOwnOnly {
 			current, err := r.findByHostname(ctx, cf, zoneID, ch.Spec.Hostname)
 			if err != nil {
 				log.Error(err, "failed to look up hostname before delete", "hostname", ch.Spec.Hostname)
 				return ctrl.Result{}, err
 			}
-			if !shouldDeleteInCF(r.DeletePolicy, ch.Status.ID, current) {
+			if !shouldDeleteInCF(policy, ch.Status.ID, current) {
 				log.Info("own-only: releasing finalizer without deleting",
 					"hostname", ch.Spec.Hostname, "statusID", ch.Status.ID,
 					"currentID", func() string {

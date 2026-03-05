@@ -140,12 +140,11 @@ See [docs/architecture.md](docs/architecture.md) for the coordinator/worker desi
 
 ## Metrics
 
-Metrics are exposed on `:8080/metrics` (HTTP). Key metrics:
+Metrics are exposed on `:8080/metrics` (HTTP, via Helm chart). See [docs/architecture.md](docs/architecture.md#prometheus-metrics) for the full reference. Key metrics:
 
-- `cf_edge_operator_customhostname_operations_total{operation}` — successful CF write operations (create, recreate, update, delete)
-- `cf_edge_operator_ssl_provisioning_duration_seconds{zone,hostname,method}` — time from CF create to `ssl.status == active` (1m–1w buckets)
-- `cf_edge_operator_customhostnames{zone,state}` — CRs by zone and state (ready/pending/unhealthy/conflict); sum = total CRs in zone
-- `cf_edge_operator_zone_customhostnames{zone,type}` — CF custom hostnames by type (managed/orphan); sum = CF quota usage for the zone
-- `cf_edge_operator_api_errors_total` — Cloudflare API error count
-- `cf_edge_operator_api_duration_seconds{operation}` — CF API latency histogram
+- `cf_edge_operator_operations_total{resource,operation}` — successful CF write operations (create, recreate, update, delete)
+- `cf_edge_operator_customhostnames{zone,state}` — CRs by zone and state (ready/pending/unhealthy/conflict)
+- `cf_edge_operator_zone_customhostnames{zone,type}` — CF custom hostnames by type (managed/orphan)
+- `cf_edge_operator_api_errors_by_code_total{resource,operation,status_code}` — CF API errors by HTTP status code
+- `cf_edge_operator_api_duration_seconds{resource,operation}` — CF API latency histogram
 
