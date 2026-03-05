@@ -40,7 +40,7 @@ sequenceDiagram
     CF-->>CHC: current state or not found
     CHC->>CF: POST / PATCH / DELETE
     CF-->>CHC: result
-    CHC->>CHC: update status · requeue if SSL pending
+    CHC->>CHC: update status (no self-requeue; zone detects SSL changes)
 ```
 
 ## Why This Split
@@ -78,7 +78,7 @@ On operator restart:
 3. Only CustomHostname CRs with actual drift are enqueued
 4. Spec-unchanged CRs are never individually reconciled
 
-`GenerationChangedPredicate` is applied to the CustomHostname controller as an additional guard against spurious reconciles from status-only updates during normal operation.
+`fastWritePredicate` is applied to the CustomHostname controller: on informer Create events, it only passes CRs with no `status.id` (genuinely new) or with a DeletionTimestamp (terminating). CRs with an existing `status.id` are skipped — the Zone controller handles them via drift detection. On Update events, it filters by generation change, guarding against spurious reconciles from status-only updates.
 
 ## SSL Provisioning (Async)
 

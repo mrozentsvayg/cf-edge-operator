@@ -202,7 +202,7 @@ The `status.ssl.validationRecords` field contains the DCV tokens Cloudflare requ
 
 1. Check `status.ssl.status` — if it is `pending_validation`, Cloudflare is waiting for DCV.
 2. Confirm the validation record is correctly placed and publicly resolvable.
-3. Once DCV is satisfied, Cloudflare activates the certificate and the CR transitions to `Ready=True` within the next requeue cycle (30s).
+3. Once DCV is satisfied, Cloudflare activates the certificate and the CR transitions to `Ready=True` within the next zone drift detection cycle (`--drift-interval`, default 1m).
 
 If the SSL status is `pending_issuance` or `pending_deployment`, DCV has passed and Cloudflare is issuing/deploying the certificate — no action needed, just wait.
 

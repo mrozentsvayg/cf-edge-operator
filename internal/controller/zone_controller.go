@@ -96,9 +96,6 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 	zoneReady.WithLabelValues(zone.Name).Set(1)
 	zone.Status.Name = zoneDetails.Name
-	if err := r.Status().Update(ctx, &zone); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to update zone status: %w", err)
-	}
 	if err := r.setReady(ctx, &zone, metav1.ConditionTrue, "ZoneReady", "Zone credentials validated"); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -256,7 +253,7 @@ func (r *ZoneReconciler) setReady(ctx context.Context, zone *domainsv1beta1.Zone
 		ObservedGeneration: zone.Generation,
 	})
 	if err := r.Status().Update(ctx, zone); err != nil {
-		return fmt.Errorf("failed to update zone conditions: %w", err)
+		return fmt.Errorf("failed to update zone status: %w", err)
 	}
 	return nil
 }
