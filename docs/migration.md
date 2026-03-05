@@ -75,8 +75,8 @@ If you then delete the CR (e.g., rolling back the migration):
 
 | Policy | Behavior |
 |--------|----------|
-| `always` | Tries `DELETE <stale-id>` → 404 → releases finalizer. The live hostname survives by accident. |
-| `own-only` | Looks up current CF state, sees ID mismatch → releases finalizer without any CF API call. Explicitly safe. |
+| `always` | Tries `DELETE <stale-id>` → 404 → releases the finalizer. The live hostname survives by accident. |
+| `own-only` | Looks up current CF state, sees ID mismatch → releases the finalizer without any CF API call. Explicitly safe. |
 
 `own-only` makes migration rollback safe by design rather than safe by accident.
 

@@ -117,7 +117,7 @@ App namespaces never hold Cloudflare credentials.
 The `--delete-policy` flag sets the operator-wide default behavior when a CustomHostname CR is deleted. Individual CRs can override it via `spec.deletePolicy`:
 
 - **`always`** (default): delete from Cloudflare by `status.id` regardless of current state. Treats 404 as success.
-- **`own-only`**: look up the current Cloudflare state via `findByHostname` before deleting. Only deletes if the current CF ID matches `status.id`. If IDs differ or the hostname is not found, releases the finalizer without touching Cloudflare.
+- **`own-only`**: look up the current Cloudflare state via `findByHostname` before deleting. Only deletes if the current CF ID matches `status.id`. If IDs differ or the hostname is not found, releases the finalizer (removes the CR from Kubernetes without touching Cloudflare).
 
 ### When to use `own-only`
 
