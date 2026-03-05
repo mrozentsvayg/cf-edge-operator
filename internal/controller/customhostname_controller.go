@@ -78,9 +78,6 @@ type CustomHostnameReconciler struct {
 	DeletePolicy string
 	// DryRun skips all Cloudflare write operations and logs what would happen instead.
 	DryRun bool
-	// SSLPollInterval is how often SSL-pending CRs are re-checked until ssl.status becomes active.
-	// Set via --ssl-poll-interval (default: 30s).
-	SSLPollInterval time.Duration
 }
 
 // +kubebuilder:rbac:groups=saas.cf-edge.io,resources=customhostnames,verbs=get;list;watch;create;update;patch;delete
@@ -380,8 +377,9 @@ func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneName 
 	if err := r.setCondition(ctx, ch, metav1.ConditionFalse, "SSLPending", fmt.Sprintf("SSL status: %s", sslStatus)); err != nil {
 		return ctrl.Result{}, err
 	}
-	log.V(1).Info("SSL pending, requeuing", "hostname", ch.Spec.Hostname, "ssl_status", sslStatus)
-	return ctrl.Result{RequeueAfter: r.SSLPollInterval}, nil
+	// No self-requeue: the zone controller detects SSL status changes via its bulk
+	// list and re-enqueues this CR when ssl.status transitions (e.g. active).
+	return ctrl.Result{}, nil
 }
 
 // detectConflict checks whether another CR already owns this hostname in Cloudflare (i.e. has a
@@ -538,7 +536,8 @@ func sslStatusFromList(resp *custom_hostnames.CustomHostnameListResponse) *saasv
 // On pod restart, the informer emits Create events for all existing CRs.
 // We distinguish them from genuinely new CRs using status.ID:
 //   - status.ID != "" → existing CR, already provisioned; drop it and let the
-//     Zone coordinator's periodic bulk-list handle drift detection.
+//     Zone coordinator's periodic bulk-list handle drift detection (including
+//     SSL status transitions: initializing → pending_validation → active).
 //   - status.ID == "" → genuinely new CR (or crash-recovery case); let it through
 //     for immediate provisioning.
 //   - DeletionTimestamp set → terminating CR; always let it through regardless of

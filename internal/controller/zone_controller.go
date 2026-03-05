@@ -177,6 +177,8 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	if drifted > 0 {
 		log.Info("drift detection complete", "zoneID", zone.Spec.ID, "drifted", drifted, "total", len(cfHostnames))
+	} else {
+		log.V(1).Info("drift detection complete", "zoneID", zone.Spec.ID, "drifted", 0, "total", len(cfHostnames))
 	}
 
 	return ctrl.Result{RequeueAfter: r.DriftInterval}, nil
@@ -210,6 +212,17 @@ func hasDrift(ch *saasv1beta1.CustomHostname, cfCH custom_hostnames.CustomHostna
 		return true
 	}
 	if ch.Spec.OriginSNI != nil && cfCH.CustomOriginSNI != *ch.Spec.OriginSNI {
+		return true
+	}
+	// Detect SSL status changes (e.g. initializing → pending_validation → active).
+	// The zone bulk list already includes SSL status, so we use it to drive status
+	// updates instead of per-CR self-requeue polling in the CH controller.
+	cfSSLStatus := string(cfCH.SSL.Status)
+	crSSLStatus := ""
+	if ch.Status.SSL != nil {
+		crSSLStatus = ch.Status.SSL.Status
+	}
+	if cfSSLStatus != crSSLStatus {
 		return true
 	}
 	return false

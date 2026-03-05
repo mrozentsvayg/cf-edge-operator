@@ -30,10 +30,6 @@ driftInterval: "1m"
 # running many zones with large numbers of custom hostnames.
 driftBuffer: 1024
 
-# How often SSL-pending CustomHostname CRs are re-checked until ssl.status becomes active.
-# Each pending CR makes one Cloudflare API call per interval. Increase if doing large batch
-# imports where many CRs will be SSL-pending simultaneously.
-sslPollInterval: "30s"
 
 resources:
   limits:

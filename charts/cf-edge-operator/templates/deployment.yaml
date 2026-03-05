@@ -35,7 +35,6 @@ spec:
         - --delete-policy={{ .Values.deletePolicy }}
         - --drift-interval={{ .Values.driftInterval }}
         - --drift-buffer={{ .Values.driftBuffer }}
-        - --ssl-poll-interval={{ .Values.sslPollInterval }}
         {{- if .Values.dryRun }}
         - --dry-run
         {{- end }}

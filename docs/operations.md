@@ -13,7 +13,6 @@ All flags are set via Helm values, which are passed as container args in the Dep
 | `--dry-run` | `false` | `dryRun` | Log CF operations without executing them |
 | `--drift-interval` | `1m` | `driftInterval` | How often the zone controller bulk-lists CF hostnames |
 | `--drift-buffer` | `1024` | `driftBuffer` | Internal channel buffer for drift events |
-| `--ssl-poll-interval` | `30s` | `sslPollInterval` | How often SSL-pending CRs are re-checked until active |
 | `--leader-elect` | `false` | `leaderElect` | Required when running multiple replicas |
 
 ---
