@@ -13,6 +13,9 @@ spec:
   # Sets job="cf-edge-operator" on all scraped series (via the app.kubernetes.io/name label).
   # The PrometheusRule alert expressions rely on this value.
   jobLabel: "app.kubernetes.io/name"
+  namespaceSelector:
+    matchNames:
+    - {{ .Release.Namespace }}
   selector:
     matchLabels:
       app.kubernetes.io/name: cf-edge-operator

@@ -6,14 +6,14 @@ Deployment configuration, performance tuning, and HA setup for production.
 
 All flags are set via Helm values, which are passed as container args in the Deployment.
 
-| Flag | Default | Helm value | Description |
-|------|---------|-----------|-------------|
-| `--operator-namespace` | `cf-edge-operator-system` | `operatorNamespace` | Namespace where Zone CRs are managed |
+| Flag | Helm default | Helm value | Description |
+|------|-------------|-----------|-------------|
+| `--operator-namespace` | release namespace | `operatorNamespace` | Namespace where Zone CRs are managed |
 | `--delete-policy` | `always` | `deletePolicy` | `always` or `own-only` — see [migration.md](migration.md) |
 | `--dry-run` | `false` | `dryRun` | Log Cloudflare (CF) operations without executing them |
 | `--drift-interval` | `1m` | `driftInterval` | How often the zone controller bulk-lists CF hostnames |
 | `--drift-buffer` | `1024` | `driftBuffer` | Internal channel buffer for drift events |
-| `--leader-elect` | `false` | `leaderElect` | Required when running multiple replicas |
+| `--leader-elect` | `true` | `leaderElect` | Required when running multiple replicas |
 
 ---
 
