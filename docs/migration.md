@@ -4,9 +4,9 @@ This guide covers migrating custom hostname management from external-dns (using 
 
 ## Overview
 
-external-dns manages Cloudflare custom hostnames as a side-effect of DNS record management. cf-edge-operator manages them explicitly via `CustomHostname` CRs, giving you:
+external-dns manages Cloudflare (CF) custom hostnames as a side-effect of DNS record management. cf-edge-operator manages them explicitly via `CustomHostname` CRs, giving you:
 
-- Origin SNI override support
+- Origin Server Name Indication (SNI) override support
 - SSL lifecycle visibility (validation records, expiry)
 - Drift detection and automatic reconciliation
 - Prometheus metrics

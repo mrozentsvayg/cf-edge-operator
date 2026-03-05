@@ -10,7 +10,7 @@ All flags are set via Helm values, which are passed as container args in the Dep
 |------|---------|-----------|-------------|
 | `--operator-namespace` | `cf-edge-operator-system` | `operatorNamespace` | Namespace where Zone CRs are managed |
 | `--delete-policy` | `always` | `deletePolicy` | `always` or `own-only` — see [migration.md](migration.md) |
-| `--dry-run` | `false` | `dryRun` | Log CF operations without executing them |
+| `--dry-run` | `false` | `dryRun` | Log Cloudflare (CF) operations without executing them |
 | `--drift-interval` | `1m` | `driftInterval` | How often the zone controller bulk-lists CF hostnames |
 | `--drift-buffer` | `1024` | `driftBuffer` | Internal channel buffer for drift events |
 | `--leader-elect` | `false` | `leaderElect` | Required when running multiple replicas |
@@ -102,7 +102,7 @@ leaderElect: true
 
 ### PodDisruptionBudget
 
-Enable the PDB to ensure at least one replica remains available during voluntary disruptions (node drains, rolling updates). Has no effect with `replicaCount: 1`.
+Enable the PodDisruptionBudget (PDB) to ensure at least one replica remains available during voluntary disruptions (node drains, rolling updates). Has no effect with `replicaCount: 1`.
 
 ```yaml
 # values.yaml

@@ -6,7 +6,7 @@ This runbook covers the alert rules shipped with the operator's PrometheusRule. 
 
 **Severity:** critical
 
-**Meaning:** A Zone CR has been unable to validate its credentials or reach the Cloudflare API for 5 minutes. Drift detection and CustomHostname reconciliation are fully suspended for that zone.
+**Meaning:** A Zone CR has been unable to validate its credentials or reach the Cloudflare (CF) API for 5 minutes. Drift detection and CustomHostname reconciliation are fully suspended for that zone.
 
 **Investigate:**
 
