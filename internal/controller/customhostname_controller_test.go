@@ -301,6 +301,86 @@ func TestShouldDeleteInCF(t *testing.T) {
 	}
 }
 
+func TestSniDrifted(t *testing.T) {
+	sni := "sni.example.com"
+	hostHeader := ":request_host_header:"
+	originServer := "origin.example.com"
+	tests := []struct {
+		name       string
+		currentSNI string
+		ch         saasv1beta1.CustomHostname
+		want       bool
+	}{
+		{
+			name:       "nil spec, CF empty → no drift (don't manage)",
+			currentSNI: "",
+			ch:         saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: originServer}},
+			want:       false,
+		},
+		{
+			name:       "nil spec, CF has origin server → no drift (don't manage)",
+			currentSNI: originServer,
+			ch:         saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: originServer}},
+			want:       false,
+		},
+		{
+			name:       "nil spec, CF has custom SNI → no drift (don't manage)",
+			currentSNI: sni,
+			ch:         saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: originServer}},
+			want:       false,
+		},
+		{
+			name:       "nil spec, CF has :request_host_header: → no drift (don't manage)",
+			currentSNI: hostHeader,
+			ch:         saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: originServer}},
+			want:       false,
+		},
+		{
+			name:       "spec matches CF → no drift",
+			currentSNI: sni,
+			ch:         saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: originServer, OriginSNI: &sni}},
+			want:       false,
+		},
+		{
+			name:       "spec differs from CF → drift",
+			currentSNI: "other.example.com",
+			ch:         saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: originServer, OriginSNI: &sni}},
+			want:       true,
+		},
+		{
+			name:       "spec = origin server, CF empty (no entitlement) → drift",
+			currentSNI: "",
+			ch:         saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: originServer, OriginSNI: &originServer}},
+			want:       true,
+		},
+		{
+			name:       "spec = origin server, CF = origin server → no drift",
+			currentSNI: originServer,
+			ch:         saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: originServer, OriginSNI: &originServer}},
+			want:       false,
+		},
+		{
+			name:       "spec = :request_host_header:, CF = :request_host_header: → no drift",
+			currentSNI: hostHeader,
+			ch:         saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: originServer, OriginSNI: &hostHeader}},
+			want:       false,
+		},
+		{
+			name:       "spec = :request_host_header:, CF has origin server → drift",
+			currentSNI: originServer,
+			ch:         saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: originServer, OriginSNI: &hostHeader}},
+			want:       true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sniDrifted(tt.currentSNI, &tt.ch); got != tt.want {
+				t.Errorf("sniDrifted() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSSLStatusFromNew(t *testing.T) {
 	expires := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 

@@ -180,6 +180,51 @@ func TestHasDrift(t *testing.T) {
 			cfCH: custom_hostnames.CustomHostnameListResponse{CustomOriginServer: "origin.example.com", CustomOriginSNI: sni},
 			want: false,
 		},
+		{
+			name: "ssl status matches",
+			ch: saasv1beta1.CustomHostname{
+				Spec:   saasv1beta1.CustomHostnameSpec{OriginServer: "origin.example.com"},
+				Status: saasv1beta1.CustomHostnameStatus{SSL: &saasv1beta1.CustomHostnameSSLStatus{Status: "active"}},
+			},
+			cfCH: custom_hostnames.CustomHostnameListResponse{
+				CustomOriginServer: "origin.example.com",
+				SSL:                custom_hostnames.CustomHostnameListResponseSSL{Status: "active"},
+			},
+			want: false,
+		},
+		{
+			name: "ssl status transition: pending → active",
+			ch: saasv1beta1.CustomHostname{
+				Spec:   saasv1beta1.CustomHostnameSpec{OriginServer: "origin.example.com"},
+				Status: saasv1beta1.CustomHostnameStatus{SSL: &saasv1beta1.CustomHostnameSSLStatus{Status: "pending_validation"}},
+			},
+			cfCH: custom_hostnames.CustomHostnameListResponse{
+				CustomOriginServer: "origin.example.com",
+				SSL:                custom_hostnames.CustomHostnameListResponseSSL{Status: "active"},
+			},
+			want: true,
+		},
+		{
+			name: "ssl status: cr has nil ssl, cf has status",
+			ch: saasv1beta1.CustomHostname{
+				Spec: saasv1beta1.CustomHostnameSpec{OriginServer: "origin.example.com"},
+			},
+			cfCH: custom_hostnames.CustomHostnameListResponse{
+				CustomOriginServer: "origin.example.com",
+				SSL:                custom_hostnames.CustomHostnameListResponseSSL{Status: "pending_validation"},
+			},
+			want: true,
+		},
+		{
+			name: "ssl status: both empty (no ssl)",
+			ch: saasv1beta1.CustomHostname{
+				Spec: saasv1beta1.CustomHostnameSpec{OriginServer: "origin.example.com"},
+			},
+			cfCH: custom_hostnames.CustomHostnameListResponse{
+				CustomOriginServer: "origin.example.com",
+			},
+			want: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

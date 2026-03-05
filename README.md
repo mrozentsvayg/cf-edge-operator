@@ -23,7 +23,7 @@ kubectl create secret generic cloudflare-api-token \
   --from-literal=apiToken=<your-token>
 ```
 
-The token needs `Zone:Custom Hostnames:Edit` and `Zone:Zone:Read` permissions.
+The token needs `Zone: Read` and `SSL and Certificates: Edit` permissions.
 
 ### 3. Create a Zone CR
 
@@ -82,7 +82,7 @@ kubectl get customhostnames -A
 |-------|----------|-------------|
 | `spec.hostname` | yes | The custom hostname (e.g. `api.acme.com`) |
 | `spec.originServer` | yes | Origin the hostname routes to. Must belong to the zone. |
-| `spec.originSNI` | no | SNI sent to the origin. Defaults to `originServer`. Requires CF account entitlement. |
+| `spec.originSNI` | no | SNI sent to the origin. If omitted, the operator does not manage SNI. Requires CF account entitlement. |
 | `spec.zoneRef.name` | yes | Zone CR name |
 | `spec.zoneRef.namespace` | no | Zone CR namespace. Defaults to the operator namespace. |
 | `spec.ssl.type` | no | DV type. Default: `dv` |

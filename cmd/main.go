@@ -118,6 +118,10 @@ func main() {
 		"driftBuffer", driftBuffer,
 		"leaderElect", enableLeaderElection,
 	)
+	if deletePolicy != controller.DeletePolicyAlways && deletePolicy != controller.DeletePolicyOwnOnly {
+		setupLog.Error(nil, "invalid --delete-policy, must be \"always\" or \"own-only\"", "value", deletePolicy)
+		os.Exit(1)
+	}
 	if dryRun {
 		setupLog.Info("DRY-RUN mode enabled — no Cloudflare write operations will be performed")
 	}
