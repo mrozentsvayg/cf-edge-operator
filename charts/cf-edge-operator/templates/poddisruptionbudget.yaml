@@ -2,12 +2,13 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ include "cf-edge-operator.fullname" . }}
+  name: {{ include "cf-edge-operator.name" . }}
   labels:
     {{- include "cf-edge-operator.labels" . | nindent 4 }}
 spec:
   minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
   selector:
     matchLabels:
-      {{- include "cf-edge-operator.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/name: cf-edge-operator
+      app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}

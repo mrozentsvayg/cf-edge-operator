@@ -147,9 +147,11 @@ See [docs/architecture.md](docs/architecture.md) for the coordinator/worker desi
 
 Metrics are exposed on `:8080/metrics` (HTTP, via Helm chart). See [docs/architecture.md](docs/architecture.md#prometheus-metrics) for the full reference. Key metrics:
 
+- `cf_edge_operator_zone_ready{zone_cr}` — 1 if zone credentials are valid and CF API is reachable, 0 otherwise
 - `cf_edge_operator_operations_total{resource,operation}` — successful CF write operations (create, recreate, update, delete)
 - `cf_edge_operator_customhostnames{zone,state}` — CRs by zone and state (ready/pending/unhealthy/conflict)
 - `cf_edge_operator_zone_customhostnames{zone,type}` — CF custom hostnames by type (managed/orphan)
+- `cf_edge_operator_ssl_provisioning_duration_seconds{zone,hostname,method}` — time from CF create to SSL active
 - `cf_edge_operator_api_errors_by_code_total{resource,operation,status_code}` — CF API errors by HTTP status code
 - `cf_edge_operator_api_duration_seconds{resource,operation}` — CF API latency histogram
 

@@ -295,8 +295,8 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 			}
 		} else {
 			log.Info("custom hostname deleted from Cloudflare", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
-			operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpDelete).Inc()
 		}
+		operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpDelete).Inc()
 	}
 
 	controllerutil.RemoveFinalizer(ch, finalizerName)
