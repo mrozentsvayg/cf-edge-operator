@@ -176,6 +176,9 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 		operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpUpdate).Inc()
 	}
 
+	if r.DryRun {
+		return ctrl.Result{}, nil
+	}
 	ch.Status.SSL = sslStatusFromList(existing)
 	if err := r.Status().Update(ctx, ch); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to update status: %w", err)
