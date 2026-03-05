@@ -17,7 +17,7 @@ Represents a Cloudflare custom hostname with origin server and optional SNI over
 Key spec fields:
 - `spec.hostname` — the custom hostname (e.g. `app.customer.com`)
 - `spec.originServer` — the origin server CF proxies to
-- `spec.originSNI` — (optional) overrides the SNI sent to the origin. If omitted, CF uses `originServer` as the SNI. The special value `:request_host_header:` instructs CF to forward the incoming request's Host header as the SNI — useful when the origin validates connections by the hostname. Requires an account-level entitlement from Cloudflare.
+- `spec.originSNI` — (optional) overrides the SNI sent to the origin during TLS handshake. If omitted, the operator does not manage Origin SNI — CF uses its default (the origin server hostname) and external changes to the SNI are not corrected. When set, the operator enforces the value on every reconcile. The special value `:request_host_header:` instructs CF to forward the incoming request's Host header as the SNI — useful when the origin validates connections by the hostname. Requires an account-level entitlement from Cloudflare; setting this field on a zone without the entitlement produces a CF API error.
 
 ## Controller Architecture: Coordinator / Worker Split
 

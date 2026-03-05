@@ -161,7 +161,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 			"desiredSNI", ch.Spec.OriginSNI)
 		editParams := custom_hostnames.CustomHostnameEditParams{ZoneID: cloudflare.F(zoneID)}
 		opts := []option.RequestOption{option.WithJSONSet("custom_origin_server", ch.Spec.OriginServer)}
-		if ch.Spec.OriginSNI != nil && *ch.Spec.OriginSNI != ch.Spec.OriginServer {
+		if ch.Spec.OriginSNI != nil {
 			opts = append(opts, option.WithJSONSet("custom_origin_sni", *ch.Spec.OriginSNI))
 		}
 		if r.DryRun {
@@ -200,7 +200,7 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudfl
 	}
 	params.SSL = cloudflare.F(buildSSLParams(sslSpec))
 	opts := []option.RequestOption{option.WithJSONSet("custom_origin_server", ch.Spec.OriginServer)}
-	if ch.Spec.OriginSNI != nil && *ch.Spec.OriginSNI != ch.Spec.OriginServer {
+	if ch.Spec.OriginSNI != nil {
 		opts = append(opts, option.WithJSONSet("custom_origin_sni", *ch.Spec.OriginSNI))
 	}
 
@@ -465,7 +465,9 @@ func (r *CustomHostnameReconciler) buildCloudflareClient(ctx context.Context, ch
 
 func sniDrifted(currentSNI string, ch *saasv1beta1.CustomHostname) bool {
 	if ch.Spec.OriginSNI == nil {
-		return currentSNI != "" && currentSNI != ch.Spec.OriginServer
+		// Nil means "don't manage SNI" — external changes are not corrected.
+		// Matches hasDrift() in the zone controller.
+		return false
 	}
 	return currentSNI != *ch.Spec.OriginSNI
 }

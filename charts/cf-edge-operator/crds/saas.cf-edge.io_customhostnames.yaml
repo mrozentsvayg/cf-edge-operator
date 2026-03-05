@@ -75,9 +75,13 @@ spec:
                 type: string
               originSNI:
                 description: |-
-                  OriginSNI overrides the SNI sent to the origin. Defaults to OriginServer if omitted.
+                  OriginSNI overrides the SNI sent to the origin during TLS handshake.
+                  If omitted, the operator does not manage Origin SNI — Cloudflare uses its
+                  default (the origin server hostname) and external changes are not corrected.
+                  When set, the operator enforces the value on every reconcile.
                   Set to ":request_host_header:" to forward the incoming Host header as SNI.
                   Requires a Cloudflare account entitlement — contact your Cloudflare account team to enable.
+                minLength: 1
                 type: string
               originServer:
                 description: OriginServer is the origin the custom hostname points
