@@ -83,21 +83,21 @@ var (
 		Help: "Cloudflare API errors by resource, operation, and HTTP status code.",
 	}, []string{"resource", "operation", "status_code"})
 
-	// driftBufferDepth reports the current number of items in the drift event channel
-	// at the end of each zone reconcile cycle. Approaching --drift-buffer capacity
-	// indicates the CustomHostname controller is not draining events fast enough.
-	driftBufferDepth = prometheus.NewGauge(prometheus.GaugeOpts{
+	// driftBufferDepth reports the current number of items in a drift event channel
+	// at the end of each zone reconcile cycle. Labeled by resource type. Approaching
+	// --drift-buffer capacity indicates the worker controller is not draining fast enough.
+	driftBufferDepth = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "cf_edge_operator_drift_buffer_depth",
-		Help: "Current number of items in the drift event channel buffer.",
-	})
+		Help: "Current number of items in the drift event channel buffer, by resource type.",
+	}, []string{"resource"})
 
 	// driftBufferOverflowTotal counts how many times a drift event send blocked
-	// because the channel buffer was full. Non-zero means the zone controller
-	// stalled waiting for the CustomHostname controller to drain events.
-	driftBufferOverflowTotal = prometheus.NewCounter(prometheus.CounterOpts{
+	// because the channel buffer was full. Labeled by resource type. Non-zero means
+	// the zone controller stalled waiting for the worker controller to drain events.
+	driftBufferOverflowTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "cf_edge_operator_drift_buffer_overflow_total",
-		Help: "Number of times the drift event buffer was full, causing the zone controller to block.",
-	})
+		Help: "Number of times the drift event buffer was full, by resource type.",
+	}, []string{"resource"})
 )
 
 func init() {
