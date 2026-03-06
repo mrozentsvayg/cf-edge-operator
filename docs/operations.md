@@ -115,6 +115,44 @@ podDisruptionBudget:
 
 ---
 
+## Uninstallation
+
+**Important:** Delete CRs before removing the operator. The operator must be running to process finalizers and clean up Cloudflare resources. Removing the operator first leaves CRs stuck with finalizers that can only be removed manually.
+
+### Helm
+
+```bash
+# 1. Delete all CustomHostname CRs (operator removes finalizers + deletes from CF)
+kubectl delete customhostnames --all -A
+
+# 2. Delete all Zone CRs
+kubectl delete zones --all -A
+
+# 3. Uninstall the operator
+helm uninstall cf-edge-operator
+
+# 4. Delete CRDs (Helm does not remove CRDs on uninstall)
+kubectl delete -f charts/cf-edge-operator/crds/
+```
+
+### Kustomize
+
+```bash
+# 1. Delete all CustomHostname CRs first
+kubectl delete customhostnames --all -A
+
+# 2. Delete all Zone CRs
+kubectl delete zones --all -A
+
+# 3. Remove operator, CRDs, RBAC, and namespace
+make undeploy
+```
+
+**Do not run `make undeploy` before deleting CRs.** It removes CRDs, which triggers cascading deletion of all CRs. CRs with finalizers will block CRD deletion because the operator (already removed) cannot process them. Recovery requires manually patching finalizers off each stuck CR.
+
+---
+
+
 ## Production Checklist
 
 Before going live:
