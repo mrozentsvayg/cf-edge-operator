@@ -1,14 +1,16 @@
+# Example with explicit Origin SNI override.
+# Requires a Cloudflare account entitlement for custom Origin SNI.
 apiVersion: saas.cf-edge.io/v1beta1
 kind: CustomHostname
 metadata:
-  name: customer-app
+  name: customer-app-sni
   namespace: my-app-namespace
 spec:
   hostname: app.customer.example.com
   originServer: origin.example.com
+  originSNI: sni.internal.example.com
   zoneRef:
     name: example-com
-    # namespace defaults to operator namespace (cf-edge-operator-system) if omitted
   ssl:
     type: dv
     method: http
