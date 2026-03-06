@@ -139,7 +139,7 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			// is deleted and CF removes the hostname, the previously-conflicted CR can now
 			// provision it, clearing the conflict condition on its next successful reconcile.
 			log.Info("hostname missing from CF, enqueuing", "hostname", ch.Spec.Hostname)
-			r.CustomHostnameEvents <- event.GenericEvent{Object: ch}
+			r.sendDriftEvent(ctx, ch)
 			drifted++
 		} else if hasDrift(ch, cfCH) {
 			if isHostnameConflict(ch) {
@@ -147,7 +147,7 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 				log.Info("skipping drift enqueue: hostname conflict", "hostname", ch.Spec.Hostname)
 			} else {
 				log.Info("drift detected, enqueuing CustomHostname", "hostname", ch.Spec.Hostname)
-				r.CustomHostnameEvents <- event.GenericEvent{Object: ch}
+				r.sendDriftEvent(ctx, ch)
 				drifted++
 			}
 		} else if r.DryRun {
@@ -176,6 +176,8 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	zoneCustomHostnames.WithLabelValues(zone.Status.Name, "managed").Set(float64(managedCount))
 	zoneCustomHostnames.WithLabelValues(zone.Status.Name, "orphan").Set(float64(orphanCount))
 
+	driftBufferDepth.Set(float64(len(r.CustomHostnameEvents)))
+
 	if drifted > 0 {
 		log.Info("drift detection complete", "zoneID", zone.Spec.ID, "drifted", drifted, "total", len(cfHostnames))
 	} else {
@@ -183,6 +185,19 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 
 	return ctrl.Result{RequeueAfter: r.DriftInterval}, nil
+}
+
+// sendDriftEvent sends a drift event to the CustomHostname controller via the shared channel.
+// Uses a non-blocking attempt first to detect and log buffer overflow, then blocks if needed.
+func (r *ZoneReconciler) sendDriftEvent(ctx context.Context, ch *saasv1beta1.CustomHostname) {
+	ev := event.GenericEvent{Object: ch}
+	select {
+	case r.CustomHostnameEvents <- ev:
+	default:
+		driftBufferOverflowTotal.Inc()
+		logf.FromContext(ctx).Info("drift buffer full, blocking", "hostname", ch.Spec.Hostname)
+		r.CustomHostnameEvents <- ev
+	}
 }
 
 func (r *ZoneReconciler) listCloudflareHostnames(ctx context.Context, cf *cloudflare.Client, zoneID string) (map[string]custom_hostnames.CustomHostnameListResponse, error) {

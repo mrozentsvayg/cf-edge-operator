@@ -156,6 +156,8 @@ See [docs/migration.md](migration.md) for the full migration guide.
 | `cf_edge_operator_api_duration_seconds{resource,operation}` | histogram | CF API call latency; `resource`: customhostname, zone; `operation`: get, list, create, update, delete |
 | `cf_edge_operator_api_errors_by_code_total{resource,operation,status_code}` | counter | CF API errors by resource, operation, and HTTP status code (`unknown` for non-HTTP errors) |
 | `cf_edge_operator_ssl_provisioning_duration_seconds{zone,hostname,method}` | histogram | Time from CF create to `ssl.status == active`. Buckets span 1m–1w. |
+| `cf_edge_operator_drift_buffer_depth` | gauge | Current items in the drift event channel. Approaching `--drift-buffer` capacity means the CH controller is not draining fast enough. |
+| `cf_edge_operator_drift_buffer_overflow_total` | counter | Times the drift buffer was full, causing the zone controller to block. Non-zero indicates capacity issue. |
 
 Controller-runtime also exposes `controller_runtime_reconcile_total` and `controller_runtime_reconcile_time_seconds` per controller.
 

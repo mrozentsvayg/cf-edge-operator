@@ -82,6 +82,22 @@ var (
 		Name: "cf_edge_operator_api_errors_by_code_total",
 		Help: "Cloudflare API errors by resource, operation, and HTTP status code.",
 	}, []string{"resource", "operation", "status_code"})
+
+	// driftBufferDepth reports the current number of items in the drift event channel
+	// at the end of each zone reconcile cycle. Approaching --drift-buffer capacity
+	// indicates the CustomHostname controller is not draining events fast enough.
+	driftBufferDepth = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "cf_edge_operator_drift_buffer_depth",
+		Help: "Current number of items in the drift event channel buffer.",
+	})
+
+	// driftBufferOverflowTotal counts how many times a drift event send blocked
+	// because the channel buffer was full. Non-zero means the zone controller
+	// stalled waiting for the CustomHostname controller to drain events.
+	driftBufferOverflowTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "cf_edge_operator_drift_buffer_overflow_total",
+		Help: "Number of times the drift event buffer was full, causing the zone controller to block.",
+	})
 )
 
 func init() {
@@ -93,6 +109,8 @@ func init() {
 		zoneReady,
 		cfAPICallDuration,
 		cfAPIErrorsByCode,
+		driftBufferDepth,
+		driftBufferOverflowTotal,
 	)
 	// Pre-initialize counters and histograms so they appear in /metrics from startup.
 	for _, op := range []string{cfOpList, cfOpGet, cfOpCreate, cfOpUpdate, cfOpDelete} {
