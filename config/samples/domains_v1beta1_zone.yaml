@@ -1,7 +1,7 @@
 apiVersion: domains.cf-edge.io/v1beta1
 kind: Zone
 metadata:
-  name: t-conduit-xyz
+  name: example-com
   namespace: cf-edge-operator-system
 spec:
   id: "<your-cloudflare-zone-id>"
