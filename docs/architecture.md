@@ -176,7 +176,19 @@ The Helm chart ships a `PrometheusRule` (disabled by default):
 
 Enable with `prometheusRule.enabled=true`. See [docs/runbook.md](runbook.md) for investigation and resolution steps per alert.
 
+## Adding a New Resource Type
+
+The zone controller is a thin orchestrator — credential validation and scheduling. Each CF resource type has its own drift detection in a separate file (`zone_*_drift.go`). To add a new resource type (e.g., rulesets):
+
+1. **New API group and CRD** — e.g., `api/security/v1beta1/ruleset_types.go`, `security.cf-edge.io/v1beta1`
+2. **New drift detection** — `internal/controller/zone_ruleset_drift.go` with `detectRulesetDrift()` following the same pattern as `zone_customhostname_drift.go`
+3. **New worker controller** — `internal/controller/ruleset_controller.go` handling individual CF API writes (create/update/delete)
+4. **Wire in `cmd/main.go`** — new drift channel, new controller pair
+5. **One line in zone controller** — `_ = r.detectRulesetDrift(ctx, cf, &zone)` in `Reconcile()`
+
+No existing CH code is modified. Each resource type's drift detection, metrics, and channel are self-contained.
+
 ## Future Work
 
 - **CI integration tests** — end-to-end tests against a dedicated CF zone with real API credentials.
-- **Additional CF resource types** — Web Application Firewall (WAF) rules, routing, and other Cloudflare primitives via dedicated API groups (e.g. `security.cf-edge.io`, `routing.cf-edge.io`), each with its own worker controller following the coordinator/worker pattern.
+- **Additional CF resource types** — Web Application Firewall (WAF) rules, routing, and other Cloudflare primitives via dedicated API groups (e.g. `security.cf-edge.io`, `routing.cf-edge.io`). See [Adding a New Resource Type](#adding-a-new-resource-type) for the implementation guide.
