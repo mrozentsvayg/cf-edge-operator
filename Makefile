@@ -106,6 +106,24 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
 	"$(GOLANGCI_LINT)" config verify
 
+.PHONY: helm-validate
+helm-validate: ## Lint and template-render Helm chart with all optional features enabled
+	helm lint charts/cf-edge-operator/
+	helm template test charts/cf-edge-operator/ \
+		--set podDisruptionBudget.enabled=true \
+		--set serviceMonitor.enabled=true \
+		--set serviceMonitor.namespace=monitoring \
+		--set prometheusRule.enabled=true \
+		--set prometheusRule.namespace=monitoring \
+		> /dev/null
+	@echo "Helm chart validation passed"
+
+.PHONY: helm-crd-diff
+helm-crd-diff: ## Verify chart CRDs match generated CRDs
+	@diff -q config/crd/bases/ charts/cf-edge-operator/crds/ || \
+		(echo "ERROR: Chart CRDs differ from generated CRDs. Run: cp config/crd/bases/*.yaml charts/cf-edge-operator/crds/" && exit 1)
+	@echo "CRD files are in sync"
+
 ##@ Build
 
 .PHONY: build
