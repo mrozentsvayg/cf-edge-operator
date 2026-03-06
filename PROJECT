@@ -27,4 +27,5 @@ resources:
   kind: Zone
   path: github.com/mrozentsvayg/cf-edge-operator/api/domains/v1beta1
   version: v1beta1
+multigroup: true
 version: "3"
