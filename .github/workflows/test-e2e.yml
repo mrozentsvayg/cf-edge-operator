@@ -1,8 +1,10 @@
 name: E2E Tests
 
 on:
+  workflow_dispatch:
   push:
-  pull_request:
+    tags:
+      - 'v*'
 
 jobs:
   test-e2e:
