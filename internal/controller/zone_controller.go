@@ -108,6 +108,8 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	// Per-resource drift detection. Each resource type is in its own file
 	// (zone_*_drift.go) and can fail independently without affecting others.
+	// When multiple detectors exist, parallelize with errgroup.Group to avoid
+	// sequential paginated API calls stretching the reconcile duration.
 	_ = r.detectCustomHostnameDrift(ctx, cf, &zone)
 
 	return ctrl.Result{RequeueAfter: r.DriftInterval}, nil
