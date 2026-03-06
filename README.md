@@ -154,6 +154,6 @@ Metrics are exposed on `:8080/metrics` (HTTP, via Helm chart). See [docs/archite
 - `cf_edge_operator_ssl_provisioning_duration_seconds{zone,hostname,method}` — time from CF create to SSL active
 - `cf_edge_operator_api_errors_by_code_total{resource,operation,status_code}` — CF API errors by HTTP status code
 - `cf_edge_operator_api_duration_seconds{resource,operation}` — CF API latency histogram
-- `cf_edge_operator_drift_buffer_depth` — current items in the drift event channel
-- `cf_edge_operator_drift_buffer_overflow_total` — times the drift buffer was full (zone controller blocked)
+- `cf_edge_operator_drift_buffer_depth{resource}` — current items in the drift event channel
+- `cf_edge_operator_drift_buffer_overflow_total{resource}` — times the drift buffer was full (zone controller blocked)
 
