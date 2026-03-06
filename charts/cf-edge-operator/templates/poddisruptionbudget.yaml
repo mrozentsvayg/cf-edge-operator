@@ -3,6 +3,7 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: {{ include "cf-edge-operator.name" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "cf-edge-operator.labels" . | nindent 4 }}
 spec:
