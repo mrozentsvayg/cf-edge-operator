@@ -127,4 +127,4 @@ Before going live:
 - [ ] `serviceMonitor.enabled: true` and `prometheusRule.enabled: true` if using Prometheus Operator
 - [ ] `prometheusRule.runbookUrl` set to point to your copy of [runbook.md](runbook.md)
 - [ ] Resource limits reviewed for your scale (see sizing table above)
-- [ ] CRD upgrade procedure understood: `helm upgrade` does NOT update CRDs; apply them manually before upgrading the chart (see [architecture.md](architecture.md))
+- [ ] CRD upgrade procedure understood: `helm upgrade` does NOT update CRDs; apply them manually before upgrading the chart (`kubectl apply -f charts/cf-edge-operator/crds/`)
