@@ -3,6 +3,10 @@ image:
   tag: ""  # defaults to chart appVersion
   pullPolicy: IfNotPresent
 
+# List of image pull secret names for pulling from private registries.
+# Example: imagePullSecrets: ["ghcr-pull-secret"]
+imagePullSecrets: []
+
 replicaCount: 1
 
 # Enable leader election (required when running multiple replicas)
