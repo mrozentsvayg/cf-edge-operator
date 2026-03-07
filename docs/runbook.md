@@ -229,3 +229,25 @@ kubectl port-forward -n <operator-namespace> \
   8080:8080
 curl -s localhost:8080/metrics | grep cf_edge_operator
 ```
+
+---
+
+## Reconciler Conflict Errors in Logs
+
+**Log pattern:**
+
+```
+ERROR  Reconciler error  "error": "Operation cannot be fulfilled on customhostnames.saas.cf-edge.io \"<name>\": the object has been modified; please apply your changes to the latest version and try again"
+```
+
+**Cause:** Two concurrent reconcile triggers (e.g. spec change + zone drift enqueue) tried to update the same CR simultaneously. The second write failed because the `resourceVersion` changed between read and write. This is standard Kubernetes optimistic concurrency — not a bug.
+
+**Expected behavior:** controller-runtime automatically requeues the failed reconcile and retries. The next attempt succeeds because it reads the latest `resourceVersion`. No manual intervention needed.
+
+**When to investigate:** If the same CR produces this error repeatedly (more than a few times per minute over several minutes), it may indicate a reconcile loop or conflicting controllers. Check:
+
+1. Is another operator or tool modifying the same CR?
+2. Are there duplicate CustomHostname CRs for the same hostname? (Check `kubectl get customhostnames -A -o jsonpath='{range .items[*]}{.spec.hostname}{"\n"}{end}' | sort | uniq -d`)
+3. Is `consecutiveErrors` increasing on the CR? (`kubectl get customhostname <name> -o jsonpath='{.status.consecutiveErrors}'`)
+
+A one-time occurrence during CR creation or update is completely normal and can be ignored.
