@@ -20,6 +20,4 @@ jobs:
       - name: Check linter configuration
         run: make lint-config
       - name: Run linter
-        uses: golangci/golangci-lint-action@v7
-        with:
-          version: v2.8.0
+        run: make lint
