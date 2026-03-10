@@ -14,9 +14,23 @@ external-dns manages Cloudflare (CF) custom hostnames as a side-effect of DNS re
 
 ## Migration Strategy
 
-The recommended approach is **incremental**: migrate one hostname at a time, with both systems active during the transition. The `--delete-policy=own-only` flag makes this safe.
+The recommended approach is **incremental**: migrate one hostname at a time, with both systems active during the transition. Use `managementPolicy` and `deletePolicy` to control the operator's behavior at each stage.
 
-### Step 1: Deploy cf-edge-operator with `own-only` delete policy
+### Management Policy
+
+`spec.managementPolicy` controls how the operator interacts with Cloudflare for each CR:
+
+| Policy | Create | Update (drift correction) | Delete |
+|--------|--------|---------------------------|--------|
+| `manage` *(default)* | Yes | Yes | Per `deletePolicy` |
+| `create` | Yes | No — logs drift but does not correct it | Per `deletePolicy` |
+| `observe` | No — waits for external creation | No | Releases finalizer unconditionally (ignores `deletePolicy`) |
+
+**`create`** is the recommended policy during coexistence with external-dns or other automation. The operator provisions new hostnames if missing, but never updates them — preventing change loops where both tools fight over origin/SNI settings.
+
+**`observe`** is for tracking hostnames you explicitly don't want the operator to touch at all. Useful for monitoring hostnames managed entirely by another system.
+
+### Step 1: Deploy cf-edge-operator
 
 ```yaml
 # values.yaml
@@ -42,7 +56,7 @@ spec:
 
 ### Step 3: For each hostname, create a CustomHostname CR
 
-The operator will call `findByHostname` on reconcile and adopt the existing CF hostname (created by external-dns). No new CF resource is created.
+Use `managementPolicy: create` during coexistence to prevent update loops:
 
 ```yaml
 apiVersion: saas.cf-edge.io/v1beta1
@@ -55,15 +69,29 @@ spec:
   originServer: origin.internal.example.com
   zoneRef:
     name: my-zone
+  managementPolicy: create     # safe coexistence — no updates
+  deletePolicy: never          # don't delete from CF on CR removal
 ```
+
+The operator will call `findByHostname` on reconcile and adopt the existing CF hostname (created by external-dns). No new CF resource is created. No updates are made.
 
 After the first reconcile, `status.id` will reflect the CF hostname ID that external-dns originally created.
 
 ### Step 4: Remove the external-dns annotation
 
-Once the `CustomHostname` CR is `Ready=True`, remove the annotation that caused external-dns to manage this hostname. At this point only cf-edge-operator manages it.
+Once the `CustomHostname` CR is `Ready=True`, remove the annotation that caused external-dns to manage this hostname.
 
-### Step 5: Verify and switch to `always` policy
+### Step 5: Switch to full management
+
+Once external-dns is no longer managing the hostname, switch to full management:
+
+```yaml
+spec:
+  managementPolicy: manage     # operator now owns lifecycle
+  deletePolicy: own-only       # safe delete during transition
+```
+
+### Step 6: Switch to `always` policy
 
 Once all hostnames are migrated and external-dns is no longer managing any hostnames in the zone, you can switch to `--delete-policy=always` for cleaner semantics.
 
@@ -77,8 +105,11 @@ If you then delete the CR (e.g., rolling back the migration):
 |--------|----------|
 | `always` | Tries `DELETE <stale-id>` → 404 → releases the finalizer. The live hostname survives by accident. |
 | `own-only` | Looks up current CF state, sees ID mismatch → releases the finalizer without any CF API call. Explicitly safe. |
+| `never` | Releases the finalizer without any CF API call, regardless of ID match. Use during coexistence testing when the operator adopts hostnames managed by another tool. |
 
-`own-only` makes migration rollback safe by design rather than safe by accident.
+Note: when `managementPolicy: observe`, the operator always releases the finalizer without deleting — `deletePolicy` is ignored entirely.
+
+`own-only` makes migration rollback safe by design rather than safe by accident. Pair it with `managementPolicy: create` for safe coexistence (no update loops, safe deletes).
 
 ## Checking Migration Status
 

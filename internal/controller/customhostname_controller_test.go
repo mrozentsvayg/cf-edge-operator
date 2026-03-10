@@ -224,6 +224,26 @@ func TestHandleDeleteDryRun(t *testing.T) {
 	}
 }
 
+func TestEffectiveManagementPolicy(t *testing.T) {
+	tests := []struct {
+		name   string
+		policy string
+		want   string
+	}{
+		{"empty defaults to manage", "", "manage"},
+		{"manage passes through", "manage", "manage"},
+		{"create passes through", "create", "create"},
+		{"observe passes through", "observe", "observe"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := effectiveManagementPolicy(tt.policy); got != tt.want {
+				t.Errorf("effectiveManagementPolicy() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEffectiveDeletePolicy(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -235,6 +255,8 @@ func TestEffectiveDeletePolicy(t *testing.T) {
 		{"cr not set, own-only default", "", "own-only", "own-only"},
 		{"cr overrides to own-only", "own-only", "always", "own-only"},
 		{"cr overrides to always", "always", "own-only", "always"},
+		{"cr not set, never default", "", "never", "never"},
+		{"cr overrides to never", "never", "always", "never"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -251,42 +273,24 @@ func TestShouldDeleteInCF(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		policy   string
 		statusID string
 		current  *custom_hostnames.CustomHostnameListResponse
 		want     bool
 	}{
 		{
-			name:     "always: always deletes regardless",
-			policy:   DeletePolicyAlways,
-			statusID: "abc123",
-			current:  different,
-			want:     true,
-		},
-		{
-			name:     "always: deletes even when not found",
-			policy:   DeletePolicyAlways,
-			statusID: "abc123",
-			current:  nil,
-			want:     true,
-		},
-		{
-			name:     "own-only: not found in CF, do not delete",
-			policy:   DeletePolicyOwnOnly,
+			name:     "not found in CF, do not delete",
 			statusID: "abc123",
 			current:  nil,
 			want:     false,
 		},
 		{
-			name:     "own-only: IDs match, delete",
-			policy:   DeletePolicyOwnOnly,
+			name:     "IDs match, delete",
 			statusID: "abc123",
 			current:  matched,
 			want:     true,
 		},
 		{
-			name:     "own-only: IDs differ, do not delete",
-			policy:   DeletePolicyOwnOnly,
+			name:     "IDs differ, do not delete",
 			statusID: "abc123",
 			current:  different,
 			want:     false,
@@ -294,7 +298,7 @@ func TestShouldDeleteInCF(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := shouldDeleteInCF(tt.policy, tt.statusID, tt.current); got != tt.want {
+			if got := shouldDeleteInCF(tt.statusID, tt.current); got != tt.want {
 				t.Errorf("shouldDeleteInCF() = %v, want %v", got, tt.want)
 			}
 		})
