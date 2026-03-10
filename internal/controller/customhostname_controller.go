@@ -163,14 +163,17 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 		return r.handleCreate(ctx, cf, zoneID, zoneName, ch)
 	}
 
-	// Exists — adopt ID and sync status
-	ch.Status.ID = existing.ID
-	log.Info("adopted existing custom hostname",
-		"hostname", ch.Spec.Hostname,
-		"id", existing.ID,
-		"origin", existing.CustomOriginServer,
-		"sni", existing.CustomOriginSNI)
-	operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpAdopt).Inc()
+	// Exists — adopt the CF ID into status. Only log and count on the first adoption
+	// (status.ID is empty); subsequent reconciles skip when the ID is unchanged.
+	if ch.Status.ID != existing.ID {
+		log.Info("adopted existing custom hostname",
+			"hostname", ch.Spec.Hostname,
+			"id", existing.ID,
+			"origin", existing.CustomOriginServer,
+			"sni", existing.CustomOriginSNI)
+		operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpAdopt).Inc()
+		ch.Status.ID = existing.ID
+	}
 
 	// Check drift — only correct it if management policy is "manage"
 	if existing.CustomOriginServer != ch.Spec.OriginServer || sniDrifted(existing.CustomOriginSNI, ch) {

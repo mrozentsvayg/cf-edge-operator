@@ -32,7 +32,7 @@ var (
 	// Pre-initialized for all known values so all series appear at startup.
 	operationsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "cf_edge_operator_operations_total",
-		Help: "Total number of successful Cloudflare write operations by resource and type.",
+		Help: "Total number of successful Cloudflare operations by resource and type.",
 	}, []string{"resource", "operation"})
 
 	// sslProvisioningDuration observes the time from CF hostname creation to ssl.status == active.
