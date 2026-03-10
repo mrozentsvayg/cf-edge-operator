@@ -91,7 +91,8 @@ func main() {
 	flag.StringVar(&deletePolicy, "delete-policy", "always",
 		"Controls delete behavior when a CustomHostname CR is deleted. "+
 			"'always': delete from Cloudflare by ID regardless. "+
-			"'own-only': only delete if the current Cloudflare hostname ID matches status.id.")
+			"'own-only': only delete if the current Cloudflare hostname ID matches status.id. "+
+			"'never': release the finalizer without deleting from Cloudflare.")
 	flag.BoolVar(&dryRun, "dry-run", false,
 		"If set, skip all Cloudflare write operations and log what would happen instead.")
 	flag.DurationVar(&driftInterval, "drift-interval", time.Minute,
@@ -118,8 +119,8 @@ func main() {
 		"driftBuffer", driftBuffer,
 		"leaderElect", enableLeaderElection,
 	)
-	if deletePolicy != controller.DeletePolicyAlways && deletePolicy != controller.DeletePolicyOwnOnly {
-		setupLog.Error(nil, "invalid --delete-policy, must be \"always\" or \"own-only\"", "value", deletePolicy)
+	if deletePolicy != controller.DeletePolicyAlways && deletePolicy != controller.DeletePolicyOwnOnly && deletePolicy != controller.DeletePolicyNever {
+		setupLog.Error(nil, "invalid --delete-policy, must be \"always\", \"own-only\", or \"never\"", "value", deletePolicy)
 		os.Exit(1)
 	}
 	if dryRun {
