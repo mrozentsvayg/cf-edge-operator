@@ -180,13 +180,13 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	// Check drift — only correct it if management policy is "manage"
 	if existing.CustomOriginServer != ch.Spec.OriginServer || sniDrifted(existing.CustomOriginSNI, ch) {
 		if mgmtPolicy != ManagementPolicyManage {
-			log.Info("drift detected but suppressed by managementPolicy",
+			log.Info("origin differs from spec, not updating per managementPolicy",
 				"hostname", ch.Spec.Hostname,
 				"policy", mgmtPolicy,
-				"currentOrigin", existing.CustomOriginServer,
-				"desiredOrigin", ch.Spec.OriginServer,
-				"currentSNI", existing.CustomOriginSNI,
-				"desiredSNI", ch.Spec.OriginSNI)
+				"cfOrigin", existing.CustomOriginServer,
+				"specOrigin", ch.Spec.OriginServer,
+				"cfSNI", existing.CustomOriginSNI,
+				"specSNI", ch.Spec.OriginSNI)
 		} else {
 			log.Info("custom hostname drifted, updating",
 				"hostname", ch.Spec.Hostname,
@@ -303,7 +303,14 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 		return ctrl.Result{}, nil
 	}
 
-	if controllerutil.ContainsFinalizer(ch, finalizerName) && ch.Status.ID != "" {
+	if controllerutil.ContainsFinalizer(ch, finalizerName) && ch.Status.ID == "" {
+		log.Info("releasing finalizer, no Cloudflare hostname tracked",
+			"hostname", ch.Spec.Hostname)
+		controllerutil.RemoveFinalizer(ch, finalizerName)
+		return ctrl.Result{}, r.Update(ctx, ch)
+	}
+
+	if controllerutil.ContainsFinalizer(ch, finalizerName) {
 		// Observe mode supersedes deletePolicy: never touch CF, release finalizer unconditionally.
 		mgmtPolicy := effectiveManagementPolicy(ch.Spec.ManagementPolicy, r.ManagementPolicy)
 		if mgmtPolicy == ManagementPolicyObserve {
