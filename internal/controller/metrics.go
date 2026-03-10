@@ -17,6 +17,7 @@ const (
 
 	cfOpGet      = "get"
 	cfOpList     = "list"
+	cfOpAdopt    = "adopt"
 	cfOpCreate   = "create"
 	cfOpRecreate = "recreate"
 	cfOpUpdate   = "update"
@@ -24,9 +25,10 @@ const (
 )
 
 var (
-	// operationsTotal counts successful CF write operations by resource and type.
-	// CustomHostname operations: "create" = first-time provisioning; "recreate" = recovery
-	// after external deletion; "update" = drift correction; "delete" = removal.
+	// operationsTotal counts successful CF operations by resource and type.
+	// CustomHostname operations: "adopt" = existing hostname found and tracked;
+	// "create" = first-time provisioning; "recreate" = recovery after external deletion;
+	// "update" = drift correction; "delete" = removal.
 	// Pre-initialized for all known values so all series appear at startup.
 	operationsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "cf_edge_operator_operations_total",
@@ -117,7 +119,7 @@ func init() {
 		cfAPICallDuration.WithLabelValues(cfResourceCustomHostname, op)
 	}
 	cfAPICallDuration.WithLabelValues(cfResourceZone, cfOpGet)
-	for _, op := range []string{cfOpCreate, cfOpRecreate, cfOpUpdate, cfOpDelete} {
+	for _, op := range []string{cfOpAdopt, cfOpCreate, cfOpRecreate, cfOpUpdate, cfOpDelete} {
 		operationsTotal.WithLabelValues(cfResourceCustomHostname, op)
 	}
 }

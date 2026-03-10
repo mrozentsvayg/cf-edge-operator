@@ -60,8 +60,15 @@ const (
 )
 
 const (
+	ManagementPolicyManage  = "manage"
+	ManagementPolicyCreate  = "create"
+	ManagementPolicyObserve = "observe"
+)
+
+const (
 	DeletePolicyAlways  = "always"
 	DeletePolicyOwnOnly = "own-only"
+	DeletePolicyNever   = "never"
 )
 
 // CustomHostnameReconciler reconciles a CustomHostname object.
@@ -71,7 +78,7 @@ type CustomHostnameReconciler struct {
 	client.Client
 	Scheme            *runtime.Scheme
 	OperatorNamespace string
-	// DeletePolicy controls delete behavior: "always" (default) or "own-only".
+	// DeletePolicy controls delete behavior: "always" (default), "own-only", or "never".
 	DeletePolicy string
 	// DryRun skips all Cloudflare write operations and logs what would happen instead.
 	DryRun bool
@@ -134,6 +141,7 @@ func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context, cf *cloudflare.Client, zoneID, zoneName string, ch *saasv1beta1.CustomHostname) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
+	mgmtPolicy := effectiveManagementPolicy(ch.Spec.ManagementPolicy)
 
 	// Single Cloudflare API call: find existing hostname by name
 	existing, err := r.findByHostname(ctx, cf, zoneID, ch.Spec.Hostname)
@@ -143,37 +151,63 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	}
 
 	if existing == nil {
-		// Not in Cloudflare — create it
+		if mgmtPolicy == ManagementPolicyObserve {
+			// Observe mode: don't create, wait for external provisioning.
+			// The zone controller will re-enqueue when the hostname appears in CF.
+			log.Info("observe: hostname not found in Cloudflare, waiting for external creation",
+				"hostname", ch.Spec.Hostname)
+			return ctrl.Result{}, r.setCondition(ctx, ch, metav1.ConditionFalse,
+				"WaitingForExternal", "Hostname not yet provisioned in Cloudflare")
+		}
+		// manage or create: provision it
 		return r.handleCreate(ctx, cf, zoneID, zoneName, ch)
 	}
 
-	// Exists — adopt ID and sync if drifted
+	// Exists — adopt ID and sync status
 	ch.Status.ID = existing.ID
+	log.Info("adopted existing custom hostname",
+		"hostname", ch.Spec.Hostname,
+		"id", existing.ID,
+		"origin", existing.CustomOriginServer,
+		"sni", existing.CustomOriginSNI)
+	operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpAdopt).Inc()
+
+	// Check drift — only correct it if management policy is "manage"
 	if existing.CustomOriginServer != ch.Spec.OriginServer || sniDrifted(existing.CustomOriginSNI, ch) {
-		log.Info("custom hostname drifted, updating",
-			"hostname", ch.Spec.Hostname,
-			"currentOrigin", existing.CustomOriginServer,
-			"desiredOrigin", ch.Spec.OriginServer,
-			"currentSNI", existing.CustomOriginSNI,
-			"desiredSNI", ch.Spec.OriginSNI)
-		editParams := custom_hostnames.CustomHostnameEditParams{ZoneID: cloudflare.F(zoneID)}
-		opts := []option.RequestOption{option.WithJSONSet("custom_origin_server", ch.Spec.OriginServer)}
-		if ch.Spec.OriginSNI != nil {
-			opts = append(opts, option.WithJSONSet("custom_origin_sni", *ch.Spec.OriginSNI))
+		if mgmtPolicy != ManagementPolicyManage {
+			log.Info("drift detected but suppressed by managementPolicy",
+				"hostname", ch.Spec.Hostname,
+				"policy", mgmtPolicy,
+				"currentOrigin", existing.CustomOriginServer,
+				"desiredOrigin", ch.Spec.OriginServer,
+				"currentSNI", existing.CustomOriginSNI,
+				"desiredSNI", ch.Spec.OriginSNI)
+		} else {
+			log.Info("custom hostname drifted, updating",
+				"hostname", ch.Spec.Hostname,
+				"currentOrigin", existing.CustomOriginServer,
+				"desiredOrigin", ch.Spec.OriginServer,
+				"currentSNI", existing.CustomOriginSNI,
+				"desiredSNI", ch.Spec.OriginSNI)
+			editParams := custom_hostnames.CustomHostnameEditParams{ZoneID: cloudflare.F(zoneID)}
+			opts := []option.RequestOption{option.WithJSONSet("custom_origin_server", ch.Spec.OriginServer)}
+			if ch.Spec.OriginSNI != nil {
+				opts = append(opts, option.WithJSONSet("custom_origin_sni", *ch.Spec.OriginSNI))
+			}
+			if r.DryRun {
+				log.Info("dry-run: would update custom hostname", "hostname", ch.Spec.Hostname,
+					"currentOrigin", existing.CustomOriginServer, "desiredOrigin", ch.Spec.OriginServer)
+				return ctrl.Result{}, nil
+			}
+			editStart := time.Now()
+			_, editErr := cf.CustomHostnames.Edit(ctx, existing.ID, editParams, opts...)
+			recordCFCall(cfResourceCustomHostname, cfOpUpdate, editStart, &editErr)
+			if editErr != nil {
+				log.Error(editErr, "failed to update custom hostname", "id", existing.ID)
+				return ctrl.Result{}, r.setError(ctx, ch, "UpdateFailed", editErr.Error())
+			}
+			operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpUpdate).Inc()
 		}
-		if r.DryRun {
-			log.Info("dry-run: would update custom hostname", "hostname", ch.Spec.Hostname,
-				"currentOrigin", existing.CustomOriginServer, "desiredOrigin", ch.Spec.OriginServer)
-			return ctrl.Result{}, nil
-		}
-		editStart := time.Now()
-		_, editErr := cf.CustomHostnames.Edit(ctx, existing.ID, editParams, opts...)
-		recordCFCall(cfResourceCustomHostname, cfOpUpdate, editStart, &editErr)
-		if editErr != nil {
-			log.Error(editErr, "failed to update custom hostname", "id", existing.ID)
-			return ctrl.Result{}, r.setError(ctx, ch, "UpdateFailed", editErr.Error())
-		}
-		operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpUpdate).Inc()
 	}
 
 	if r.DryRun {
@@ -184,6 +218,14 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 		return ctrl.Result{}, fmt.Errorf("failed to update status: %w", err)
 	}
 	return r.requeueOrReady(ctx, zoneName, ch)
+}
+
+// effectiveManagementPolicy returns the management policy, defaulting to "manage".
+func effectiveManagementPolicy(policy string) string {
+	if policy == "" {
+		return ManagementPolicyManage
+	}
+	return policy
 }
 
 func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudflare.Client, zoneID, zoneName string, ch *saasv1beta1.CustomHostname) (ctrl.Result, error) {
@@ -255,17 +297,32 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 	}
 
 	if controllerutil.ContainsFinalizer(ch, finalizerName) && ch.Status.ID != "" {
+		// Observe mode supersedes deletePolicy: never touch CF, release finalizer unconditionally.
+		mgmtPolicy := effectiveManagementPolicy(ch.Spec.ManagementPolicy)
+		if mgmtPolicy == ManagementPolicyObserve {
+			log.Info("observe: releasing finalizer without deleting from Cloudflare",
+				"hostname", ch.Spec.Hostname, "id", ch.Status.ID)
+			controllerutil.RemoveFinalizer(ch, finalizerName)
+			return ctrl.Result{}, r.Update(ctx, ch)
+		}
+
 		// For own-only policy: look up current CF state before deleting.
 		// If another entity now owns this hostname (different ID), release the finalizer without deleting.
 		// spec.deletePolicy takes precedence over the operator-wide --delete-policy flag.
 		policy := effectiveDeletePolicy(ch.Spec.DeletePolicy, r.DeletePolicy)
+		if policy == DeletePolicyNever {
+			log.Info("never: releasing finalizer without deleting from Cloudflare",
+				"hostname", ch.Spec.Hostname, "id", ch.Status.ID)
+			controllerutil.RemoveFinalizer(ch, finalizerName)
+			return ctrl.Result{}, r.Update(ctx, ch)
+		}
 		if policy == DeletePolicyOwnOnly {
 			current, err := r.findByHostname(ctx, cf, zoneID, ch.Spec.Hostname)
 			if err != nil {
 				log.Error(err, "failed to look up hostname before delete", "hostname", ch.Spec.Hostname)
 				return ctrl.Result{}, err
 			}
-			if !shouldDeleteInCF(policy, ch.Status.ID, current) {
+			if !shouldDeleteInCF(ch.Status.ID, current) {
 				log.Info("own-only: releasing finalizer without deleting",
 					"hostname", ch.Spec.Hostname, "statusID", ch.Status.ID,
 					"currentID", func() string {
@@ -314,12 +371,8 @@ func effectiveDeletePolicy(crPolicy, operatorDefault string) string {
 }
 
 // shouldDeleteInCF returns true if the hostname should be deleted from Cloudflare.
-// For "always" policy it always returns true.
-// For "own-only" it returns true only if current CF state exists and has the same ID as statusID.
-func shouldDeleteInCF(policy, statusID string, current *custom_hostnames.CustomHostnameListResponse) bool {
-	if policy != DeletePolicyOwnOnly {
-		return true
-	}
+// Only called for own-only policy: returns true if current CF state exists and has the same ID as statusID.
+func shouldDeleteInCF(statusID string, current *custom_hostnames.CustomHostnameListResponse) bool {
 	if current == nil {
 		return false
 	}
