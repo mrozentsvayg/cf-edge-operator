@@ -62,16 +62,33 @@ spec:
                 description: |-
                   DeletePolicy overrides the operator-wide --delete-policy for this CR.
                   "always" deletes from Cloudflare unconditionally; "own-only" skips deletion if the
-                  current CF hostname ID differs from status.id (safe during migrations from other tools).
+                  current CF hostname ID differs from status.id (safe during migrations from other tools);
+                  "never" releases the finalizer without deleting from Cloudflare.
+                  Ignored when managementPolicy is "observe".
                   If not set, the operator-wide default applies.
                 enum:
                 - always
                 - own-only
+                - never
                 type: string
               hostname:
                 description: Hostname is the custom hostname to register with Cloudflare
                   (e.g. customer.example.com)
                 format: hostname
+                type: string
+              managementPolicy:
+                description: |-
+                  ManagementPolicy overrides the operator-wide --management-policy for this CR.
+                  "manage": full lifecycle — create, update (drift correction), and delete per deletePolicy.
+                  "create": provisions the hostname if missing, but never updates it (safe coexistence with
+                  other tools like external-dns that may also modify the hostname). Deletes per deletePolicy.
+                  "observe": read-only — tracks an externally-managed hostname without creating, updating,
+                  or deleting it. deletePolicy is ignored; the finalizer is always released on CR deletion.
+                  If not set, the operator-wide default applies.
+                enum:
+                - manage
+                - create
+                - observe
                 type: string
               originSNI:
                 description: |-

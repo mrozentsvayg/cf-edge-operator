@@ -66,6 +66,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var operatorNamespace string
+	var managementPolicy string
 	var deletePolicy string
 	var dryRun bool
 	var driftInterval time.Duration
@@ -88,11 +89,18 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.StringVar(&operatorNamespace, "operator-namespace", "cf-edge-operator-system",
 		"Namespace where Zone resources are managed. Used to resolve ZoneRef when namespace is omitted.")
+	flag.StringVar(&managementPolicy, "management-policy", "manage",
+		"Default management policy for CustomHostname CRs. "+
+			"'manage': full lifecycle (create, update, delete). "+
+			"'create': provision if missing, never update (safe coexistence). "+
+			"'observe': read-only tracking, no CF writes. "+
+			"Per-CR spec.managementPolicy overrides this default.")
 	flag.StringVar(&deletePolicy, "delete-policy", "always",
-		"Controls delete behavior when a CustomHostname CR is deleted. "+
+		"Default delete policy for CustomHostname CRs. "+
 			"'always': delete from Cloudflare by ID regardless. "+
 			"'own-only': only delete if the current Cloudflare hostname ID matches status.id. "+
-			"'never': release the finalizer without deleting from Cloudflare.")
+			"'never': release the finalizer without deleting from Cloudflare. "+
+			"Per-CR spec.deletePolicy overrides this default.")
 	flag.BoolVar(&dryRun, "dry-run", false,
 		"If set, skip all Cloudflare write operations and log what would happen instead.")
 	flag.DurationVar(&driftInterval, "drift-interval", time.Minute,
@@ -113,12 +121,17 @@ func main() {
 
 	setupLog.Info("Configuration",
 		"operatorNamespace", operatorNamespace,
+		"managementPolicy", managementPolicy,
 		"deletePolicy", deletePolicy,
 		"dryRun", dryRun,
 		"driftInterval", driftInterval,
 		"driftBuffer", driftBuffer,
 		"leaderElect", enableLeaderElection,
 	)
+	if managementPolicy != controller.ManagementPolicyManage && managementPolicy != controller.ManagementPolicyCreate && managementPolicy != controller.ManagementPolicyObserve {
+		setupLog.Error(nil, "invalid --management-policy, must be \"manage\", \"create\", or \"observe\"", "value", managementPolicy)
+		os.Exit(1)
+	}
 	if deletePolicy != controller.DeletePolicyAlways && deletePolicy != controller.DeletePolicyOwnOnly && deletePolicy != controller.DeletePolicyNever {
 		setupLog.Error(nil, "invalid --delete-policy, must be \"always\", \"own-only\", or \"never\"", "value", deletePolicy)
 		os.Exit(1)
@@ -225,6 +238,7 @@ func main() {
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
 		OperatorNamespace: operatorNamespace,
+		ManagementPolicy:  managementPolicy,
 		DeletePolicy:      deletePolicy,
 		DryRun:            dryRun,
 	}).SetupWithManager(mgr, driftEvents); err != nil {

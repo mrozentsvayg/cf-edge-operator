@@ -16,9 +16,18 @@ leaderElect: true
 # Defaults to the release namespace if left empty.
 operatorNamespace: ""
 
+# Default management policy for CustomHostname CRs.
+# "manage": full lifecycle — create, update, delete (default).
+# "create": provision if missing, never update (safe coexistence with external-dns).
+# "observe": read-only tracking, no Cloudflare writes.
+# Per-CR spec.managementPolicy overrides this default.
+managementPolicy: "manage"
+
 # Delete policy for CustomHostname CRs.
 # "always": delete from Cloudflare by ID regardless (default).
 # "own-only": only delete if the current Cloudflare ID matches status.id.
+# "never": release the finalizer without deleting from Cloudflare.
+# Per-CR spec.deletePolicy overrides this default.
 deletePolicy: "always"
 
 # Dry-run mode: log what would happen without writing to Cloudflare.
