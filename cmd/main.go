@@ -128,12 +128,16 @@ func main() {
 		"driftBuffer", driftBuffer,
 		"leaderElect", enableLeaderElection,
 	)
-	if managementPolicy != controller.ManagementPolicyManage && managementPolicy != controller.ManagementPolicyCreate && managementPolicy != controller.ManagementPolicyObserve {
-		setupLog.Error(nil, "invalid --management-policy, must be \"manage\", \"create\", or \"observe\"", "value", managementPolicy)
+	switch managementPolicy {
+	case controller.ManagementPolicyManage, controller.ManagementPolicyCreate, controller.ManagementPolicyObserve:
+	default:
+		setupLog.Error(nil, "invalid --management-policy", "value", managementPolicy)
 		os.Exit(1)
 	}
-	if deletePolicy != controller.DeletePolicyAlways && deletePolicy != controller.DeletePolicyOwnOnly && deletePolicy != controller.DeletePolicyNever {
-		setupLog.Error(nil, "invalid --delete-policy, must be \"always\", \"own-only\", or \"never\"", "value", deletePolicy)
+	switch deletePolicy {
+	case controller.DeletePolicyAlways, controller.DeletePolicyOwnOnly, controller.DeletePolicyNever:
+	default:
+		setupLog.Error(nil, "invalid --delete-policy", "value", deletePolicy)
 		os.Exit(1)
 	}
 	if dryRun {
