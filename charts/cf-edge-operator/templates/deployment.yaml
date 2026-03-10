@@ -38,6 +38,7 @@ spec:
         - --metrics-bind-address=:8080
         - --metrics-secure=false
         - --operator-namespace={{ include "cf-edge-operator.operatorNamespace" . }}
+        - --management-policy={{ .Values.managementPolicy }}
         - --delete-policy={{ .Values.deletePolicy }}
         - --drift-interval={{ .Values.driftInterval }}
         - --drift-buffer={{ .Values.driftBuffer }}

@@ -78,6 +78,8 @@ type CustomHostnameReconciler struct {
 	client.Client
 	Scheme            *runtime.Scheme
 	OperatorNamespace string
+	// ManagementPolicy is the operator-wide default: "manage", "create", or "observe".
+	ManagementPolicy string
 	// DeletePolicy controls delete behavior: "always" (default), "own-only", or "never".
 	DeletePolicy string
 	// DryRun skips all Cloudflare write operations and logs what would happen instead.
@@ -141,7 +143,7 @@ func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context, cf *cloudflare.Client, zoneID, zoneName string, ch *saasv1beta1.CustomHostname) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-	mgmtPolicy := effectiveManagementPolicy(ch.Spec.ManagementPolicy)
+	mgmtPolicy := effectiveManagementPolicy(ch.Spec.ManagementPolicy, r.ManagementPolicy)
 
 	// Single Cloudflare API call: find existing hostname by name
 	existing, err := r.findByHostname(ctx, cf, zoneID, ch.Spec.Hostname)
@@ -223,12 +225,14 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	return r.requeueOrReady(ctx, zoneName, ch)
 }
 
-// effectiveManagementPolicy returns the management policy, defaulting to "manage".
-func effectiveManagementPolicy(policy string) string {
-	if policy == "" {
-		return ManagementPolicyManage
+// effectiveManagementPolicy returns the management policy to apply for this CR.
+// spec.managementPolicy takes precedence over the operator-wide --management-policy flag,
+// allowing per-CR override without restarting the operator.
+func effectiveManagementPolicy(crPolicy, operatorDefault string) string {
+	if crPolicy != "" {
+		return crPolicy
 	}
-	return policy
+	return operatorDefault
 }
 
 func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudflare.Client, zoneID, zoneName string, ch *saasv1beta1.CustomHostname) (ctrl.Result, error) {
@@ -301,7 +305,7 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 
 	if controllerutil.ContainsFinalizer(ch, finalizerName) && ch.Status.ID != "" {
 		// Observe mode supersedes deletePolicy: never touch CF, release finalizer unconditionally.
-		mgmtPolicy := effectiveManagementPolicy(ch.Spec.ManagementPolicy)
+		mgmtPolicy := effectiveManagementPolicy(ch.Spec.ManagementPolicy, r.ManagementPolicy)
 		if mgmtPolicy == ManagementPolicyObserve {
 			log.Info("observe: releasing finalizer without deleting from Cloudflare",
 				"hostname", ch.Spec.Hostname, "id", ch.Status.ID)

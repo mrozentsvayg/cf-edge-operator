@@ -226,18 +226,21 @@ func TestHandleDeleteDryRun(t *testing.T) {
 
 func TestEffectiveManagementPolicy(t *testing.T) {
 	tests := []struct {
-		name   string
-		policy string
-		want   string
+		name            string
+		crPolicy        string
+		operatorDefault string
+		want            string
 	}{
-		{"empty defaults to manage", "", "manage"},
-		{"manage passes through", "manage", "manage"},
-		{"create passes through", "create", "create"},
-		{"observe passes through", "observe", "observe"},
+		{"cr not set, uses operator default", "", "manage", "manage"},
+		{"cr not set, create default", "", "create", "create"},
+		{"cr overrides to create", "create", "manage", "create"},
+		{"cr overrides to manage", "manage", "create", "manage"},
+		{"cr not set, observe default", "", "observe", "observe"},
+		{"cr overrides to observe", "observe", "manage", "observe"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := effectiveManagementPolicy(tt.policy); got != tt.want {
+			if got := effectiveManagementPolicy(tt.crPolicy, tt.operatorDefault); got != tt.want {
 				t.Errorf("effectiveManagementPolicy() = %q, want %q", got, tt.want)
 			}
 		})

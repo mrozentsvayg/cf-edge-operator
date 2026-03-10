@@ -18,7 +18,7 @@ The recommended approach is **incremental**: migrate one hostname at a time, wit
 
 ### Management Policy
 
-`spec.managementPolicy` controls how the operator interacts with Cloudflare for each CR:
+`--management-policy` sets the operator-wide default; `spec.managementPolicy` overrides per CR:
 
 | Policy | Create | Update (drift correction) | Delete |
 |--------|--------|---------------------------|--------|
@@ -34,10 +34,11 @@ The recommended approach is **incremental**: migrate one hostname at a time, wit
 
 ```yaml
 # values.yaml
+managementPolicy: "create"   # safe coexistence — no updates by default
 deletePolicy: "own-only"
 ```
 
-This ensures that if a `CustomHostname` CR is deleted during the transition, the operator will not delete a hostname that external-dns has taken over (different CF ID).
+`managementPolicy: "create"` ensures the operator never updates existing hostnames — preventing change loops with external-dns. `deletePolicy: "own-only"` ensures that if a CR is deleted during the transition, the operator will not delete a hostname that external-dns has taken over (different CF ID). Individual CRs can override either setting via `spec.managementPolicy` and `spec.deletePolicy`.
 
 ### Step 2: Create Zone CR
 
@@ -56,7 +57,7 @@ spec:
 
 ### Step 3: For each hostname, create a CustomHostname CR
 
-Use `managementPolicy: create` during coexistence to prevent update loops:
+With the operator-wide `managementPolicy: "create"` from Step 1, CRs don't need per-CR overrides:
 
 ```yaml
 apiVersion: saas.cf-edge.io/v1beta1
@@ -69,8 +70,7 @@ spec:
   originServer: origin.internal.example.com
   zoneRef:
     name: my-zone
-  managementPolicy: create     # safe coexistence — no updates
-  deletePolicy: never          # don't delete from CF on CR removal
+  # managementPolicy and deletePolicy inherited from operator flags
 ```
 
 The operator will call `findByHostname` on reconcile and adopt the existing CF hostname (created by external-dns). No new CF resource is created. No updates are made.

@@ -20,7 +20,8 @@ Key spec fields:
 - `spec.originSNI` — (optional) overrides the SNI sent to the origin during TLS handshake. If omitted, the operator does not manage Origin SNI — CF uses its default (the origin server hostname) and external changes to the SNI are not corrected. When set, the operator enforces the value on every reconcile. The special value `:request_host_header:` instructs CF to forward the incoming request's Host header as the SNI — useful when the origin validates connections by the hostname. Requires an account-level entitlement from Cloudflare; setting this field on a zone without the entitlement produces a CF API error.
 - `spec.zoneRef` — references the Zone CR (name + optional namespace, defaults to operator namespace)
 - `spec.ssl` — (optional) SSL configuration: DCV type (`dv`), method (`http`/`txt`/`email`), CA, minTLSVersion. Defaults to `type: dv, method: http`.
-- `spec.deletePolicy` — (optional) per-CR override for the operator-wide `--delete-policy`. See [Delete Policy](#delete-policy).
+- `spec.managementPolicy` — (optional) per-CR override for `--management-policy`. See [Management Policy](#management-policy).
+- `spec.deletePolicy` — (optional) per-CR override for `--delete-policy`. See [Delete Policy](#delete-policy).
 
 ## Controller Architecture: Coordinator / Worker Split
 
@@ -115,12 +116,25 @@ App namespaces never hold Cloudflare credentials.
 
 **Why Zone is namespace-scoped, not cluster-scoped:** Secrets are namespace-scoped in Kubernetes; keeping the Zone CR in the same namespace as its Secret keeps RBAC simple (a Role suffices, no ClusterRole needed). App teams still get cluster-wide reach in practice — `zoneRef.namespace` defaults to `--operator-namespace`, so they can omit the namespace entirely and the operator resolves it. Cluster-scoped Zones would grant no UX benefit while complicating credential access patterns.
 
+## Management Policy
+
+The `--management-policy` flag sets the operator-wide default for how the operator interacts with Cloudflare. Individual CRs can override it via `spec.managementPolicy`:
+
+- **`manage`** (default): full lifecycle — create, update (drift correction), and delete per `deletePolicy`.
+- **`create`**: provisions the hostname if missing, but never updates it. Safe coexistence with external-dns or other automation that may also modify the hostname. Deletes per `deletePolicy`.
+- **`observe`**: read-only — tracks an externally-managed hostname without creating, updating, or deleting it. `deletePolicy` is ignored; the finalizer is always released on CR deletion.
+
+**Recommended:** deploy with `--management-policy=create` during any migration phase where another tool may concurrently manage the same CF zone. See [docs/migration.md](migration.md).
+
 ## Delete Policy
 
 The `--delete-policy` flag sets the operator-wide default behavior when a CustomHostname CR is deleted. Individual CRs can override it via `spec.deletePolicy`:
 
 - **`always`** (default): delete from Cloudflare by `status.id` regardless of current state. Treats 404 as success.
 - **`own-only`**: look up the current Cloudflare state via `findByHostname` before deleting. Only deletes if the current CF ID matches `status.id`. If IDs differ or the hostname is not found, releases the finalizer (removes the CR from Kubernetes without touching Cloudflare).
+- **`never`**: releases the finalizer without any CF API call, regardless of ID match.
+
+Note: when `managementPolicy` is `observe`, the operator always releases the finalizer without deleting — `deletePolicy` is ignored entirely.
 
 ### When to use `own-only`
 
@@ -129,9 +143,7 @@ The `--delete-policy` flag sets the operator-wide default behavior when a Custom
 - `always`: tries to delete by stale ID → 404 → releases. The live hostname survives by accident.
 - `own-only`: looks up current CF state, sees ID mismatch → releases without any CF API call. Explicitly safe.
 
-**Recommended:** deploy cf-edge-operator with `--delete-policy=own-only` during any migration phase where another tool may concurrently manage the same CF zone.
-
-See [docs/migration.md](migration.md) for the full migration guide.
+**Recommended:** deploy with `--delete-policy=own-only` and `--management-policy=create` during migration. See [docs/migration.md](migration.md).
 
 ## Observability
 
@@ -150,7 +162,7 @@ See [docs/migration.md](migration.md) for the full migration guide.
 | Metric | Type | Description |
 |--------|------|-------------|
 | `cf_edge_operator_zone_ready{zone_cr}` | gauge | 1 if Zone CR credentials are valid and CF API is reachable, 0 otherwise. Uses CR name (always available, even on failure). |
-| `cf_edge_operator_operations_total{resource,operation}` | counter | Successful CF write operations; `resource`: customhostname; `operation`: create, recreate, update, delete |
+| `cf_edge_operator_operations_total{resource,operation}` | counter | Successful CF operations; `resource`: customhostname; `operation`: adopt, create, recreate, update, delete |
 | `cf_edge_operator_customhostnames{zone,state}` | gauge | CRs by zone and state (ready/pending/unhealthy/conflict). Sum = total CRs in zone |
 | `cf_edge_operator_zone_customhostnames{zone,type}` | gauge | CF custom hostnames by type (managed/orphan). Sum = CF quota usage for the zone |
 | `cf_edge_operator_api_duration_seconds{resource,operation}` | histogram | CF API call latency; `resource`: customhostname, zone; `operation`: get, list, create, update, delete |

@@ -9,6 +9,7 @@ All flags are set via Helm values, which are passed as container args in the Dep
 | Flag | Helm default | Helm value | Description |
 |------|-------------|-----------|-------------|
 | `--operator-namespace` | release namespace | `operatorNamespace` | Namespace where Zone CRs are managed |
+| `--management-policy` | `manage` | `managementPolicy` | `manage`, `create`, or `observe` — see [migration.md](migration.md) |
 | `--delete-policy` | `always` | `deletePolicy` | `always`, `own-only`, or `never` — see [migration.md](migration.md) |
 | `--dry-run` | `false` | `dryRun` | Log Cloudflare (CF) operations without executing them |
 | `--drift-interval` | `1m` | `driftInterval` | How often the zone controller bulk-lists CF hostnames |
@@ -159,7 +160,7 @@ Before going live:
 
 - [ ] Zone CR `spec.id` matches the actual Cloudflare zone ID (verify in CF dashboard)
 - [ ] Secret referenced by `spec.credentialsRef` exists and contains a valid API token with `Zone: Read` and `SSL and Certificates: Edit` permissions
-- [ ] `managementPolicy` set on CRs that coexist with other tools — use `create` to prevent update loops, `observe` for read-only tracking (see [migration.md](migration.md))
+- [ ] `--management-policy` set appropriately — use `create` during migration to prevent update loops (see [migration.md](migration.md))
 - [ ] `--delete-policy` set appropriately — use `own-only` or `never` during any migration window where another tool may manage the same zone (see [migration.md](migration.md))
 - [ ] `replicaCount ≥ 2` and `leaderElect: true` for HA
 - [ ] `podDisruptionBudget.enabled: true` if availability during node drains is required

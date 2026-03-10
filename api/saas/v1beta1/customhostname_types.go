@@ -51,14 +51,14 @@ type CustomHostnameSpec struct {
 	// +optional
 	SSL *CustomHostnameSSL `json:"ssl,omitempty"`
 
-	// ManagementPolicy controls how the operator interacts with Cloudflare for this hostname.
-	// "manage" (default): full lifecycle — create, update (drift correction), and delete per deletePolicy.
+	// ManagementPolicy overrides the operator-wide --management-policy for this CR.
+	// "manage": full lifecycle — create, update (drift correction), and delete per deletePolicy.
 	// "create": provisions the hostname if missing, but never updates it (safe coexistence with
 	// other tools like external-dns that may also modify the hostname). Deletes per deletePolicy.
 	// "observe": read-only — tracks an externally-managed hostname without creating, updating,
 	// or deleting it. deletePolicy is ignored; the finalizer is always released on CR deletion.
+	// If not set, the operator-wide default applies.
 	// +kubebuilder:validation:Enum=manage;create;observe
-	// +kubebuilder:default=manage
 	// +optional
 	ManagementPolicy string `json:"managementPolicy,omitempty"`
 
