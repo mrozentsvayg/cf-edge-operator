@@ -168,11 +168,20 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	// Exists — adopt the CF ID into status. Only log and count on the first adoption
 	// (status.ID is empty); subsequent reconciles skip when the ID is unchanged.
 	if ch.Status.ID != existing.ID {
-		log.Info("adopted existing custom hostname",
-			"hostname", ch.Spec.Hostname,
-			"id", existing.ID,
-			"origin", existing.CustomOriginServer,
-			"sni", existing.CustomOriginSNI)
+		if ch.Status.ID == "" {
+			log.Info("adopted existing custom hostname",
+				"hostname", ch.Spec.Hostname,
+				"id", existing.ID,
+				"origin", existing.CustomOriginServer,
+				"sni", existing.CustomOriginSNI)
+		} else {
+			log.Info("hostname externally recreated, re-adopting with new ID",
+				"hostname", ch.Spec.Hostname,
+				"previousID", ch.Status.ID,
+				"newID", existing.ID,
+				"origin", existing.CustomOriginServer,
+				"sni", existing.CustomOriginSNI)
+		}
 		operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpAdopt).Inc()
 		ch.Status.ID = existing.ID
 	}
