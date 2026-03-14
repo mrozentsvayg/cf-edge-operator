@@ -13,8 +13,10 @@ COPY go.sum go.sum
 # and so that source changes don't invalidate our downloaded layer
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
-# Copy the Go source (relies on .dockerignore to filter)
-COPY . .
+# Copy the Go source
+COPY cmd/ cmd/
+COPY internal/ internal/
+COPY api/ api/
 
 # Build with Go module and build caches for faster rebuilds.
 RUN --mount=type=cache,target=/go/pkg/mod \
