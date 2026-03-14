@@ -544,6 +544,10 @@ func sniDrifted(currentSNI string, ch *saasv1beta1.CustomHostname) bool {
 	if ch.Spec.OriginSNI == nil {
 		// Nil means "don't manage SNI" — external changes are not corrected.
 		// Matches hasDrift() in the zone controller.
+		// NOTE: We intentionally do NOT log when CF's SNI differs from the
+		// hostname here. CF uses the sentinel ":request_host_header:" as its
+		// default, which is an internal value the operator shouldn't assume.
+		// If SNI management is desired, set spec.originSNI explicitly.
 		return false
 	}
 	return currentSNI != *ch.Spec.OriginSNI
