@@ -423,14 +423,14 @@ func TestSslDrifted(t *testing.T) {
 		},
 		{
 			name:  "method differs → drift",
-			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{Method: "http"},
+			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{Method: sslMethodHTTP},
 			spec:  &saasv1beta1.CustomHostnameSSL{Method: "txt"},
 			want:  true,
 		},
 		{
 			name:  "type matches → no drift",
-			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{Type: "dv"},
-			spec:  &saasv1beta1.CustomHostnameSSL{Type: "dv"},
+			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{Type: sslTypeDV},
+			spec:  &saasv1beta1.CustomHostnameSSL{Type: sslTypeDV},
 			want:  false,
 		},
 		{
@@ -443,8 +443,8 @@ func TestSslDrifted(t *testing.T) {
 		},
 		{
 			name:  "CA not in spec, CF has CA → no drift (unmanaged field)",
-			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: "google", Method: "http"},
-			spec:  &saasv1beta1.CustomHostnameSSL{Method: "http"},
+			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: "google", Method: sslMethodHTTP},
+			spec:  &saasv1beta1.CustomHostnameSSL{Method: sslMethodHTTP},
 			want:  false,
 		},
 	}
@@ -476,12 +476,12 @@ func TestSSLStatusFromNew(t *testing.T) {
 			name: "expires on set",
 			resp: custom_hostnames.CustomHostnameNewResponse{
 				SSL: custom_hostnames.CustomHostnameNewResponseSSL{
-					Status:    "active",
+					Status:    sslStatusActive,
 					ExpiresOn: expires,
 				},
 			},
 			want: saasv1beta1.CustomHostnameSSLStatus{
-				Status:    "active",
+				Status:    sslStatusActive,
 				ExpiresOn: func() *metav1.Time { t := metav1.NewTime(expires); return &t }(),
 			},
 		},
@@ -566,12 +566,12 @@ func TestSSLStatusFromList(t *testing.T) {
 			name: "expires on set",
 			resp: custom_hostnames.CustomHostnameListResponse{
 				SSL: custom_hostnames.CustomHostnameListResponseSSL{
-					Status:    "active",
+					Status:    sslStatusActive,
 					ExpiresOn: expires,
 				},
 			},
 			want: saasv1beta1.CustomHostnameSSLStatus{
-				Status:    "active",
+				Status:    sslStatusActive,
 				ExpiresOn: func() *metav1.Time { t := metav1.NewTime(expires); return &t }(),
 			},
 		},
@@ -649,14 +649,14 @@ func TestBuildSSLParams(t *testing.T) {
 	}{
 		{
 			name:       "CR fields set, no defaults",
-			ssl:        saasv1beta1.CustomHostnameSSL{Type: "dv", Method: "http"},
+			ssl:        saasv1beta1.CustomHostnameSSL{Type: sslTypeDV, Method: sslMethodHTTP},
 			wantType:   true,
 			wantMethod: true,
 		},
 		{
 			name: "all CR fields set",
 			ssl: saasv1beta1.CustomHostnameSSL{
-				Type:                 "dv",
+				Type:                 sslTypeDV,
 				Method:               "txt",
 				CertificateAuthority: "google",
 				MinTLSVersion:        "1.2",
@@ -680,7 +680,7 @@ func TestBuildSSLParams(t *testing.T) {
 		},
 		{
 			name:       "CR fields override defaults",
-			ssl:        saasv1beta1.CustomHostnameSSL{Method: "http", CertificateAuthority: "lets_encrypt", MinTLSVersion: "1.3"},
+			ssl:        saasv1beta1.CustomHostnameSSL{Method: sslMethodHTTP, CertificateAuthority: "lets_encrypt", MinTLSVersion: "1.3"},
 			defaults:   SSLDefaults{Method: "txt", CertificateAuthority: "google", MinTLSVersion: "1.2"},
 			wantMethod: true,
 			wantCA:     true,
@@ -712,21 +712,21 @@ func TestBuildSSLParams(t *testing.T) {
 
 func TestSslStatusFromList(t *testing.T) {
 	resp := &custom_hostnames.CustomHostnameListResponse{}
-	resp.SSL.Status = "active"
-	resp.SSL.Method = "http"
-	resp.SSL.Type = "dv"
+	resp.SSL.Status = sslStatusActive
+	resp.SSL.Method = sslMethodHTTP
+	resp.SSL.Type = sslTypeDV
 	resp.SSL.CertificateAuthority = "google"
 	resp.SSL.Settings.MinTLSVersion = "1.2"
 
 	s := sslStatusFromList(resp)
-	if s.Status != "active" {
-		t.Errorf("Status = %q, want %q", s.Status, "active")
+	if s.Status != sslStatusActive {
+		t.Errorf("Status = %q, want %q", s.Status, sslStatusActive)
 	}
-	if s.Method != "http" {
-		t.Errorf("Method = %q, want %q", s.Method, "http")
+	if s.Method != sslMethodHTTP {
+		t.Errorf("Method = %q, want %q", s.Method, sslMethodHTTP)
 	}
-	if s.Type != "dv" {
-		t.Errorf("Type = %q, want %q", s.Type, "dv")
+	if s.Type != sslTypeDV {
+		t.Errorf("Type = %q, want %q", s.Type, sslTypeDV)
 	}
 	if s.CertificateAuthority != "google" {
 		t.Errorf("CertificateAuthority = %q, want %q", s.CertificateAuthority, "google")

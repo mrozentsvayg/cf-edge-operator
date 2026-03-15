@@ -72,6 +72,12 @@ const (
 	DeletePolicyNever   = "never"
 )
 
+const (
+	sslStatusActive = "active"
+	sslMethodHTTP   = "http"
+	sslTypeDV       = "dv"
+)
+
 // CustomHostnameReconciler reconciles a CustomHostname object.
 // It acts as the worker: handles individual Cloudflare API writes (create/update/delete).
 // Triggered by spec changes and by the Zone coordinator via the event channel on drift detection.
@@ -279,7 +285,7 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, zi *zoneInf
 	// Default to DV + HTTP if not specified — SSL is always required for custom hostnames.
 	sslSpec := ch.Spec.SSL
 	if sslSpec == nil {
-		sslSpec = &saasv1beta1.CustomHostnameSSL{Type: "dv", Method: "http"}
+		sslSpec = &saasv1beta1.CustomHostnameSSL{Type: sslTypeDV, Method: sslMethodHTTP}
 	}
 	params.SSL = cloudflare.F(buildSSLParams(sslSpec, r.SSLDefaults))
 	opts := []option.RequestOption{option.WithJSONSet("custom_origin_server", ch.Spec.OriginServer)}
@@ -450,7 +456,7 @@ func (r *CustomHostnameReconciler) findByHostname(ctx context.Context, cf *cloud
 func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneCR string, ch *saasv1beta1.CustomHostname) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	ch.Status.ConsecutiveErrors = 0
-	if ch.Status.SSL != nil && ch.Status.SSL.Status == "active" {
+	if ch.Status.SSL != nil && ch.Status.SSL.Status == sslStatusActive {
 		// Observe SSL provisioning duration on first transition to active.
 		// Guard against double-counting on operator restart: skip if Ready=True is already set.
 		// NOTE: If SSL is already active at creation time (pre-validated domains), the
@@ -464,7 +470,7 @@ func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneCR st
 				}
 			}
 			if !alreadyReady {
-				method := "http"
+				method := sslMethodHTTP
 				if ch.Spec.SSL != nil && ch.Spec.SSL.Method != "" {
 					method = ch.Spec.SSL.Method
 				}

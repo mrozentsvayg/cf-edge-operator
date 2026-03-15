@@ -185,11 +185,11 @@ func TestHasDrift(t *testing.T) {
 			name: "ssl status matches",
 			ch: saasv1beta1.CustomHostname{
 				Spec:   saasv1beta1.CustomHostnameSpec{OriginServer: "origin.example.com"},
-				Status: saasv1beta1.CustomHostnameStatus{SSL: &saasv1beta1.CustomHostnameSSLStatus{Status: "active"}},
+				Status: saasv1beta1.CustomHostnameStatus{SSL: &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive}},
 			},
 			cfCH: custom_hostnames.CustomHostnameListResponse{
 				CustomOriginServer: "origin.example.com",
-				SSL:                custom_hostnames.CustomHostnameListResponseSSL{Status: "active"},
+				SSL:                custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive},
 			},
 			want: false,
 		},
@@ -201,7 +201,7 @@ func TestHasDrift(t *testing.T) {
 			},
 			cfCH: custom_hostnames.CustomHostnameListResponse{
 				CustomOriginServer: "origin.example.com",
-				SSL:                custom_hostnames.CustomHostnameListResponseSSL{Status: "active"},
+				SSL:                custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive},
 			},
 			want: true,
 		},
