@@ -117,7 +117,7 @@ kubectl get customhostnames -A
 | `image.repository` | `ghcr.io/mrozentsvayg/cf-edge-operator` | Image repository |
 | `image.tag` | chart appVersion | Image tag |
 | `operatorNamespace` | release namespace | Namespace where Zone CRs live |
-| `deletePolicy` | `always` | `always` or `own-only`. See [docs/architecture.md](docs/architecture.md#delete-policy). |
+| `deletePolicy` | `always` | `always`, `own-only`, or `never`. See [docs/architecture.md](docs/architecture.md#delete-policy). |
 | `leaderElect` | `true` | Enable leader election (required for HA) |
 | `replicaCount` | `1` | Number of replicas |
 | `resources.limits.cpu` | `500m` | CPU limit |
@@ -159,7 +159,7 @@ Metrics are exposed on `:8080/metrics` (HTTP, via Helm chart). See [docs/archite
 - `cf_edge_operator_operations_total{resource,operation}` — successful CF write operations (create, recreate, update, delete)
 - `cf_edge_operator_customhostnames{zone,state}` — CRs by zone and state (ready/pending/unhealthy/conflict)
 - `cf_edge_operator_zone_customhostnames{zone,type}` — CF custom hostnames by type (managed/orphan)
-- `cf_edge_operator_ssl_provisioning_duration_seconds{zone,hostname,method}` — time from CF create to SSL active
+- `cf_edge_operator_ssl_provisioning_duration_seconds{zone_cr,hostname,method}` — time from CF create to SSL active
 - `cf_edge_operator_api_errors_by_code_total{resource,operation,status_code}` — CF API errors by HTTP status code
 - `cf_edge_operator_api_duration_seconds{resource,operation}` — CF API latency histogram
 - `cf_edge_operator_drift_buffer_depth{resource}` — current items in the drift event channel

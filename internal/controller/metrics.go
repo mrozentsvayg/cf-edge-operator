@@ -37,15 +37,15 @@ var (
 	}, []string{"resource", "operation"})
 
 	// sslProvisioningDuration observes the time from CF hostname creation to ssl.status == active.
-	// Labels: zone (zone domain name), hostname (the custom hostname), method (DCV method).
+	// Labels: zone_cr (Zone CR name), hostname (the custom hostname), method (DCV method).
 	// Observed once per provisioning cycle; reset on recreation so it reflects the latest cycle.
 	// Buckets cover the bimodal distribution: quick completers (minutes) and slow ones (days/weeks).
 	sslProvisioningDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "cf_edge_operator_ssl_provisioning_duration_seconds",
-		Help:    "Time from Cloudflare hostname creation to ssl.status becoming active, by zone, hostname, and DCV method.",
+		Help:    "Time from Cloudflare hostname creation to ssl.status becoming active, by zone CR, hostname, and DCV method.",
 		Buckets: []float64{60, 300, 600, 1800, 3600, 7200, 21600, 43200, 86400, 259200, 604800},
 		// 1m, 5m, 10m, 30m, 1h, 2h, 6h, 12h, 1d, 3d, 1w
-	}, []string{"zone", "hostname", "method"})
+	}, []string{"zone_cr", "hostname", "method"})
 
 	// customHostnames counts CustomHostname CRs by zone and state.
 	// States are mutually exclusive: conflict > ready > unhealthy > pending.

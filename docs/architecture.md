@@ -167,7 +167,7 @@ Note: when `managementPolicy` is `observe`, the operator always releases the fin
 | `cf_edge_operator_zone_customhostnames{zone_cr,type}` | gauge | CF custom hostnames by zone CR and type (managed/orphan). Sum = CF quota usage for the zone |
 | `cf_edge_operator_api_duration_seconds{resource,operation}` | histogram | CF API call latency; `resource`: customhostname, zone; `operation`: get, list, create, update, delete |
 | `cf_edge_operator_api_errors_by_code_total{resource,operation,status_code}` | counter | CF API errors by resource, operation, and HTTP status code (`unknown` for non-HTTP errors) |
-| `cf_edge_operator_ssl_provisioning_duration_seconds{zone,hostname,method}` | histogram | Time from CF create to `ssl.status == active`. Buckets span 1m–1w. |
+| `cf_edge_operator_ssl_provisioning_duration_seconds{zone_cr,hostname,method}` | histogram | Time from CF create to `ssl.status == active`. Buckets span 1m–1w. |
 | `cf_edge_operator_drift_buffer_depth{resource}` | gauge | Current items in the drift event channel by resource type. Approaching `--drift-buffer` capacity means the worker controller is not draining fast enough. |
 | `cf_edge_operator_drift_buffer_overflow_total{resource}` | counter | Times the drift buffer was full by resource type, causing the zone controller to block. Non-zero indicates capacity issue. |
 | `cf_edge_operator_drift_detection_errors_total{resource}` | counter | Drift detection failures by resource type. Non-zero means drift detection is failing for one or more zones. |
