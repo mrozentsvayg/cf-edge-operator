@@ -63,11 +63,15 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
+          - --operator-namespace=cf-edge-operator-system
           - --management-policy=manage
           - --delete-policy=always
           # - --dry-run
           - --drift-interval=1m
           - --drift-buffer=1024
+          # - --ssl-certificate-authority=
+          # - --ssl-min-tls-version=
+          # - --ssl-method=
         image: controller:latest
         name: manager
         ports: []
