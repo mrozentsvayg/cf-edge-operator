@@ -116,6 +116,8 @@ func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	// Validate that the origin server belongs to the zone — Cloudflare for SaaS is zone-scoped.
+	// NOTE: Skipped when zoneName is empty (Zone not yet reconciled). CF API rejects
+	// invalid origins anyway; this is a best-effort early check.
 	if zoneName != "" && !strings.HasSuffix(ch.Spec.OriginServer, "."+zoneName) && ch.Spec.OriginServer != zoneName {
 		return ctrl.Result{}, r.setError(ctx, &ch, "OriginNotInZone",
 			fmt.Sprintf("originServer %q must belong to zone %q", ch.Spec.OriginServer, zoneName))
@@ -256,6 +258,9 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 // effectiveManagementPolicy returns the management policy to apply for this CR.
 // spec.managementPolicy takes precedence over the operator-wide --management-policy flag,
 // allowing per-CR override without restarting the operator.
+// NOTE: No runtime validation of crPolicy — kubebuilder Enum on the CRD rejects invalid
+// values at admission. An invalid value bypassing admission would fall through switch
+// statements and behave like "manage" (fail-open). Acceptable given admission enforcement.
 func effectiveManagementPolicy(crPolicy, operatorDefault string) string {
 	if crPolicy != "" {
 		return crPolicy
@@ -419,6 +424,8 @@ func shouldDeleteInCF(statusID string, current *custom_hostnames.CustomHostnameL
 	return current.ID == statusID
 }
 
+// NOTE: Early return from the pager on first match abandons remaining pages.
+// No resource leak — the pager is GC'd when Reconcile returns (~200-500ms).
 func (r *CustomHostnameReconciler) findByHostname(ctx context.Context, cf *cloudflare.Client, zoneID, hostname string) (*custom_hostnames.CustomHostnameListResponse, error) {
 	start := time.Now()
 	pager := cf.CustomHostnames.ListAutoPaging(ctx, custom_hostnames.CustomHostnameListParams{
@@ -444,6 +451,8 @@ func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneName 
 	if ch.Status.SSL != nil && ch.Status.SSL.Status == "active" {
 		// Observe SSL provisioning duration on first transition to active.
 		// Guard against double-counting on operator restart: skip if Ready=True is already set.
+		// NOTE: If SSL is already active at creation time (pre-validated domains), the
+		// observed duration is near-zero. This is technically correct — not a bug.
 		if ch.Status.SSLProvisioningStartedAt != nil {
 			alreadyReady := false
 			for _, cond := range ch.Status.Conditions {
@@ -482,6 +491,10 @@ func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneName 
 // Self-healing: when the owning CR is deleted, the Zone controller re-enqueues this CR via the
 // "hostname missing from CF" path, at which point detectConflict finds no peer with an ID and
 // returns false, allowing normal provisioning to proceed.
+// NOTE: If two CRs with the same hostname are created simultaneously (neither has an ID yet),
+// both pass this check and race to CF. CF returns success for one; the other fails or creates
+// a duplicate. On the next reconcile, adoption sets Status.ID on both → conflict detected.
+// Self-heals within one drift cycle.
 func (r *CustomHostnameReconciler) detectConflict(ctx context.Context, ch *saasv1beta1.CustomHostname) (bool, error) {
 	log := logf.FromContext(ctx)
 	var peers saasv1beta1.CustomHostnameList
