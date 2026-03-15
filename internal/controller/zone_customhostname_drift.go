@@ -167,9 +167,9 @@ func hasDrift(ch *saasv1beta1.CustomHostname, cfCH custom_hostnames.CustomHostna
 	if ch.Spec.OriginSNI != nil && cfCH.CustomOriginSNI != *ch.Spec.OriginSNI {
 		return true
 	}
-	// Detect SSL status changes (e.g. initializing → pending_validation → active).
-	// The zone bulk list already includes SSL status, so we use it to drive status
-	// updates instead of per-CR self-requeue polling in the CH controller.
+	if sslDrifted(cfCH.SSL, ch.Spec.SSL) {
+		return true
+	}
 	cfSSLStatus := string(cfCH.SSL.Status)
 	crSSLStatus := ""
 	if ch.Status.SSL != nil {

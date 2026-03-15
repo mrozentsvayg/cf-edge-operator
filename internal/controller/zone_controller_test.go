@@ -217,6 +217,45 @@ func TestHasDrift(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "ssl CA differs → drift",
+			ch: saasv1beta1.CustomHostname{
+				Spec: saasv1beta1.CustomHostnameSpec{
+					OriginServer: "origin.example.com",
+					SSL:          &saasv1beta1.CustomHostnameSSL{CertificateAuthority: "google"},
+				},
+			},
+			cfCH: custom_hostnames.CustomHostnameListResponse{
+				CustomOriginServer: "origin.example.com",
+				SSL:                custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: "lets_encrypt"},
+			},
+			want: true,
+		},
+		{
+			name: "ssl CA matches → no drift",
+			ch: saasv1beta1.CustomHostname{
+				Spec: saasv1beta1.CustomHostnameSpec{
+					OriginServer: "origin.example.com",
+					SSL:          &saasv1beta1.CustomHostnameSSL{CertificateAuthority: "google"},
+				},
+			},
+			cfCH: custom_hostnames.CustomHostnameListResponse{
+				CustomOriginServer: "origin.example.com",
+				SSL:                custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: "google"},
+			},
+			want: false,
+		},
+		{
+			name: "ssl nil spec, CF has CA → no drift",
+			ch: saasv1beta1.CustomHostname{
+				Spec: saasv1beta1.CustomHostnameSpec{OriginServer: "origin.example.com"},
+			},
+			cfCH: custom_hostnames.CustomHostnameListResponse{
+				CustomOriginServer: "origin.example.com",
+				SSL:                custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: "google"},
+			},
+			want: false,
+		},
+		{
 			name: "ssl status: both empty (no ssl)",
 			ch: saasv1beta1.CustomHostname{
 				Spec: saasv1beta1.CustomHostnameSpec{OriginServer: "origin.example.com"},
