@@ -72,7 +72,7 @@ kubectl get customhostnames -A
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `spec.id` | yes | Cloudflare zone ID |
+| `spec.id` | yes | Cloudflare zone ID (32-char hex, immutable) |
 | `spec.credentialsRef.name` | yes | Secret name containing the API token |
 | `spec.credentialsRef.key` | no | Secret key, defaults to `apiToken` |
 
@@ -80,7 +80,7 @@ kubectl get customhostnames -A
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `spec.hostname` | yes | The custom hostname (e.g. `api.acme.com`) |
+| `spec.hostname` | yes | The custom hostname (e.g. `api.acme.com`, immutable) |
 | `spec.originServer` | yes | Origin the hostname routes to. Must belong to the zone. |
 | `spec.originSNI` | no | SNI sent to the origin. If omitted, the operator does not manage SNI. Requires CF account entitlement. |
 | `spec.zoneRef.name` | yes | Zone CR name |

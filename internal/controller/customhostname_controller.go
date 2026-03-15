@@ -95,7 +95,7 @@ type SSLDefaults struct {
 	MinTLSVersion        string
 }
 
-// +kubebuilder:rbac:groups=saas.cf-edge.io,resources=customhostnames,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=saas.cf-edge.io,resources=customhostnames,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=saas.cf-edge.io,resources=customhostnames/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=saas.cf-edge.io,resources=customhostnames/finalizers,verbs=update
 // +kubebuilder:rbac:groups=domains.cf-edge.io,resources=zones,verbs=get;list;watch
@@ -235,29 +235,21 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 				log.Info("dry-run: would update custom hostname", "hostname", ch.Spec.Hostname,
 					"currentOrigin", existing.CustomOriginServer, "desiredOrigin", ch.Spec.OriginServer,
 					"sslDrift", sslDrift)
-				return ctrl.Result{}, nil
+			} else {
+				editStart := time.Now()
+				_, editErr := cf.CustomHostnames.Edit(ctx, existing.ID, editParams, opts...)
+				recordCFCall(cfResourceCustomHostname, cfOpUpdate, editStart, &editErr)
+				if editErr != nil {
+					log.Error(editErr, "failed to update custom hostname", "id", existing.ID)
+					return ctrl.Result{}, r.setError(ctx, ch, "UpdateFailed", editErr.Error())
+				}
+				operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpUpdate).Inc()
 			}
-			editStart := time.Now()
-			_, editErr := cf.CustomHostnames.Edit(ctx, existing.ID, editParams, opts...)
-			recordCFCall(cfResourceCustomHostname, cfOpUpdate, editStart, &editErr)
-			if editErr != nil {
-				log.Error(editErr, "failed to update custom hostname", "id", existing.ID)
-				return ctrl.Result{}, r.setError(ctx, ch, "UpdateFailed", editErr.Error())
-			}
-			operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpUpdate).Inc()
 		}
 	}
-
-	if r.DryRun {
-		return ctrl.Result{}, nil
-	}
-	// NOTE: Status is synced from CF on every reconcile, even when nothing changed.
-	// This keeps status.ssl fresh for transitions (pending → active) without relying
-	// solely on drift detection timing.
+	// Set SSL status in memory; persisted by setCondition's r.Status().Update()
+	// inside requeueOrReady — single write covers SSL, conditions, and counters.
 	ch.Status.SSL = sslStatusFromList(existing)
-	if err := r.Status().Update(ctx, ch); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to update status: %w", err)
-	}
 	return r.requeueOrReady(ctx, zoneName, ch)
 }
 
@@ -402,8 +394,8 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 			}
 		} else {
 			log.Info("custom hostname deleted from Cloudflare", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
+			operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpDelete).Inc()
 		}
-		operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpDelete).Inc()
 	}
 
 	controllerutil.RemoveFinalizer(ch, finalizerName)

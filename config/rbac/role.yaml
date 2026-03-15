@@ -17,12 +17,8 @@ rules:
   resources:
   - zones
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - domains.cf-edge.io
@@ -43,8 +39,6 @@ rules:
   resources:
   - customhostnames
   verbs:
-  - create
-  - delete
   - get
   - list
   - patch
