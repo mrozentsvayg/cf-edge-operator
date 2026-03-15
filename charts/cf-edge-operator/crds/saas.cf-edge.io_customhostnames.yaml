@@ -72,10 +72,14 @@ spec:
                 - never
                 type: string
               hostname:
-                description: Hostname is the custom hostname to register with Cloudflare
-                  (e.g. customer.example.com)
+                description: |-
+                  Hostname is the custom hostname to register with Cloudflare (e.g. customer.example.com).
+                  Immutable after creation — changing it would orphan the existing CF custom hostname.
                 format: hostname
                 type: string
+                x-kubernetes-validations:
+                - message: hostname is immutable
+                  rule: self == oldSelf
               managementPolicy:
                 description: |-
                   ManagementPolicy overrides the operator-wide --management-policy for this CR.
@@ -245,13 +249,28 @@ spec:
                 description: SSL reflects the current SSL certificate state as reported
                   by Cloudflare
                 properties:
+                  certificateAuthority:
+                    description: CertificateAuthority is the CA that issued this certificate
+                      (lets_encrypt, google, ssl_com)
+                    type: string
                   expiresOn:
                     description: ExpiresOn is the certificate expiration time
                     format: date-time
                     type: string
+                  method:
+                    description: Method is the DCV method used for this certificate
+                      (http, txt, email)
+                    type: string
+                  minTLSVersion:
+                    description: MinTLSVersion is the minimum TLS version configured
+                      for this hostname
+                    type: string
                   status:
                     description: Status is the certificate verification state (e.g.
                       pending_validation, active, expired)
+                    type: string
+                  type:
+                    description: Type is the validation type (dv)
                     type: string
                   validationErrors:
                     description: ValidationErrors contains any errors encountered
