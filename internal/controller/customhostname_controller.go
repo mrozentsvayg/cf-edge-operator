@@ -447,7 +447,7 @@ func (r *CustomHostnameReconciler) findByHostname(ctx context.Context, cf *cloud
 	return nil, err
 }
 
-func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneName string, ch *saasv1beta1.CustomHostname) (ctrl.Result, error) {
+func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneCR string, ch *saasv1beta1.CustomHostname) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	ch.Status.ConsecutiveErrors = 0
 	if ch.Status.SSL != nil && ch.Status.SSL.Status == "active" {
@@ -469,7 +469,7 @@ func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneName 
 					method = ch.Spec.SSL.Method
 				}
 				duration := time.Since(ch.Status.SSLProvisioningStartedAt.Time)
-				sslProvisioningDuration.WithLabelValues(zoneName, ch.Spec.Hostname, method).Observe(duration.Seconds())
+				sslProvisioningDuration.WithLabelValues(zoneCR, ch.Spec.Hostname, method).Observe(duration.Seconds())
 				log.Info("SSL provisioning complete", "hostname", ch.Spec.Hostname, "duration", duration.Round(time.Second), "method", method)
 			}
 		}
