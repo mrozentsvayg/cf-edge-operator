@@ -54,6 +54,7 @@ spec:
                   key:
                     default: apiToken
                     description: Key within the secret containing the API token
+                    minLength: 1
                     type: string
                   name:
                     description: Name of the secret
@@ -62,14 +63,22 @@ spec:
                 - name
                 type: object
               id:
-                description: ID is the Cloudflare zone ID
+                description: |-
+                  ID is the Cloudflare zone ID (32-character hex string).
+                  Immutable — changing it would redirect all associated CustomHostname CRs to a different zone.
+                pattern: ^[0-9a-f]{32}$
                 type: string
+                x-kubernetes-validations:
+                - message: zone ID is immutable
+                  rule: self == oldSelf
             required:
             - credentialsRef
             - id
             type: object
           status:
-            description: ZoneStatus defines the observed state of Zone
+            description: |-
+              ZoneStatus defines the observed state of Zone.
+              NOTE: No top-level ObservedGeneration — it's set per-condition in setReady().
             properties:
               conditions:
                 items:

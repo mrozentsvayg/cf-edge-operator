@@ -63,7 +63,7 @@ type ZoneReconciler struct {
 	DriftInterval time.Duration
 }
 
-// +kubebuilder:rbac:groups=domains.cf-edge.io,resources=zones,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=domains.cf-edge.io,resources=zones,verbs=get;list;watch
 // +kubebuilder:rbac:groups=domains.cf-edge.io,resources=zones/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=domains.cf-edge.io,resources=zones/finalizers,verbs=update
 // +kubebuilder:rbac:groups=saas.cf-edge.io,resources=customhostnames,verbs=get;list;watch
