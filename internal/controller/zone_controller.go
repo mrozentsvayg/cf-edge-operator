@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -43,6 +44,7 @@ import (
 	"github.com/cloudflare/cloudflare-go/v6/zones"
 
 	domainsv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/domains/v1beta1"
+	saasv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1beta1"
 )
 
 // ZoneReconciler reconciles a Zone object.
@@ -73,8 +75,10 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	var zone domainsv1beta1.Zone
 	if err := r.Get(ctx, req.NamespacedName, &zone); err != nil {
 		if client.IgnoreNotFound(err) == nil {
-			// Zone deleted — remove the stale zoneReady gauge series.
+			// Zone deleted — remove stale gauge series.
 			zoneReady.DeleteLabelValues(req.Name)
+			customHostnames.DeletePartialMatch(prometheus.Labels{"zone_cr": req.Name})
+			zoneCustomHostnames.DeletePartialMatch(prometheus.Labels{"zone_cr": req.Name})
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -110,7 +114,10 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	// (zone_*_drift.go) and can fail independently without affecting others.
 	// When multiple detectors exist, parallelize with errgroup.Group to avoid
 	// sequential paginated API calls stretching the reconcile duration.
-	_ = r.detectCustomHostnameDrift(ctx, cf, &zone)
+	if err := r.detectCustomHostnameDrift(ctx, cf, &zone); err != nil {
+		log.Error(err, "drift detection failed", "zoneID", zone.Spec.ID)
+		driftDetectionErrorsTotal.WithLabelValues(cfResourceCustomHostname).Inc()
+	}
 
 	return ctrl.Result{RequeueAfter: r.DriftInterval}, nil
 }
@@ -148,8 +155,18 @@ func (r *ZoneReconciler) setReady(ctx context.Context, zone *domainsv1beta1.Zone
 	return nil
 }
 
+const zoneRefField = ".spec.zoneRef.name"
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *ZoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(),
+		&saasv1beta1.CustomHostname{}, zoneRefField,
+		func(o client.Object) []string {
+			ch := o.(*saasv1beta1.CustomHostname)
+			return []string{ch.Spec.ZoneRef.Name}
+		}); err != nil {
+		return fmt.Errorf("failed to create zoneRef index: %w", err)
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&domainsv1beta1.Zone{}).
 		Named("zone").

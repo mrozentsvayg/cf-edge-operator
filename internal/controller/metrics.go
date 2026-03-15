@@ -51,16 +51,16 @@ var (
 	// Sum across states equals total CRs in that zone.
 	customHostnames = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "cf_edge_operator_customhostnames",
-		Help: "Number of CustomHostname CRs by zone and state (ready, pending, unhealthy, conflict).",
-	}, []string{"zone", "state"})
+		Help: "Number of CustomHostname CRs by zone CR and state (ready, pending, unhealthy, conflict).",
+	}, []string{"zone_cr", "state"})
 
-	// zoneCustomHostnames counts Cloudflare custom hostnames by zone and type.
+	// zoneCustomHostnames counts Cloudflare custom hostnames by zone CR and type.
 	// managed: hostname has a corresponding CR; orphan: hostname has no CR.
 	// Sum across types equals total CF quota usage for that zone.
 	zoneCustomHostnames = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "cf_edge_operator_zone_customhostnames",
-		Help: "Number of Cloudflare custom hostnames by zone and type (managed, orphan). Sum = CF quota usage.",
-	}, []string{"zone", "type"})
+		Help: "Number of Cloudflare custom hostnames by zone CR and type (managed, orphan). Sum = CF quota usage.",
+	}, []string{"zone_cr", "type"})
 
 	// zoneReady is 1 when the Zone CR credentials are valid and the Cloudflare API
 	// is reachable, 0 otherwise. Labeled by zone_cr (the Zone CR name, always
@@ -100,6 +100,13 @@ var (
 		Name: "cf_edge_operator_drift_buffer_overflow_total",
 		Help: "Number of times the drift event buffer was full, by resource type.",
 	}, []string{"resource"})
+
+	// driftDetectionErrorsTotal counts drift detection failures by resource type.
+	// Non-zero means drift detection is failing for one or more zones.
+	driftDetectionErrorsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "cf_edge_operator_drift_detection_errors_total",
+		Help: "Number of drift detection failures, by resource type.",
+	}, []string{"resource"})
 )
 
 func init() {
@@ -113,6 +120,7 @@ func init() {
 		cfAPIErrorsByCode,
 		driftBufferDepth,
 		driftBufferOverflowTotal,
+		driftDetectionErrorsTotal,
 	)
 	// Pre-initialize counters and histograms so they appear in /metrics from startup.
 	for _, op := range []string{cfOpList, cfOpGet, cfOpCreate, cfOpUpdate, cfOpDelete} {

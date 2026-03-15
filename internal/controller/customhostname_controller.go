@@ -84,6 +84,15 @@ type CustomHostnameReconciler struct {
 	DeletePolicy string
 	// DryRun skips all Cloudflare write operations and logs what would happen instead.
 	DryRun bool
+	// SSLDefaults are operator-wide defaults applied on create when the CR field is empty.
+	SSLDefaults SSLDefaults
+}
+
+// SSLDefaults holds operator-wide default SSL settings for new custom hostnames.
+type SSLDefaults struct {
+	Method               string
+	CertificateAuthority string
+	MinTLSVersion        string
 }
 
 // +kubebuilder:rbac:groups=saas.cf-edge.io,resources=customhostnames,verbs=get;list;watch;create;update;patch;delete
@@ -117,7 +126,9 @@ func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return r.handleDelete(ctx, cf, zoneID, &ch)
 	}
 
-	// Ensure finalizer
+	// NOTE: Requeue after finalizer add to get a fresh object with the finalizer persisted.
+	// Continuing in the same cycle risks a race where another controller deletes the
+	// object between the update and the next operation.
 	if !controllerutil.ContainsFinalizer(&ch, finalizerName) {
 		controllerutil.AddFinalizer(&ch, finalizerName)
 		if err := r.Update(ctx, &ch); err != nil {
@@ -145,7 +156,9 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	log := logf.FromContext(ctx)
 	mgmtPolicy := effectiveManagementPolicy(ch.Spec.ManagementPolicy, r.ManagementPolicy)
 
-	// Single Cloudflare API call: find existing hostname by name
+	// NOTE: Always resolve current CF state by hostname, even if status.ID exists.
+	// The etcd status could be stale (operator crash, manual CF deletion). This
+	// single API call makes reconciliation idempotent across restarts.
 	existing, err := r.findByHostname(ctx, cf, zoneID, ch.Spec.Hostname)
 	if err != nil {
 		log.Error(err, "failed to look up custom hostname", "hostname", ch.Spec.Hostname)
@@ -165,6 +178,9 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 		return r.handleCreate(ctx, cf, zoneID, zoneName, ch)
 	}
 
+	// NOTE: Adoption continues in the same reconcile cycle (no early return/requeue)
+	// to atomically check drift and update SSL status in a single pass. The status
+	// is persisted once at the end, avoiding an extra API round-trip.
 	// Exists — adopt the CF ID into status. Only log and count on the first adoption
 	// (status.ID is empty); subsequent reconciles skip when the ID is unchanged.
 	if ch.Status.ID != existing.ID {
@@ -235,6 +251,9 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	if r.DryRun {
 		return ctrl.Result{}, nil
 	}
+	// NOTE: Status is synced from CF on every reconcile, even when nothing changed.
+	// This keeps status.ssl fresh for transitions (pending → active) without relying
+	// solely on drift detection timing.
 	ch.Status.SSL = sslStatusFromList(existing)
 	if err := r.Status().Update(ctx, ch); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to update status: %w", err)
@@ -264,7 +283,7 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudfl
 	if sslSpec == nil {
 		sslSpec = &saasv1beta1.CustomHostnameSSL{Type: "dv", Method: "http"}
 	}
-	params.SSL = cloudflare.F(buildSSLParams(sslSpec))
+	params.SSL = cloudflare.F(buildSSLParams(sslSpec, r.SSLDefaults))
 	opts := []option.RequestOption{option.WithJSONSet("custom_origin_server", ch.Spec.OriginServer)}
 	if ch.Spec.OriginSNI != nil {
 		opts = append(opts, option.WithJSONSet("custom_origin_sni", *ch.Spec.OriginSNI))
@@ -551,7 +570,7 @@ func (r *CustomHostnameReconciler) buildCloudflareClient(ctx context.Context, ch
 func sniDrifted(currentSNI string, ch *saasv1beta1.CustomHostname) bool {
 	if ch.Spec.OriginSNI == nil {
 		// Nil means "don't manage SNI" — external changes are not corrected.
-		// Matches hasDrift() in the zone controller.
+		// Used by both the CH controller and hasDrift() in zone drift detection.
 		// NOTE: We intentionally do NOT log when CF's SNI differs from the
 		// hostname here. CF uses the sentinel ":request_host_header:" as its
 		// default, which is an internal value the operator shouldn't assume.
@@ -599,27 +618,45 @@ func buildSSLEditParams(ssl *saasv1beta1.CustomHostnameSSL) custom_hostnames.Cus
 	return p
 }
 
-func buildSSLParams(ssl *saasv1beta1.CustomHostnameSSL) custom_hostnames.CustomHostnameNewParamsSSL {
+func buildSSLParams(ssl *saasv1beta1.CustomHostnameSSL, defaults SSLDefaults) custom_hostnames.CustomHostnameNewParamsSSL {
 	p := custom_hostnames.CustomHostnameNewParamsSSL{}
-	if ssl.Type != "" {
-		p.Type = cloudflare.F(custom_hostnames.DomainValidationType(ssl.Type))
+	if t := ssl.Type; t != "" {
+		p.Type = cloudflare.F(custom_hostnames.DomainValidationType(t))
 	}
-	if ssl.Method != "" {
-		p.Method = cloudflare.F(custom_hostnames.DCVMethod(ssl.Method))
+	method := ssl.Method
+	if method == "" {
+		method = defaults.Method
 	}
-	if ssl.CertificateAuthority != "" {
-		p.CertificateAuthority = cloudflare.F(cloudflare.CertificateCA(ssl.CertificateAuthority))
+	if method != "" {
+		p.Method = cloudflare.F(custom_hostnames.DCVMethod(method))
 	}
-	if ssl.MinTLSVersion != "" {
+	ca := ssl.CertificateAuthority
+	if ca == "" {
+		ca = defaults.CertificateAuthority
+	}
+	if ca != "" {
+		p.CertificateAuthority = cloudflare.F(cloudflare.CertificateCA(ca))
+	}
+	minTLS := ssl.MinTLSVersion
+	if minTLS == "" {
+		minTLS = defaults.MinTLSVersion
+	}
+	if minTLS != "" {
 		p.Settings = cloudflare.F(custom_hostnames.CustomHostnameNewParamsSSLSettings{
-			MinTLSVersion: cloudflare.F(custom_hostnames.CustomHostnameNewParamsSSLSettingsMinTLSVersion(ssl.MinTLSVersion)),
+			MinTLSVersion: cloudflare.F(custom_hostnames.CustomHostnameNewParamsSSLSettingsMinTLSVersion(minTLS)),
 		})
 	}
 	return p
 }
 
 func sslStatusFromNew(resp *custom_hostnames.CustomHostnameNewResponse) *saasv1beta1.CustomHostnameSSLStatus {
-	s := &saasv1beta1.CustomHostnameSSLStatus{Status: string(resp.SSL.Status)}
+	s := &saasv1beta1.CustomHostnameSSLStatus{
+		Status:               string(resp.SSL.Status),
+		CertificateAuthority: string(resp.SSL.CertificateAuthority),
+		MinTLSVersion:        string(resp.SSL.Settings.MinTLSVersion),
+		Method:               string(resp.SSL.Method),
+		Type:                 string(resp.SSL.Type),
+	}
 	if !resp.SSL.ExpiresOn.IsZero() {
 		t := metav1.NewTime(resp.SSL.ExpiresOn)
 		s.ExpiresOn = &t
@@ -640,7 +677,13 @@ func sslStatusFromNew(resp *custom_hostnames.CustomHostnameNewResponse) *saasv1b
 }
 
 func sslStatusFromList(resp *custom_hostnames.CustomHostnameListResponse) *saasv1beta1.CustomHostnameSSLStatus {
-	s := &saasv1beta1.CustomHostnameSSLStatus{Status: string(resp.SSL.Status)}
+	s := &saasv1beta1.CustomHostnameSSLStatus{
+		Status:               string(resp.SSL.Status),
+		CertificateAuthority: string(resp.SSL.CertificateAuthority),
+		MinTLSVersion:        string(resp.SSL.Settings.MinTLSVersion),
+		Method:               string(resp.SSL.Method),
+		Type:                 string(resp.SSL.Type),
+	}
 	if !resp.SSL.ExpiresOn.IsZero() {
 		t := metav1.NewTime(resp.SSL.ExpiresOn)
 		s.ExpiresOn = &t

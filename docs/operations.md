@@ -15,6 +15,9 @@ All flags are set via Helm values, which are passed as container args in the Dep
 | `--drift-interval` | `1m` | `driftInterval` | How often the zone controller bulk-lists CF hostnames |
 | `--drift-buffer` | `1024` | `driftBuffer` | Internal channel buffer for drift events |
 | `--leader-elect` | `true` | `leaderElect` | Required when running multiple replicas |
+| `--ssl-method` | _(empty)_ | `sslMethod` | Default DCV method for new CHs (`http`, `txt`, `email`). Empty = CF default |
+| `--ssl-certificate-authority` | _(empty)_ | `sslCertificateAuthority` | Default CA for new CHs (`lets_encrypt`, `google`, `ssl_com`). Empty = CF default |
+| `--ssl-min-tls-version` | _(empty)_ | `sslMinTLSVersion` | Default min TLS version for new CHs (`1.0`–`1.3`). Empty = CF default |
 
 ---
 
@@ -50,6 +53,8 @@ Size of the internal Go channel used by the zone controller to signal drifted Cu
 | 5+ zones, 1000+ CHs each | 4096+ |
 
 In practice the buffer rarely fills — drifted CRs are consumed quickly by the CustomHostname controller (~200–500ms per CR). Only increase if you see zone reconcile cycles taking longer than expected at high drift volumes.
+
+If the buffer is full, the zone controller blocks on send but respects context cancellation for graceful shutdown. Blocked events are dropped on shutdown and re-detected on the next drift cycle.
 
 ### Reconcile Error Backoff (fixed at 30s max)
 

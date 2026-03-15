@@ -29,6 +29,7 @@ import (
 	"github.com/cloudflare/cloudflare-go/v6"
 	"github.com/cloudflare/cloudflare-go/v6/custom_hostnames"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -48,9 +49,9 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 		return err
 	}
 
-	// List all CustomHostname CRs referencing this zone (across all namespaces)
+	// List CustomHostname CRs referencing this zone (indexed by spec.zoneRef.name)
 	var chList saasv1beta1.CustomHostnameList
-	if err := r.List(ctx, &chList); err != nil {
+	if err := r.List(ctx, &chList, client.MatchingFields{zoneRefField: zone.Name}); err != nil {
 		return fmt.Errorf("failed to list CustomHostname CRs: %w", err)
 	}
 
@@ -60,6 +61,9 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 
 	// Enqueue CRs that have drifted from Cloudflare state, and build a set of
 	// known CR hostnames for orphan detection in the next pass.
+	// All CRs are evaluated regardless of managementPolicy — observe-mode CRs
+	// need enqueue to refresh status from CF, create-mode CRs need it to detect
+	// missing hostnames. The CH controller handles policy-specific behavior.
 	crHostnames := make(map[string]bool, len(chList.Items))
 	drifted := 0
 	for i := range chList.Items {
@@ -94,7 +98,7 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 
 	// Publish per-zone CR state counts.
 	for state, count := range stateCounts {
-		customHostnames.WithLabelValues(zone.Status.Name, state).Set(float64(count))
+		customHostnames.WithLabelValues(zone.Name, state).Set(float64(count))
 	}
 
 	// Log orphans: custom hostnames in Cloudflare with no corresponding CR.
@@ -110,8 +114,8 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 			orphanCount++
 		}
 	}
-	zoneCustomHostnames.WithLabelValues(zone.Status.Name, "managed").Set(float64(managedCount))
-	zoneCustomHostnames.WithLabelValues(zone.Status.Name, "orphan").Set(float64(orphanCount))
+	zoneCustomHostnames.WithLabelValues(zone.Name, "managed").Set(float64(managedCount))
+	zoneCustomHostnames.WithLabelValues(zone.Name, "orphan").Set(float64(orphanCount))
 
 	driftBufferDepth.WithLabelValues(cfResourceCustomHostname).Set(float64(len(r.CustomHostnameEvents)))
 
@@ -133,7 +137,11 @@ func (r *ZoneReconciler) sendDriftEvent(ctx context.Context, ch *saasv1beta1.Cus
 	default:
 		driftBufferOverflowTotal.WithLabelValues(cfResourceCustomHostname).Inc()
 		logf.FromContext(ctx).Info("drift buffer full, blocking", "hostname", ch.Spec.Hostname)
-		r.CustomHostnameEvents <- ev
+		select {
+		case r.CustomHostnameEvents <- ev:
+		case <-ctx.Done():
+			logf.FromContext(ctx).Info("drift event dropped due to shutdown", "hostname", ch.Spec.Hostname)
+		}
 	}
 }
 
@@ -164,7 +172,7 @@ func hasDrift(ch *saasv1beta1.CustomHostname, cfCH custom_hostnames.CustomHostna
 	if cfCH.CustomOriginServer != ch.Spec.OriginServer {
 		return true
 	}
-	if ch.Spec.OriginSNI != nil && cfCH.CustomOriginSNI != *ch.Spec.OriginSNI {
+	if sniDrifted(cfCH.CustomOriginSNI, ch) {
 		return true
 	}
 	if sslDrifted(cfCH.SSL, ch.Spec.SSL) {

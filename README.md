@@ -86,10 +86,11 @@ kubectl get customhostnames -A
 | `spec.zoneRef.name` | yes | Zone CR name |
 | `spec.zoneRef.namespace` | no | Zone CR namespace. Defaults to the operator namespace. |
 | `spec.ssl.type` | no | DV type. Default: `dv` |
-| `spec.ssl.method` | no | DCV method: `http`, `txt`, or `email`. Default: `http` |
-| `spec.ssl.certificateAuthority` | no | CA: `lets_encrypt`, `google`, `ssl_com`. Enterprise only. |
-| `spec.ssl.minTLSVersion` | no | `1.0`, `1.1`, `1.2`, or `1.3` |
-| `spec.deletePolicy` | no | Per-CR delete policy: `always` or `own-only`. Overrides `--delete-policy`. Useful during migration to protect against deleting hostnames managed by other tools. |
+| `spec.ssl.method` | no | DCV method: `http`, `txt`, or `email`. Empty = `--ssl-method` default, then CF default |
+| `spec.ssl.certificateAuthority` | no | CA: `lets_encrypt`, `google`, `ssl_com`. Empty = `--ssl-certificate-authority` default, then CF default |
+| `spec.ssl.minTLSVersion` | no | `1.0`, `1.1`, `1.2`, or `1.3`. Empty = `--ssl-min-tls-version` default, then CF default |
+| `spec.managementPolicy` | no | Per-CR management policy: `manage`, `create`, or `observe`. Overrides `--management-policy`. |
+| `spec.deletePolicy` | no | Per-CR delete policy: `always`, `own-only`, or `never`. Overrides `--delete-policy`. Useful during migration to protect against deleting hostnames managed by other tools. |
 
 ### Status fields
 
@@ -97,6 +98,10 @@ kubectl get customhostnames -A
 |-------|-------------|
 | `status.id` | Cloudflare-assigned hostname ID |
 | `status.ssl.status` | SSL state: `pending_validation`, `active`, `expired`, etc. |
+| `status.ssl.certificateAuthority` | CA that issued the certificate (`lets_encrypt`, `google`, `ssl_com`) |
+| `status.ssl.minTLSVersion` | Minimum TLS version configured for this hostname |
+| `status.ssl.method` | DCV method used (`http`, `txt`, `email`) |
+| `status.ssl.type` | Validation type (`dv`) |
 | `status.ssl.validationRecords` | DCV tokens to complete SSL issuance |
 | `status.createCount` | How many times the hostname was (re)created. Values > 1 indicate external deletions. |
 | `status.consecutiveErrors` | Consecutive reconcile failures. Resets to 0 on success. |
@@ -120,6 +125,9 @@ kubectl get customhostnames -A
 | `dryRun` | `false` | Log CF operations without executing them |
 | `driftInterval` | `1m` | How often the zone controller bulk-lists CF to detect drift |
 | `driftBuffer` | `1024` | Internal channel buffer for drift events |
+| `sslMethod` | _(empty)_ | Default DCV method for new CHs. Empty = CF default |
+| `sslCertificateAuthority` | _(empty)_ | Default CA for new CHs. Empty = CF default |
+| `sslMinTLSVersion` | _(empty)_ | Default min TLS version for new CHs. Empty = CF default |
 | `podDisruptionBudget.enabled` | `false` | Create a PodDisruptionBudget (recommended when `replicaCount > 1`) |
 | `podDisruptionBudget.minAvailable` | `1` | Minimum available replicas during voluntary disruptions |
 | `serviceMonitor.enabled` | `false` | Create a ServiceMonitor for Prometheus Operator |
