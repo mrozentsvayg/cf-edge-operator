@@ -641,17 +641,20 @@ func TestBuildSSLParams(t *testing.T) {
 	tests := []struct {
 		name       string
 		ssl        saasv1beta1.CustomHostnameSSL
+		defaults   SSLDefaults
 		wantType   bool
 		wantCA     bool
 		wantMinTLS bool
+		wantMethod bool
 	}{
 		{
-			name:     "defaults: type=dv, method=http",
-			ssl:      saasv1beta1.CustomHostnameSSL{Type: "dv", Method: "http"},
-			wantType: true,
+			name:       "CR fields set, no defaults",
+			ssl:        saasv1beta1.CustomHostnameSSL{Type: "dv", Method: "http"},
+			wantType:   true,
+			wantMethod: true,
 		},
 		{
-			name: "all fields set",
+			name: "all CR fields set",
 			ssl: saasv1beta1.CustomHostnameSSL{
 				Type:                 "dv",
 				Method:               "txt",
@@ -659,30 +662,77 @@ func TestBuildSSLParams(t *testing.T) {
 				MinTLSVersion:        "1.2",
 			},
 			wantType:   true,
+			wantMethod: true,
 			wantCA:     true,
 			wantMinTLS: true,
 		},
 		{
-			name: "empty fields not set",
+			name: "empty CR fields, no defaults",
 			ssl:  saasv1beta1.CustomHostnameSSL{},
+		},
+		{
+			name:       "empty CR fields, defaults applied",
+			ssl:        saasv1beta1.CustomHostnameSSL{},
+			defaults:   SSLDefaults{Method: "txt", CertificateAuthority: "google", MinTLSVersion: "1.2"},
+			wantMethod: true,
+			wantCA:     true,
+			wantMinTLS: true,
+		},
+		{
+			name:       "CR fields override defaults",
+			ssl:        saasv1beta1.CustomHostnameSSL{Method: "http", CertificateAuthority: "lets_encrypt", MinTLSVersion: "1.3"},
+			defaults:   SSLDefaults{Method: "txt", CertificateAuthority: "google", MinTLSVersion: "1.2"},
+			wantMethod: true,
+			wantCA:     true,
+			wantMinTLS: true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildSSLParams(&tt.ssl)
+			got := buildSSLParams(&tt.ssl, tt.defaults)
 			hasType := got.Type.Present
 			hasCA := got.CertificateAuthority.Present
 			hasMinTLS := got.Settings.Present
+			hasMethod := got.Method.Present
 			if hasType != tt.wantType {
-				t.Errorf("Type.IsPresent() = %v, want %v", hasType, tt.wantType)
+				t.Errorf("Type.Present = %v, want %v", hasType, tt.wantType)
 			}
 			if hasCA != tt.wantCA {
-				t.Errorf("CertificateAuthority.IsPresent() = %v, want %v", hasCA, tt.wantCA)
+				t.Errorf("CertificateAuthority.Present = %v, want %v", hasCA, tt.wantCA)
 			}
 			if hasMinTLS != tt.wantMinTLS {
-				t.Errorf("Settings.IsPresent() = %v, want %v", hasMinTLS, tt.wantMinTLS)
+				t.Errorf("Settings.Present = %v, want %v", hasMinTLS, tt.wantMinTLS)
+			}
+			if hasMethod != tt.wantMethod {
+				t.Errorf("Method.Present = %v, want %v", hasMethod, tt.wantMethod)
 			}
 		})
+	}
+}
+
+func TestSslStatusFromList(t *testing.T) {
+	resp := &custom_hostnames.CustomHostnameListResponse{}
+	resp.SSL.Status = "active"
+	resp.SSL.Method = "http"
+	resp.SSL.Type = "dv"
+	resp.SSL.CertificateAuthority = "google"
+	resp.SSL.Settings.MinTLSVersion = "1.2"
+
+	s := sslStatusFromList(resp)
+	if s.Status != "active" {
+		t.Errorf("Status = %q, want %q", s.Status, "active")
+	}
+	if s.Method != "http" {
+		t.Errorf("Method = %q, want %q", s.Method, "http")
+	}
+	if s.Type != "dv" {
+		t.Errorf("Type = %q, want %q", s.Type, "dv")
+	}
+	if s.CertificateAuthority != "google" {
+		t.Errorf("CertificateAuthority = %q, want %q", s.CertificateAuthority, "google")
+	}
+	if s.MinTLSVersion != "1.2" {
+		t.Errorf("MinTLSVersion = %q, want %q", s.MinTLSVersion, "1.2")
 	}
 }
 

@@ -22,9 +22,11 @@ import (
 
 // CustomHostnameSpec defines the desired state of CustomHostname
 type CustomHostnameSpec struct {
-	// Hostname is the custom hostname to register with Cloudflare (e.g. customer.example.com)
+	// Hostname is the custom hostname to register with Cloudflare (e.g. customer.example.com).
+	// Immutable after creation — changing it would orphan the existing CF custom hostname.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Format=hostname
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="hostname is immutable"
 	Hostname string `json:"hostname"`
 
 	// OriginServer is the origin the custom hostname points to (e.g. origin.internal.example.com)
@@ -84,7 +86,9 @@ type ZoneRef struct {
 	Namespace string `json:"namespace,omitempty"`
 }
 
-// CustomHostnameSSL configures SSL for a custom hostname
+// CustomHostnameSSL configures SSL for a custom hostname.
+// Each field is independently managed: set = enforce on create and drift correction,
+// empty = use operator default on create (--ssl-* flags), don't correct drift.
 type CustomHostnameSSL struct {
 	// Type of SSL validation. Defaults to "dv".
 	// +kubebuilder:validation:Enum=dv
@@ -147,6 +151,22 @@ type CustomHostnameSSLStatus struct {
 	// Status is the certificate verification state (e.g. pending_validation, active, expired)
 	// +optional
 	Status string `json:"status,omitempty"`
+
+	// CertificateAuthority is the CA that issued this certificate (lets_encrypt, google, ssl_com)
+	// +optional
+	CertificateAuthority string `json:"certificateAuthority,omitempty"`
+
+	// MinTLSVersion is the minimum TLS version configured for this hostname
+	// +optional
+	MinTLSVersion string `json:"minTLSVersion,omitempty"`
+
+	// Method is the DCV method used for this certificate (http, txt, email)
+	// +optional
+	Method string `json:"method,omitempty"`
+
+	// Type is the validation type (dv)
+	// +optional
+	Type string `json:"type,omitempty"`
 
 	// ExpiresOn is the certificate expiration time
 	// +optional
