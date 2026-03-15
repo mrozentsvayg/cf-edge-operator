@@ -388,6 +388,75 @@ func TestSniDrifted(t *testing.T) {
 	}
 }
 
+func TestSslDrifted(t *testing.T) {
+	tests := []struct {
+		name  string
+		cfSSL custom_hostnames.CustomHostnameListResponseSSL
+		spec  *saasv1beta1.CustomHostnameSSL
+		want  bool
+	}{
+		{
+			name: "nil spec → no drift",
+			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{
+				CertificateAuthority: "lets_encrypt",
+			},
+			spec: nil,
+			want: false,
+		},
+		{
+			name:  "empty spec → no drift",
+			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: "lets_encrypt"},
+			spec:  &saasv1beta1.CustomHostnameSSL{},
+			want:  false,
+		},
+		{
+			name:  "CA matches → no drift",
+			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: "google"},
+			spec:  &saasv1beta1.CustomHostnameSSL{CertificateAuthority: "google"},
+			want:  false,
+		},
+		{
+			name:  "CA differs → drift",
+			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: "lets_encrypt"},
+			spec:  &saasv1beta1.CustomHostnameSSL{CertificateAuthority: "google"},
+			want:  true,
+		},
+		{
+			name:  "method differs → drift",
+			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{Method: "http"},
+			spec:  &saasv1beta1.CustomHostnameSSL{Method: "txt"},
+			want:  true,
+		},
+		{
+			name:  "type matches → no drift",
+			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{Type: "dv"},
+			spec:  &saasv1beta1.CustomHostnameSSL{Type: "dv"},
+			want:  false,
+		},
+		{
+			name: "minTLSVersion differs → drift",
+			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{
+				Settings: custom_hostnames.CustomHostnameListResponseSSLSettings{MinTLSVersion: "1.0"},
+			},
+			spec: &saasv1beta1.CustomHostnameSSL{MinTLSVersion: "1.2"},
+			want: true,
+		},
+		{
+			name:  "CA not in spec, CF has CA → no drift (unmanaged field)",
+			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: "google", Method: "http"},
+			spec:  &saasv1beta1.CustomHostnameSSL{Method: "http"},
+			want:  false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sslDrifted(tt.cfSSL, tt.spec); got != tt.want {
+				t.Errorf("sslDrifted() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSSLStatusFromNew(t *testing.T) {
 	expires := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 

@@ -87,7 +87,7 @@ On operator restart:
 ## SSL Provisioning (Async)
 
 Cloudflare SSL verification is asynchronous (minutes to hours). SSL status transitions are detected via the zone controller's periodic bulk list — no per-CR polling:
-- Each zone drift cycle compares the SSL status from Cloudflare against what is stored in the CustomHostname CR status
+- Each zone drift cycle compares origin server, SNI, SSL config (method, type, CA, minTLSVersion), and SSL status against the CR spec/status
 - When the status differs (e.g., `pending_validation` → `active`), the CR is enqueued for the CustomHostname controller
 - `status.ssl.status` reflects current Cloudflare SSL state
 - `status.ssl.validationRecords` surfaces Domain Control Validation (DCV) tokens so operators can complete validation
