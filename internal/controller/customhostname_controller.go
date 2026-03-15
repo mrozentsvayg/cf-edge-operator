@@ -110,23 +110,23 @@ func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	cf, zoneID, zoneCR, zoneDomain, err := r.buildCloudflareClient(ctx, &ch)
+	zi, err := r.buildCloudflareClient(ctx, &ch)
 	if err != nil {
 		log.Error(err, "failed to build Cloudflare client")
 		return ctrl.Result{}, r.setError(ctx, &ch, "ZoneError", err.Error())
 	}
 
 	// Validate that the origin server belongs to the zone — Cloudflare for SaaS is zone-scoped.
-	// NOTE: Skipped when zoneDomain is empty (Zone not yet reconciled). CF API rejects
+	// NOTE: Skipped when zi.Domain is empty (Zone not yet reconciled). CF API rejects
 	// invalid origins anyway; this is a best-effort early check.
-	if zoneDomain != "" && !strings.HasSuffix(ch.Spec.OriginServer, "."+zoneDomain) && ch.Spec.OriginServer != zoneDomain {
+	if zi.Domain != "" && !strings.HasSuffix(ch.Spec.OriginServer, "."+zi.Domain) && ch.Spec.OriginServer != zi.Domain {
 		return ctrl.Result{}, r.setError(ctx, &ch, "OriginNotInZone",
-			fmt.Sprintf("originServer %q must belong to zone %q", ch.Spec.OriginServer, zoneDomain))
+			fmt.Sprintf("originServer %q must belong to zone %q", ch.Spec.OriginServer, zi.Domain))
 	}
 
 	// Handle deletion
 	if !ch.DeletionTimestamp.IsZero() {
-		return r.handleDelete(ctx, cf, zoneID, &ch)
+		return r.handleDelete(ctx, zi.Client, zi.ID, &ch)
 	}
 
 	// NOTE: Requeue after finalizer add to get a fresh object with the finalizer persisted.
@@ -152,17 +152,17 @@ func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Always resolve current state from Cloudflare by hostname
 	// This makes reconciliation idempotent across restarts and crash-recovery scenarios
-	return r.reconcileCloudflareState(ctx, cf, zoneID, zoneCR, &ch)
+	return r.reconcileCloudflareState(ctx, zi, &ch)
 }
 
-func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context, cf *cloudflare.Client, zoneID, zoneCR string, ch *saasv1beta1.CustomHostname) (ctrl.Result, error) {
+func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context, zi *zoneInfo, ch *saasv1beta1.CustomHostname) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	mgmtPolicy := effectiveManagementPolicy(ch.Spec.ManagementPolicy, r.ManagementPolicy)
 
 	// NOTE: Always resolve current CF state by hostname, even if status.ID exists.
 	// The etcd status could be stale (operator crash, manual CF deletion). This
 	// single API call makes reconciliation idempotent across restarts.
-	existing, err := r.findByHostname(ctx, cf, zoneID, ch.Spec.Hostname)
+	existing, err := r.findByHostname(ctx, zi.Client, zi.ID, ch.Spec.Hostname)
 	if err != nil {
 		log.Error(err, "failed to look up custom hostname", "hostname", ch.Spec.Hostname)
 		return ctrl.Result{}, r.setError(ctx, ch, "LookupFailed", err.Error())
@@ -178,7 +178,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 				"WaitingForExternal", "Hostname not yet provisioned in Cloudflare")
 		}
 		// manage or create: provision it
-		return r.handleCreate(ctx, cf, zoneID, zoneCR, ch)
+		return r.handleCreate(ctx, zi, ch)
 	}
 
 	// NOTE: Adoption continues in the same reconcile cycle (no early return/requeue)
@@ -226,7 +226,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 				"currentSNI", existing.CustomOriginSNI,
 				"desiredSNI", ch.Spec.OriginSNI,
 				"sslDrift", sslDrift)
-			editParams := custom_hostnames.CustomHostnameEditParams{ZoneID: cloudflare.F(zoneID)}
+			editParams := custom_hostnames.CustomHostnameEditParams{ZoneID: cloudflare.F(zi.ID)}
 			opts := []option.RequestOption{option.WithJSONSet("custom_origin_server", ch.Spec.OriginServer)}
 			if ch.Spec.OriginSNI != nil {
 				opts = append(opts, option.WithJSONSet("custom_origin_sni", *ch.Spec.OriginSNI))
@@ -240,7 +240,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 					"sslDrift", sslDrift)
 			} else {
 				editStart := time.Now()
-				_, editErr := cf.CustomHostnames.Edit(ctx, existing.ID, editParams, opts...)
+				_, editErr := zi.Client.CustomHostnames.Edit(ctx, existing.ID, editParams, opts...)
 				recordCFCall(cfResourceCustomHostname, cfOpUpdate, editStart, &editErr)
 				if editErr != nil {
 					log.Error(editErr, "failed to update custom hostname", "id", existing.ID)
@@ -253,7 +253,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	// Set SSL status in memory; persisted by setCondition's r.Status().Update()
 	// inside requeueOrReady — single write covers SSL, conditions, and counters.
 	ch.Status.SSL = sslStatusFromList(existing)
-	return r.requeueOrReady(ctx, zoneCR, ch)
+	return r.requeueOrReady(ctx, zi.CR, ch)
 }
 
 // effectiveManagementPolicy returns the management policy to apply for this CR.
@@ -269,11 +269,11 @@ func effectiveManagementPolicy(crPolicy, operatorDefault string) string {
 	return operatorDefault
 }
 
-func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudflare.Client, zoneID, zoneCR string, ch *saasv1beta1.CustomHostname) (ctrl.Result, error) {
+func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, zi *zoneInfo, ch *saasv1beta1.CustomHostname) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	params := custom_hostnames.CustomHostnameNewParams{
-		ZoneID:   cloudflare.F(zoneID),
+		ZoneID:   cloudflare.F(zi.ID),
 		Hostname: cloudflare.F(ch.Spec.Hostname),
 	}
 	// Default to DV + HTTP if not specified — SSL is always required for custom hostnames.
@@ -293,7 +293,7 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudfl
 	}
 
 	createStart := time.Now()
-	resp, err := cf.CustomHostnames.New(ctx, params, opts...)
+	resp, err := zi.Client.CustomHostnames.New(ctx, params, opts...)
 	recordCFCall(cfResourceCustomHostname, cfOpCreate, createStart, &err)
 	if err != nil {
 		log.Error(err, "failed to create custom hostname", "hostname", ch.Spec.Hostname)
@@ -319,7 +319,7 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudfl
 	ch.Status.ID = resp.ID
 	ch.Status.SSL = sslStatusFromNew(resp)
 	// Single write: requeueOrReady → setCondition persists ID, SSL, and condition together.
-	return r.requeueOrReady(ctx, zoneCR, ch)
+	return r.requeueOrReady(ctx, zi.CR, ch)
 }
 
 func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudflare.Client, zoneID string, ch *saasv1beta1.CustomHostname) (ctrl.Result, error) {
@@ -548,16 +548,21 @@ func (r *CustomHostnameReconciler) setCondition(ctx context.Context, ch *saasv1b
 	return nil
 }
 
-// buildCloudflareClient returns (client, zoneID, zoneCR, zoneDomain, error).
-// zoneCR is the K8s CR name (for metrics), zoneDomain is the CF domain name (for origin validation).
-func (r *CustomHostnameReconciler) buildCloudflareClient(ctx context.Context, ch *saasv1beta1.CustomHostname) (*cloudflare.Client, string, string, string, error) {
+type zoneInfo struct {
+	Client *cloudflare.Client
+	ID     string // CF zone ID
+	CR     string // K8s CR name (for metrics)
+	Domain string // CF domain name (for origin validation)
+}
+
+func (r *CustomHostnameReconciler) buildCloudflareClient(ctx context.Context, ch *saasv1beta1.CustomHostname) (*zoneInfo, error) {
 	zoneNS := ch.Spec.ZoneRef.Namespace
 	if zoneNS == "" {
 		zoneNS = r.OperatorNamespace
 	}
 	var zone domainsv1beta1.Zone
 	if err := r.Get(ctx, types.NamespacedName{Name: ch.Spec.ZoneRef.Name, Namespace: zoneNS}, &zone); err != nil {
-		return nil, "", "", "", fmt.Errorf("zone %q not found: %w", ch.Spec.ZoneRef.Name, err)
+		return nil, fmt.Errorf("zone %q not found: %w", ch.Spec.ZoneRef.Name, err)
 	}
 	key := zone.Spec.CredentialsRef.Key
 	if key == "" {
@@ -565,13 +570,18 @@ func (r *CustomHostnameReconciler) buildCloudflareClient(ctx context.Context, ch
 	}
 	var secret corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{Name: zone.Spec.CredentialsRef.Name, Namespace: zone.Namespace}, &secret); err != nil {
-		return nil, "", "", "", fmt.Errorf("secret %q not found: %w", zone.Spec.CredentialsRef.Name, err)
+		return nil, fmt.Errorf("secret %q not found: %w", zone.Spec.CredentialsRef.Name, err)
 	}
 	token, ok := secret.Data[key]
 	if !ok {
-		return nil, "", "", "", fmt.Errorf("key %q not found in secret %q", key, zone.Spec.CredentialsRef.Name)
+		return nil, fmt.Errorf("key %q not found in secret %q", key, zone.Spec.CredentialsRef.Name)
 	}
-	return cloudflare.NewClient(option.WithAPIToken(string(token))), zone.Spec.ID, zone.Name, zone.Status.Name, nil
+	return &zoneInfo{
+		Client: cloudflare.NewClient(option.WithAPIToken(string(token))),
+		ID:     zone.Spec.ID,
+		CR:     zone.Name,
+		Domain: zone.Status.Name,
+	}, nil
 }
 
 func sniDrifted(currentSNI string, ch *saasv1beta1.CustomHostname) bool {
