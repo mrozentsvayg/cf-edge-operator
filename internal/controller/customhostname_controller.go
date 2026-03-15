@@ -312,9 +312,7 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudfl
 	ch.Status.CreateCount++
 	ch.Status.ID = resp.ID
 	ch.Status.SSL = sslStatusFromNew(resp)
-	if err := r.Status().Update(ctx, ch); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to update status after create: %w", err)
-	}
+	// Single write: requeueOrReady → setCondition persists ID, SSL, and condition together.
 	return r.requeueOrReady(ctx, zoneName, ch)
 }
 

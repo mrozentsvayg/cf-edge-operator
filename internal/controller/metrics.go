@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"strconv"
 	"time"
 
@@ -139,7 +140,8 @@ func recordCFCall(resource, operation string, start time.Time, err *error) {
 	cfAPICallDuration.WithLabelValues(resource, operation).Observe(time.Since(start).Seconds())
 	if err != nil && *err != nil {
 		statusCode := "unknown"
-		if cfErr, ok := (*err).(*cloudflare.Error); ok {
+		var cfErr *cloudflare.Error
+		if errors.As(*err, &cfErr) {
 			statusCode = strconv.Itoa(cfErr.StatusCode)
 		}
 		cfAPIErrorsByCode.WithLabelValues(resource, operation, statusCode).Inc()
