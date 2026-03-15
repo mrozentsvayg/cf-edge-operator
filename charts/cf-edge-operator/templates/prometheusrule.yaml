@@ -54,15 +54,15 @@ spec:
     # The CR's status.consecutiveErrors field shows the failure count.
     - alert: CfEdgeOperatorUnhealthyHostnames
       expr: >-
-        sum by (zone) (cf_edge_operator_customhostnames{state="unhealthy"}) > 0
+        sum by (zone_cr) (cf_edge_operator_customhostnames{state="unhealthy"}) > 0
       for: 5m
       labels:
         severity: warning
       annotations:
         summary: >-
-          {{`{{ $value }}`}} unhealthy custom hostname(s) in zone {{`{{ $labels.zone }}`}}
+          {{`{{ $value }}`}} unhealthy custom hostname(s) in zone {{`{{ $labels.zone_cr }}`}}
         description: >-
-          One or more CustomHostname CRs in zone {{`{{ $labels.zone }}`}} have consecutive
+          One or more CustomHostname CRs in zone {{`{{ $labels.zone_cr }}`}} have consecutive
           reconcile failures (status.consecutiveErrors > 0, Ready=False). The operator is
           retrying with exponential backoff. Check operator logs for the specific hostnames.
         {{- if .Values.prometheusRule.runbookUrl }}
@@ -74,15 +74,15 @@ spec:
     # are marked HostnameConflict and are not reconciled until the conflict resolves.
     - alert: CfEdgeOperatorConflictHostnames
       expr: >-
-        sum by (zone) (cf_edge_operator_customhostnames{state="conflict"}) > 0
+        sum by (zone_cr) (cf_edge_operator_customhostnames{state="conflict"}) > 0
       for: 5m
       labels:
         severity: warning
       annotations:
         summary: >-
-          {{`{{ $value }}`}} conflicted custom hostname(s) in zone {{`{{ $labels.zone }}`}}
+          {{`{{ $value }}`}} conflicted custom hostname(s) in zone {{`{{ $labels.zone_cr }}`}}
         description: >-
-          Two or more CustomHostname CRs in zone {{`{{ $labels.zone }}`}} claim the same
+          Two or more CustomHostname CRs in zone {{`{{ $labels.zone_cr }}`}} claim the same
           Cloudflare hostname. The duplicate CR(s) are inactive and marked HostnameConflict.
           Delete the duplicate CR to resolve. The conflict clears automatically on the next
           zone drift detection cycle after the owning CR is removed.
@@ -115,15 +115,15 @@ spec:
     # planned migrations.
     - alert: CfEdgeOperatorSSLProvisioningStalled
       expr: >-
-        sum by (zone) (cf_edge_operator_customhostnames{state="pending"}) > 0
+        sum by (zone_cr) (cf_edge_operator_customhostnames{state="pending"}) > 0
       for: 24h
       labels:
         severity: warning
       annotations:
         summary: >-
-          {{`{{ $value }}`}} hostname(s) pending SSL in zone {{`{{ $labels.zone }}`}} for >24h
+          {{`{{ $value }}`}} hostname(s) pending SSL in zone {{`{{ $labels.zone_cr }}`}} for >24h
         description: >-
-          At least one hostname in zone {{`{{ $labels.zone }}`}} has been in a non-ready state
+          At least one hostname in zone {{`{{ $labels.zone_cr }}`}} has been in a non-ready state
           for over 24 hours. Check status.ssl.validationRecords on the affected
           CustomHostname CR(s) to obtain DCV tokens and verify DNS/HTTP validation is
           correctly set up.
