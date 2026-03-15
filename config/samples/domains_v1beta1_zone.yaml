@@ -4,7 +4,7 @@ metadata:
   name: example-com
   namespace: cf-edge-operator-system
 spec:
-  id: "<your-cloudflare-zone-id>"
+  id: "0123456789abcdef0123456789abcdef"  # replace with your Cloudflare zone ID
   credentialsRef:
     name: cloudflare-api-token
     key: apiToken
