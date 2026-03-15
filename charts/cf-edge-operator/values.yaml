@@ -43,6 +43,11 @@ driftInterval: "1m"
 # running many zones with large numbers of custom hostnames.
 driftBuffer: 1024
 
+# Default SSL settings for new custom hostnames. Applied on create when the
+# CR's spec.ssl field is empty. Empty = Cloudflare uses its own default.
+sslCertificateAuthority: ""
+sslMinTLSVersion: ""
+sslMethod: ""
 
 resources:
   limits:

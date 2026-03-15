@@ -48,6 +48,15 @@ spec:
         {{- if .Values.leaderElect }}
         - --leader-elect
         {{- end }}
+        {{- if .Values.sslCertificateAuthority }}
+        - --ssl-certificate-authority={{ .Values.sslCertificateAuthority }}
+        {{- end }}
+        {{- if .Values.sslMinTLSVersion }}
+        - --ssl-min-tls-version={{ .Values.sslMinTLSVersion }}
+        {{- end }}
+        {{- if .Values.sslMethod }}
+        - --ssl-method={{ .Values.sslMethod }}
+        {{- end }}
         securityContext:
           readOnlyRootFilesystem: true
           allowPrivilegeEscalation: false

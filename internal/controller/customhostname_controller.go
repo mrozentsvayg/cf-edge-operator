@@ -288,7 +288,7 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, cf *cloudfl
 
 	if r.DryRun {
 		log.Info("dry-run: would create custom hostname", "hostname", ch.Spec.Hostname, "origin", ch.Spec.OriginServer)
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, r.setCondition(ctx, ch, metav1.ConditionFalse, "DryRun", "dry-run: would create custom hostname")
 	}
 
 	createStart := time.Now()
@@ -567,7 +567,7 @@ func (r *CustomHostnameReconciler) buildCloudflareClient(ctx context.Context, ch
 	if !ok {
 		return nil, "", "", fmt.Errorf("key %q not found in secret %q", key, zone.Spec.CredentialsRef.Name)
 	}
-	return cloudflare.NewClient(option.WithAPIToken(string(token))), zone.Spec.ID, zone.Status.Name, nil
+	return cloudflare.NewClient(option.WithAPIToken(string(token))), zone.Spec.ID, zone.Name, nil
 }
 
 func sniDrifted(currentSNI string, ch *saasv1beta1.CustomHostname) bool {
