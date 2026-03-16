@@ -774,6 +774,16 @@ func sslStatusFromNew(resp *custom_hostnames.CustomHostnameNewResponse) *saasv1b
 		MinTLSVersion:        string(resp.SSL.Settings.MinTLSVersion),
 		Method:               string(resp.SSL.Method),
 		Type:                 string(resp.SSL.Type),
+		ID:                   resp.SSL.ID,
+		Issuer:               resp.SSL.Issuer,
+		SerialNumber:         resp.SSL.SerialNumber,
+		BundleMethod:         string(resp.SSL.BundleMethod),
+		Wildcard:             resp.SSL.Wildcard,
+		Hosts:                resp.SSL.Hosts,
+	}
+	if !resp.SSL.UploadedOn.IsZero() {
+		t := metav1.NewTime(resp.SSL.UploadedOn)
+		s.UploadedOn = &t
 	}
 	if !resp.SSL.ExpiresOn.IsZero() {
 		t := metav1.NewTime(resp.SSL.ExpiresOn)
@@ -801,6 +811,16 @@ func sslStatusFromList(resp *custom_hostnames.CustomHostnameListResponse) *saasv
 		MinTLSVersion:        string(resp.SSL.Settings.MinTLSVersion),
 		Method:               string(resp.SSL.Method),
 		Type:                 string(resp.SSL.Type),
+		ID:                   resp.SSL.ID,
+		Issuer:               resp.SSL.Issuer,
+		SerialNumber:         resp.SSL.SerialNumber,
+		BundleMethod:         string(resp.SSL.BundleMethod),
+		Wildcard:             resp.SSL.Wildcard,
+		Hosts:                resp.SSL.Hosts,
+	}
+	if !resp.SSL.UploadedOn.IsZero() {
+		t := metav1.NewTime(resp.SSL.UploadedOn)
+		s.UploadedOn = &t
 	}
 	if !resp.SSL.ExpiresOn.IsZero() {
 		t := metav1.NewTime(resp.SSL.ExpiresOn)

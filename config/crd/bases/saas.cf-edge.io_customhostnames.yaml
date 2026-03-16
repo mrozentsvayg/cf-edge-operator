@@ -250,6 +250,10 @@ spec:
                 description: SSL reflects the current SSL certificate state as reported
                   by Cloudflare
                 properties:
+                  bundleMethod:
+                    description: BundleMethod is the certificate chain bundling method
+                      (ubiquitous, optimal, force)
+                    type: string
                   certificateAuthority:
                     description: CertificateAuthority is the CA that issued this certificate
                       (lets_encrypt, google, ssl_com)
@@ -257,6 +261,19 @@ spec:
                   expiresOn:
                     description: ExpiresOn is the certificate expiration time
                     format: date-time
+                    type: string
+                  hosts:
+                    description: Hosts lists the hostnames covered by this certificate
+                    items:
+                      type: string
+                    type: array
+                  id:
+                    description: ID is the Cloudflare SSL certificate identifier.
+                      Changes on reissue.
+                    type: string
+                  issuer:
+                    description: Issuer is the certificate issuer (e.g. "Google Trust
+                      Services LLC")
                     type: string
                   method:
                     description: Method is the DCV method used for this certificate
@@ -266,12 +283,20 @@ spec:
                     description: MinTLSVersion is the minimum TLS version configured
                       for this hostname
                     type: string
+                  serialNumber:
+                    description: SerialNumber is the certificate serial number. Changes
+                      on reissue.
+                    type: string
                   status:
                     description: Status is the certificate verification state (e.g.
                       pending_validation, active, expired)
                     type: string
                   type:
                     description: Type is the validation type (dv)
+                    type: string
+                  uploadedOn:
+                    description: UploadedOn is the time the certificate was issued/uploaded
+                    format: date-time
                     type: string
                   validationErrors:
                     description: ValidationErrors contains any errors encountered
@@ -311,6 +336,10 @@ spec:
                           type: string
                       type: object
                     type: array
+                  wildcard:
+                    description: Wildcard indicates whether the certificate covers
+                      a wildcard hostname
+                    type: boolean
                 type: object
               sslProvisioningStartedAt:
                 description: |-

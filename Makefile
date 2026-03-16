@@ -300,7 +300,8 @@ $(GOLANGCI_LINT): $(LOCALBIN)
 	@test -f .custom-gcl.yml && { \
 		echo "Building custom golangci-lint with plugins..." && \
 		$(GOLANGCI_LINT) custom --destination $(LOCALBIN) --name golangci-lint-custom && \
-		mv -f $(LOCALBIN)/golangci-lint-custom $(GOLANGCI_LINT); \
+		mv -f $(LOCALBIN)/golangci-lint-custom "$(GOLANGCI_LINT)-$(GOLANGCI_LINT_VERSION)" && \
+		ln -sf "$$(realpath "$(GOLANGCI_LINT)-$(GOLANGCI_LINT_VERSION)")" "$(GOLANGCI_LINT)"; \
 	} || true
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist

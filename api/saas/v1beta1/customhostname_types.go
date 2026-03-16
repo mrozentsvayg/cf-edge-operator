@@ -185,6 +185,34 @@ type CustomHostnameSSLStatus struct {
 	// +optional
 	Type string `json:"type,omitempty"`
 
+	// ID is the Cloudflare SSL certificate identifier. Changes on reissue.
+	// +optional
+	ID string `json:"id,omitempty"`
+
+	// Issuer is the certificate issuer (e.g. "Google Trust Services LLC")
+	// +optional
+	Issuer string `json:"issuer,omitempty"`
+
+	// SerialNumber is the certificate serial number. Changes on reissue.
+	// +optional
+	SerialNumber string `json:"serialNumber,omitempty"`
+
+	// BundleMethod is the certificate chain bundling method (ubiquitous, optimal, force)
+	// +optional
+	BundleMethod string `json:"bundleMethod,omitempty"`
+
+	// Wildcard indicates whether the certificate covers a wildcard hostname
+	// +optional
+	Wildcard bool `json:"wildcard,omitempty"`
+
+	// Hosts lists the hostnames covered by this certificate
+	// +optional
+	Hosts []string `json:"hosts,omitempty"`
+
+	// UploadedOn is the time the certificate was issued/uploaded
+	// +optional
+	UploadedOn *metav1.Time `json:"uploadedOn,omitempty"`
+
 	// ExpiresOn is the certificate expiration time
 	// +optional
 	ExpiresOn *metav1.Time `json:"expiresOn,omitempty"`
