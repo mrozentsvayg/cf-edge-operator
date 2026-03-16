@@ -102,6 +102,13 @@ kubectl get customhostnames -A
 | `status.ssl.minTLSVersion` | Minimum TLS version configured for this hostname |
 | `status.ssl.method` | DCV method used (`http`, `txt`, `email`) |
 | `status.ssl.type` | Validation type (`dv`) |
+| `status.ssl.id` | Cloudflare SSL certificate identifier. Changes on reissue. |
+| `status.ssl.issuer` | Certificate issuer (e.g. "Google Trust Services LLC") |
+| `status.ssl.serialNumber` | Certificate serial number. Changes on reissue. |
+| `status.ssl.bundleMethod` | Certificate chain bundling (`ubiquitous`, `optimal`, `force`) |
+| `status.ssl.wildcard` | Whether the certificate covers a wildcard hostname |
+| `status.ssl.hosts` | Hostnames covered by this certificate |
+| `status.ssl.uploadedOn` | Time the certificate was issued/uploaded |
 | `status.ssl.expiresOn` | Certificate expiration time |
 | `status.ssl.validationRecords` | DCV tokens to complete SSL issuance |
 | `status.ssl.validationErrors` | Errors encountered during SSL validation |
@@ -162,7 +169,7 @@ Metrics are exposed on `:8080/metrics` (HTTP, via Helm chart). See [docs/archite
 - `cf_edge_operator_zone_ready{zone_cr}` — 1 if zone credentials are valid and CF API is reachable, 0 otherwise
 - `cf_edge_operator_operations_total{resource,operation}` — successful CF write operations (create, recreate, update, delete)
 - `cf_edge_operator_customhostnames{zone_cr,state}` — CRs by zone and state (ready/pending/unhealthy/conflict)
-- `cf_edge_operator_zone_customhostnames{zone_cr,type}` — CF custom hostnames by type (managed/orphan)
+- `cf_edge_operator_zone_customhostnames{zone_cr,type}` — CF custom hostnames by type (managed/orphan/drifted/total)
 - `cf_edge_operator_ssl_provisioning_duration_seconds{zone_cr,hostname,method}` — time from CF create to SSL active
 - `cf_edge_operator_api_errors_by_code_total{resource,operation,status_code}` — CF API errors by HTTP status code
 - `cf_edge_operator_api_duration_seconds{resource,operation}` — CF API latency histogram

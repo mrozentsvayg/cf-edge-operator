@@ -116,6 +116,8 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 	}
 	zoneCustomHostnames.WithLabelValues(zone.Name, "managed").Set(float64(managedCount))
 	zoneCustomHostnames.WithLabelValues(zone.Name, "orphan").Set(float64(orphanCount))
+	zoneCustomHostnames.WithLabelValues(zone.Name, "drifted").Set(float64(drifted))
+	zoneCustomHostnames.WithLabelValues(zone.Name, "total").Set(float64(len(cfHostnames)))
 
 	driftBufferDepth.WithLabelValues(cfResourceCustomHostname).Set(float64(len(r.CustomHostnameEvents)))
 
@@ -178,12 +180,66 @@ func hasDrift(ch *saasv1beta1.CustomHostname, cfCH custom_hostnames.CustomHostna
 	if sslDrifted(cfCH.SSL, ch.Spec.SSL) {
 		return true
 	}
-	cfSSLStatus := string(cfCH.SSL.Status)
-	crSSLStatus := ""
-	if ch.Status.SSL != nil {
-		crSSLStatus = ch.Status.SSL.Status
+	// Compare status.ssl against CF response to trigger status refresh
+	// when external changes (dashboard, API) modify SSL config fields.
+	// This does NOT trigger correction — only refreshes status.ssl in the CR.
+	return sslStatusDrifted(ch.Status.SSL, cfCH.SSL)
+}
+
+// sslStatusDrifted returns true if any SSL field from CF differs from what's
+// stored in status.ssl. This triggers a status refresh even for unmanaged fields
+// (fields not in spec), ensuring status.ssl always reflects current CF state.
+func sslStatusDrifted(status *saasv1beta1.CustomHostnameSSLStatus, cfSSL custom_hostnames.CustomHostnameListResponseSSL) bool {
+	if status == nil {
+		return string(cfSSL.Status) != ""
 	}
-	return cfSSLStatus != crSSLStatus
+	if status.Status != string(cfSSL.Status) {
+		return true
+	}
+	if status.CertificateAuthority != string(cfSSL.CertificateAuthority) {
+		return true
+	}
+	if status.MinTLSVersion != string(cfSSL.Settings.MinTLSVersion) {
+		return true
+	}
+	if status.Method != string(cfSSL.Method) {
+		return true
+	}
+	if status.Type != string(cfSSL.Type) {
+		return true
+	}
+	if status.ID != cfSSL.ID {
+		return true
+	}
+	if status.Issuer != cfSSL.Issuer {
+		return true
+	}
+	if status.SerialNumber != cfSSL.SerialNumber {
+		return true
+	}
+	if status.BundleMethod != string(cfSSL.BundleMethod) {
+		return true
+	}
+	if status.Wildcard != cfSSL.Wildcard {
+		return true
+	}
+	if !timePtrEqual(status.UploadedOn, cfSSL.UploadedOn) {
+		return true
+	}
+	if !timePtrEqual(status.ExpiresOn, cfSSL.ExpiresOn) {
+		return true
+	}
+	return false
+}
+
+func timePtrEqual(mt *metav1.Time, gt time.Time) bool {
+	if gt.IsZero() {
+		return mt == nil
+	}
+	if mt == nil {
+		return false
+	}
+	return mt.Time.Equal(gt)
 }
 
 // crState classifies a CustomHostname CR into one of four mutually exclusive states

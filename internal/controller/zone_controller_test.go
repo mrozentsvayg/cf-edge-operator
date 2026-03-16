@@ -18,6 +18,7 @@ package controller
 
 import (
 	"testing"
+	"time"
 
 	"github.com/cloudflare/cloudflare-go/v6/custom_hostnames"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -270,6 +271,86 @@ func TestHasDrift(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := hasDrift(&tt.ch, tt.cfCH); got != tt.want {
 				t.Errorf("hasDrift() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSslStatusDrifted(t *testing.T) {
+	tests := []struct {
+		name   string
+		status *saasv1beta1.CustomHostnameSSLStatus
+		cfSSL  custom_hostnames.CustomHostnameListResponseSSL
+		want   bool
+	}{
+		{
+			name:   "nil status, CF has status → drift",
+			status: nil,
+			cfSSL:  custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive},
+			want:   true,
+		},
+		{
+			name:   "nil status, CF empty → no drift",
+			status: nil,
+			cfSSL:  custom_hostnames.CustomHostnameListResponseSSL{},
+			want:   false,
+		},
+		{
+			name:   "status matches CF → no drift",
+			status: &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, CertificateAuthority: sslCAGoogle, Method: sslMethodHTTP, Type: sslTypeDV},
+			cfSSL:  custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, CertificateAuthority: sslCAGoogle, Method: sslMethodHTTP, Type: sslTypeDV},
+			want:   false,
+		},
+		{
+			name:   "minTLS differs → drift (status refresh)",
+			status: &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive},
+			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{
+				Status:   sslStatusActive,
+				Settings: custom_hostnames.CustomHostnameListResponseSSLSettings{MinTLSVersion: custom_hostnames.CustomHostnameListResponseSSLSettingsMinTLSVersion(sslMinTLS12)},
+			},
+			want: true,
+		},
+		{
+			name:   "cert ID differs → drift (reissue detected)",
+			status: &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, ID: "old-cert-id"},
+			cfSSL:  custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, ID: "new-cert-id"},
+			want:   true,
+		},
+		{
+			name:   "issuer differs → drift",
+			status: &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, Issuer: "Let's Encrypt"},
+			cfSSL:  custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, Issuer: "Google Trust Services"},
+			want:   true,
+		},
+		{
+			name:   "serialNumber differs → drift (reissue)",
+			status: &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, SerialNumber: "old-serial"},
+			cfSSL:  custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, SerialNumber: "new-serial"},
+			want:   true,
+		},
+		{
+			name:   "bundleMethod differs → drift",
+			status: &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, BundleMethod: "ubiquitous"},
+			cfSSL:  custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, BundleMethod: "optimal"},
+			want:   true,
+		},
+		{
+			name:   "wildcard differs → drift",
+			status: &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, Wildcard: false},
+			cfSSL:  custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, Wildcard: true},
+			want:   true,
+		},
+		{
+			name:   "expiresOn appears → drift (cert issued)",
+			status: &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive},
+			cfSSL:  custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, ExpiresOn: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)},
+			want:   true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sslStatusDrifted(tt.status, tt.cfSSL); got != tt.want {
+				t.Errorf("sslStatusDrifted() = %v, want %v", got, tt.want)
 			}
 		})
 	}

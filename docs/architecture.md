@@ -87,10 +87,10 @@ On operator restart:
 ## SSL Provisioning (Async)
 
 Cloudflare SSL verification is asynchronous (minutes to hours). SSL status transitions are detected via the zone controller's periodic bulk list — no per-CR polling:
-- Each zone drift cycle compares origin server, SNI, SSL config (CA, minTLSVersion, method, type), and SSL status against the CR spec/status
-- When the status differs (e.g., `pending_validation` → `active`), the CR is enqueued for the CustomHostname controller
-- `status.ssl.status` reflects current Cloudflare SSL state
-- `status.ssl.validationRecords` surfaces Domain Control Validation (DCV) tokens so operators can complete validation
+- Each zone drift cycle compares origin server, SNI, SSL config (CA, minTLSVersion, method, type), and full SSL status against the CR spec/status
+- When any field differs — including external changes via CF dashboard or API — the CR is enqueued for status refresh
+- `status.ssl` reflects current Cloudflare SSL state: certificate status, CA, method, type, minTLS, cert ID, issuer, serial number, bundle method, wildcard, hosts, uploaded/expires timestamps, validation records/errors
+- External cert reissues are detectable via `status.ssl.id` or `status.ssl.serialNumber` changes
 - While `ssl.status != "active"`: `Ready=False`; the next zone cycle detects the change
 - When `ssl.status == "active"`: `Ready=True`, SSL provisioning duration metric observed
 
@@ -152,7 +152,7 @@ Note: when `managementPolicy` is `observe`, the operator always releases the fin
 | Field | Purpose |
 |-------|---------|
 | `status.id` | CF custom hostname ID, used for updates and deletes |
-| `status.ssl` | SSL state (status, expiresOn, validationRecords) |
+| `status.ssl` | Full SSL state from Cloudflare — refreshed on every drift cycle. See README for complete field list. |
 | `status.createCount` | How many times this hostname was (re)created in CF. Values > 1 indicate external deletions. |
 | `status.consecutiveErrors` | Consecutive reconcile failures. Resets to 0 on success. |
 | `status.conditions[Ready].reason` | `HostnameConflict` when another CR already owns this hostname in Cloudflare. Clears automatically when the owning CR is deleted. |
@@ -164,7 +164,7 @@ Note: when `managementPolicy` is `observe`, the operator always releases the fin
 | `cf_edge_operator_zone_ready{zone_cr}` | gauge | 1 if Zone CR credentials are valid and CF API is reachable, 0 otherwise. Uses CR name (always available, even on failure). |
 | `cf_edge_operator_operations_total{resource,operation}` | counter | Successful CF operations; `resource`: customhostname; `operation`: adopt, create, recreate, update, delete |
 | `cf_edge_operator_customhostnames{zone_cr,state}` | gauge | CRs by zone CR and state (ready/pending/unhealthy/conflict). Sum = total CRs in zone |
-| `cf_edge_operator_zone_customhostnames{zone_cr,type}` | gauge | CF custom hostnames by zone CR and type (managed/orphan). Sum = CF quota usage for the zone |
+| `cf_edge_operator_zone_customhostnames{zone_cr,type}` | gauge | CF custom hostnames by zone CR and type (managed/orphan/drifted/total). `total` = CF quota usage for the zone |
 | `cf_edge_operator_api_duration_seconds{resource,operation}` | histogram | CF API call latency; `resource`: customhostname, zone; `operation`: get, list, create, update, delete |
 | `cf_edge_operator_api_errors_by_code_total{resource,operation,status_code}` | counter | CF API errors by resource, operation, and HTTP status code (`unknown` for non-HTTP errors) |
 | `cf_edge_operator_ssl_provisioning_duration_seconds{zone_cr,hostname,method}` | histogram | Time from CF create to `ssl.status == active`. Buckets span 1m–1w. |
