@@ -100,6 +100,8 @@ const (
 	SSLMethodTXT     = "txt"
 	SSLMethodEmail   = "email"
 	SSLTypeDV        = "dv"
+	// NOTE: SSLSNIHostHeader is an SNI value, not an SSL setting. Kept here
+	// for colocation with related CF constants.
 	SSLSNIHostHeader = ":request_host_header:"
 )
 

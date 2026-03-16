@@ -155,7 +155,28 @@ Note: when `managementPolicy` is `observe`, the operator always releases the fin
 | `status.ssl` | Full SSL state from Cloudflare — refreshed on every drift cycle. See README for complete field list. |
 | `status.createCount` | How many times this hostname was (re)created in CF. Values > 1 indicate external deletions. |
 | `status.consecutiveErrors` | Consecutive reconcile failures. Resets to 0 on success. |
+| `status.sslProvisioningStartedAt` | Timestamp set on each create/recreate. Source for the `ssl_provisioning_duration_seconds` metric. |
 | `status.conditions[Ready].reason` | `HostnameConflict` when another CR already owns this hostname in Cloudflare. Clears automatically when the owning CR is deleted. |
+
+### Drift log format
+
+Drift logs use a structured nested object under the `drift` key with three categories:
+
+- **`drifted`** — fields that differ between spec and CF, with `{cf, spec}` value pairs
+- **`matched`** — managed fields that match, with the current value
+- **`unmanaged`** — fields not in spec, showing CF's current value
+
+Example (spec drift):
+```json
+{"drift": {"drifted": {"origin": {"cf": "old.example.com", "spec": "new.example.com"}}, "matched": {"sni": ":request_host_header:", "ca": "google"}, "unmanaged": {"minTLS": "1.2", "method": "http", "type": "dv"}}}
+```
+
+Status-only changes (external CF changes to unmanaged fields) log with `reason: statusSSL` and a `changed` map showing `{status, cf}` pairs:
+```json
+{"reason": "statusSSL", "changed": {"minTLS": {"status": "", "cf": "1.2"}}}
+```
+
+Parse with jq: `jq '.drift.drifted | keys'` or `jq '.changed | to_entries[] | "\(.key): \(.value.status) → \(.value.cf)"'`
 
 ### Prometheus metrics
 

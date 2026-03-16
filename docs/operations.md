@@ -1,6 +1,6 @@
 # cf-edge-operator Operations Guide
 
-Deployment configuration, performance tuning, and HA setup for production.
+Deployment configuration, performance tuning, and HA setup for production. Custom hostnames are abbreviated as CHs throughout this document.
 
 ## Configuration Flags
 

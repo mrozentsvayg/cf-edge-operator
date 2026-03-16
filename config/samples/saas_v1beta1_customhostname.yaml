@@ -9,6 +9,10 @@ spec:
   zoneRef:
     name: example-com
     # namespace defaults to operator namespace (cf-edge-operator-system) if omitted
-  ssl:
-    type: dv
-    method: http
+  # managementPolicy: manage   # manage (default), create, or observe
+  # deletePolicy: always       # always (default), own-only, or never
+  # ssl:
+  #   certificateAuthority: google  # lets_encrypt (CF default), google, or ssl_com
+  #   minTLSVersion: "1.2"          # 1.0 (CF default), 1.1, 1.2, or 1.3
+  #   method: http                  # http (default), txt, or email
+  #   type: dv                      # dv (default)

@@ -82,15 +82,18 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 			log.Info("hostname missing from CF, enqueuing", "hostname", ch.Spec.Hostname)
 			r.sendDriftEvent(ctx, ch)
 			drifted++
-		} else if hasDrift(ch, cfCH) {
+		} else if cfCH.CustomOriginServer != ch.Spec.OriginServer || sniDrifted(cfCH.CustomOriginSNI, ch) || sslDrifted(cfCH.SSL, ch.Spec.SSL) {
 			if isHostnameConflict(ch) {
-				// Another CR owns this hostname. Skip to avoid thrashing CF state back and forth.
 				log.Info("skipping drift enqueue: hostname conflict", "hostname", ch.Spec.Hostname)
 			} else {
-				log.Info("drift detected, enqueuing CustomHostname", "hostname", ch.Spec.Hostname)
+				log.Info("drift detected, enqueuing CustomHostname", "hostname", ch.Spec.Hostname, "reason", "spec")
 				r.sendDriftEvent(ctx, ch)
 				drifted++
 			}
+		} else if changed := sslStatusChangedFields(ch.Status.SSL, cfCH.SSL); changed != nil {
+			log.Info("drift detected, enqueuing CustomHostname", "hostname", ch.Spec.Hostname, "reason", "statusSSL", "changed", changed)
+			r.sendDriftEvent(ctx, ch)
+			drifted++
 		} else if r.DryRun {
 			log.V(1).Info("dry-run: no changes needed", "hostname", ch.Spec.Hostname)
 		}
@@ -153,6 +156,8 @@ func (r *ZoneReconciler) listCloudflareHostnames(ctx context.Context, cf *cloudf
 	pager := cf.CustomHostnames.ListAutoPaging(ctx, custom_hostnames.CustomHostnameListParams{
 		ZoneID: cloudflare.F(zoneID),
 	})
+	// NOTE: Map keyed by hostname — if CF returns duplicates (edge case with pending
+	// deletions), the later entry wins. CF deduplicates hostnames in practice.
 	for pager.Next() {
 		ch := pager.Current()
 		result[ch.Hostname] = ch
@@ -170,66 +175,81 @@ func (r *ZoneReconciler) refersToZone(ch *saasv1beta1.CustomHostname, zone *doma
 	return ns == "" || ns == zone.Namespace
 }
 
-func hasDrift(ch *saasv1beta1.CustomHostname, cfCH custom_hostnames.CustomHostnameListResponse) bool {
-	if cfCH.CustomOriginServer != ch.Spec.OriginServer {
-		return true
-	}
-	if sniDrifted(cfCH.CustomOriginSNI, ch) {
-		return true
-	}
-	if sslDrifted(cfCH.SSL, ch.Spec.SSL) {
-		return true
-	}
-	// Compare status.ssl against CF response to trigger status refresh
-	// when external changes (dashboard, API) modify SSL config fields.
-	// This does NOT trigger correction — only refreshes status.ssl in the CR.
-	return sslStatusDrifted(ch.Status.SSL, cfCH.SSL)
+// statusPair is a status/cf value pair for structured status-refresh logging.
+type statusPair struct {
+	Status string `json:"status"`
+	CF     string `json:"cf"`
 }
 
-// sslStatusDrifted returns true if any SSL field from CF differs from what's
-// stored in status.ssl. This triggers a status refresh even for unmanaged fields
-// (fields not in spec), ensuring status.ssl always reflects current CF state.
-func sslStatusDrifted(status *saasv1beta1.CustomHostnameSSLStatus, cfSSL custom_hostnames.CustomHostnameListResponseSSL) bool {
+// sslStatusChangedFields returns a structured map of SSL fields that differ
+// between status.ssl and the CF response. Nil map means no changes.
+// Field order: CA, minTLS, method, type, sslStatus, id, issuer, serialNumber,
+// bundleMethod, wildcard, uploadedOn, expiresOn.
+// NOTE: Hosts, ValidationRecords, and ValidationErrors are intentionally excluded —
+// they change alongside Status during provisioning and are refreshed when the CR
+// is enqueued for any other reason.
+func sslStatusChangedFields(status *saasv1beta1.CustomHostnameSSLStatus, cfSSL custom_hostnames.CustomHostnameListResponseSSL) map[string]statusPair {
 	if status == nil {
-		return string(cfSSL.Status) != ""
+		if string(cfSSL.Status) != "" {
+			return map[string]statusPair{"status": {Status: "", CF: string(cfSSL.Status)}}
+		}
+		return nil
 	}
-	if status.Status != string(cfSSL.Status) {
-		return true
-	}
+	changed := map[string]statusPair{}
 	if status.CertificateAuthority != string(cfSSL.CertificateAuthority) {
-		return true
+		changed["ca"] = statusPair{Status: status.CertificateAuthority, CF: string(cfSSL.CertificateAuthority)}
 	}
 	if status.MinTLSVersion != string(cfSSL.Settings.MinTLSVersion) {
-		return true
+		changed["minTLS"] = statusPair{Status: status.MinTLSVersion, CF: string(cfSSL.Settings.MinTLSVersion)}
 	}
 	if status.Method != string(cfSSL.Method) {
-		return true
+		changed["method"] = statusPair{Status: status.Method, CF: string(cfSSL.Method)}
 	}
 	if status.Type != string(cfSSL.Type) {
-		return true
+		changed["type"] = statusPair{Status: status.Type, CF: string(cfSSL.Type)}
+	}
+	if status.Status != string(cfSSL.Status) {
+		changed["sslStatus"] = statusPair{Status: status.Status, CF: string(cfSSL.Status)}
 	}
 	if status.ID != cfSSL.ID {
-		return true
+		changed["id"] = statusPair{Status: status.ID, CF: cfSSL.ID}
 	}
 	if status.Issuer != cfSSL.Issuer {
-		return true
+		changed["issuer"] = statusPair{Status: status.Issuer, CF: cfSSL.Issuer}
 	}
 	if status.SerialNumber != cfSSL.SerialNumber {
-		return true
+		changed["serialNumber"] = statusPair{Status: status.SerialNumber, CF: cfSSL.SerialNumber}
 	}
 	if status.BundleMethod != string(cfSSL.BundleMethod) {
-		return true
+		changed["bundleMethod"] = statusPair{Status: status.BundleMethod, CF: string(cfSSL.BundleMethod)}
 	}
 	if status.Wildcard != cfSSL.Wildcard {
-		return true
+		changed["wildcard"] = statusPair{Status: fmt.Sprintf("%v", status.Wildcard), CF: fmt.Sprintf("%v", cfSSL.Wildcard)}
 	}
 	if !timePtrEqual(status.UploadedOn, cfSSL.UploadedOn) {
-		return true
+		changed["uploadedOn"] = statusPair{Status: timePtrString(status.UploadedOn), CF: timeString(cfSSL.UploadedOn)}
 	}
 	if !timePtrEqual(status.ExpiresOn, cfSSL.ExpiresOn) {
-		return true
+		changed["expiresOn"] = statusPair{Status: timePtrString(status.ExpiresOn), CF: timeString(cfSSL.ExpiresOn)}
 	}
-	return false
+	if len(changed) == 0 {
+		return nil
+	}
+	return changed
+}
+
+func timePtrString(t *metav1.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.Format(time.RFC3339)
+}
+
+func timeString(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339)
 }
 
 func timePtrEqual(mt *metav1.Time, gt time.Time) bool {

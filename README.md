@@ -9,8 +9,7 @@ A Kubernetes operator for managing [Cloudflare for SaaS](https://developers.clou
 ```bash
 helm install cf-edge-operator oci://ghcr.io/mrozentsvayg/cf-edge-operator/charts/cf-edge-operator \
   --namespace cf-edge-operator-system \
-  --create-namespace \
-  --set image.tag=latest
+  --create-namespace
 ```
 
 Or point ArgoCD at the chart path in this repo.
@@ -139,6 +138,7 @@ kubectl get customhostnames -A
 | `sslMinTLSVersion` | _(empty)_ | Default min TLS version for new CHs. Empty = CF default |
 | `sslMethod` | _(empty)_ | Default DCV method for new CHs. Empty = `http` |
 | `sslType` | _(empty)_ | Default validation type for new CHs. Empty = `dv` |
+| `zapDevel` | `true` | Development mode logger (console output). Set `false` for production JSON logs |
 | `podDisruptionBudget.enabled` | `false` | Create a PodDisruptionBudget (recommended when `replicaCount > 1`) |
 | `podDisruptionBudget.minAvailable` | `1` | Minimum available replicas during voluntary disruptions |
 | `serviceMonitor.enabled` | `false` | Create a ServiceMonitor for Prometheus Operator |
@@ -167,7 +167,7 @@ See [docs/architecture.md](docs/architecture.md) for the coordinator/worker desi
 Metrics are exposed on `:8080/metrics` (HTTP, via Helm chart). See [docs/architecture.md](docs/architecture.md#prometheus-metrics) for the full reference. Key metrics:
 
 - `cf_edge_operator_zone_ready{zone_cr}` — 1 if zone credentials are valid and CF API is reachable, 0 otherwise
-- `cf_edge_operator_operations_total{resource,operation}` — successful CF write operations (create, recreate, update, delete)
+- `cf_edge_operator_operations_total{resource,operation}` — successful CF operations (adopt, create, recreate, update, delete)
 - `cf_edge_operator_customhostnames{zone_cr,state}` — CRs by zone and state (ready/pending/unhealthy/conflict)
 - `cf_edge_operator_zone_customhostnames{zone_cr,type}` — CF custom hostnames by type (managed/orphan/drifted/total)
 - `cf_edge_operator_ssl_provisioning_duration_seconds{zone_cr,hostname,method}` — time from CF create to SSL active

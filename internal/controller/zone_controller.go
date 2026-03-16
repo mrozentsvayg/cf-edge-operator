@@ -112,6 +112,9 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	// Per-resource drift detection. Each resource type is in its own file
 	// (zone_*_drift.go) and can fail independently without affecting others.
+	// NOTE: Error is logged and counted (driftDetectionErrorsTotal) but not
+	// returned — the zone requeues on DriftInterval regardless, so controller-runtime
+	// error tracking/backoff is unnecessary.
 	// When multiple detectors exist, parallelize with errgroup.Group to avoid
 	// sequential paginated API calls stretching the reconcile duration.
 	if err := r.detectCustomHostnameDrift(ctx, cf, &zone); err != nil {
@@ -122,6 +125,9 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	return ctrl.Result{RequeueAfter: r.DriftInterval}, nil
 }
 
+// fetchAPIToken reads the CF API token from the secret referenced by the Zone CR.
+// Similar secret-fetch logic exists in buildCloudflareClient (customhostname_controller.go).
+// Not deduplicated: buildCloudflareClient additionally looks up the Zone CR and constructs the client.
 func (r *ZoneReconciler) fetchAPIToken(ctx context.Context, zone *domainsv1beta1.Zone) (string, error) {
 	key := zone.Spec.CredentialsRef.Key
 	if key == "" {

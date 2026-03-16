@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -75,6 +76,8 @@ const (
 const (
 	sslStatusActive = "active"
 	// Aliases for readability within the controller package (canonical order: CA, minTLS, method, type).
+	// Some are currently used only in tests — kept here (not in _test.go) to avoid
+	// splitting aliases between production and test code, which would complicate promotion.
 	sslCALetsEncrypt = saasv1beta1.SSLCALetsEncrypt
 	sslCAGoogle      = saasv1beta1.SSLCAGoogle
 	sslMinTLS10      = saasv1beta1.SSLMinTLS10
@@ -83,6 +86,8 @@ const (
 	sslMethodHTTP    = saasv1beta1.SSLMethodHTTP
 	sslMethodTXT     = saasv1beta1.SSLMethodTXT
 	sslTypeDV        = saasv1beta1.SSLTypeDV
+	// NOTE: SSLSNIHostHeader is an SNI value, not an SSL setting. Kept in this
+	// block with the SSL prefix for colocation with related CF constants.
 	sslSNIHostHeader = saasv1beta1.SSLSNIHostHeader
 )
 
@@ -260,7 +265,11 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	}
 	// Set SSL status in memory; persisted by setCondition's r.Status().Update()
 	// inside requeueOrReady — single write covers SSL, conditions, and counters.
-	ch.Status.SSL = sslStatusFromList(existing)
+	newSSL := sslStatusFromList(existing)
+	if !sslStatusEqual(ch.Status.SSL, newSSL) {
+		log.V(1).Info("status.ssl refreshed (external change detected)", "hostname", ch.Spec.Hostname)
+	}
+	ch.Status.SSL = newSSL
 	return r.requeueOrReady(ctx, zi.CR, ch)
 }
 
@@ -407,6 +416,9 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 			}
 		} else {
 			log.Info("custom hostname deleted from Cloudflare", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
+			// NOTE: operationsTotal is only incremented on actual deletes, not 404s.
+			// A 404 means the CH was already gone — the operator didn't perform the delete.
+			// The 404 is still recorded in api_errors_by_code_total via recordCFCall above.
 			operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpDelete).Inc()
 		}
 	}
@@ -595,7 +607,7 @@ func (r *CustomHostnameReconciler) buildCloudflareClient(ctx context.Context, ch
 func sniDrifted(currentSNI string, ch *saasv1beta1.CustomHostname) bool {
 	if ch.Spec.OriginSNI == nil {
 		// Nil means "don't manage SNI" — external changes are not corrected.
-		// Used by both the CH controller and hasDrift() in zone drift detection.
+		// Used by both the CH controller and detectCustomHostnameDrift() in zone drift detection.
 		// NOTE: We intentionally do NOT log when CF's SNI differs from the
 		// hostname here. CF uses the sentinel ":request_host_header:" as its
 		// default, which is an internal value the operator shouldn't assume.
@@ -603,6 +615,19 @@ func sniDrifted(currentSNI string, ch *saasv1beta1.CustomHostname) bool {
 		return false
 	}
 	return currentSNI != *ch.Spec.OriginSNI
+}
+
+// NOTE: Uses reflect.DeepEqual rather than field-by-field comparison. The struct has
+// 14+ fields including slices — DeepEqual is concise and correct. Called once per
+// reconcile (not a hot path), so performance is not a concern.
+func sslStatusEqual(a, b *saasv1beta1.CustomHostnameSSLStatus) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return reflect.DeepEqual(a, b)
 }
 
 // SSL field order: CA, minTLS, method, type — maintained across all SSL functions and logs.
@@ -627,6 +652,9 @@ func sslDrifted(cfSSL custom_hostnames.CustomHostnameListResponseSSL, spec *saas
 }
 
 // driftPair is a cf/spec value pair for drifted fields in structured drift logging.
+// NOTE: Field order {CF, Spec} differs from statusPair {Status, CF} in zone_customhostname_drift.go.
+// Both read naturally as "what was → what should be" in their context:
+// driftPair: CF has X, spec wants Y. statusPair: status had X, CF now has Y.
 type driftPair struct {
 	CF   string `json:"cf"`
 	Spec string `json:"spec"`
@@ -767,6 +795,10 @@ func buildSSLParams(ssl *saasv1beta1.CustomHostnameSSL, defaults SSLDefaults) cu
 	return p
 }
 
+// sslStatusFromNew maps the CF create response to status.ssl.
+// Mirror of sslStatusFromList — if you change one, change the other.
+// Not deduplicated because the CF SDK uses separate generated types for
+// create vs list responses with no shared interface.
 func sslStatusFromNew(resp *custom_hostnames.CustomHostnameNewResponse) *saasv1beta1.CustomHostnameSSLStatus {
 	s := &saasv1beta1.CustomHostnameSSLStatus{
 		Status:               string(resp.SSL.Status),
@@ -804,6 +836,8 @@ func sslStatusFromNew(resp *custom_hostnames.CustomHostnameNewResponse) *saasv1b
 	return s
 }
 
+// sslStatusFromList maps the CF list/get response to status.ssl.
+// Mirror of sslStatusFromNew — if you change one, change the other.
 func sslStatusFromList(resp *custom_hostnames.CustomHostnameListResponse) *saasv1beta1.CustomHostnameSSLStatus {
 	s := &saasv1beta1.CustomHostnameSSLStatus{
 		Status:               string(resp.SSL.Status),
@@ -857,6 +891,9 @@ func sslStatusFromList(resp *custom_hostnames.CustomHostnameListResponse) *saasv
 // NOTE: this predicate is coupled to status.ID as the "seen before" signal.
 // If the state model changes (e.g. ID moved to a different field), update this predicate.
 func fastWritePredicate() predicate.Predicate {
+	// NOTE: GenericFunc is intentionally not set — defaults to "pass all."
+	// Drift events from the zone controller arrive as GenericEvents and must
+	// always be processed (they carry CRs needing status refresh or drift correction).
 	return predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
 			ch, ok := e.Object.(*saasv1beta1.CustomHostname)
