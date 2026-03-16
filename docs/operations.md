@@ -18,8 +18,8 @@ All flags are set via Helm values, which are passed as container args in the Dep
 | `--zap-devel` | `true` | — | Development logger: human-readable console format, DPanic panics. Set `false` for JSON output (recommended for production log aggregation). |
 | `--ssl-certificate-authority` | _(empty)_ | `sslCertificateAuthority` | Default CA for new CHs (`lets_encrypt`, `google`, `ssl_com`). Empty = CF default |
 | `--ssl-min-tls-version` | _(empty)_ | `sslMinTLSVersion` | Default min TLS version for new CHs (`1.0`–`1.3`). Empty = CF default |
-| `--ssl-method` | _(empty)_ | `sslMethod` | Default DCV method for new CHs (`http`, `txt`, `email`). Empty = CF default |
-| `--ssl-type` | _(empty)_ | `sslType` | Default validation type for new CHs (`dv`). Empty = CF default |
+| `--ssl-method` | _(empty)_ | `sslMethod` | Default DCV method for new CHs (`http`, `txt`, `email`). Empty = `http` |
+| `--ssl-type` | _(empty)_ | `sslType` | Default validation type for new CHs (`dv`). Empty = `dv` |
 
 ---
 

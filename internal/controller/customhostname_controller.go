@@ -74,8 +74,16 @@ const (
 
 const (
 	sslStatusActive = "active"
-	sslMethodHTTP   = "http"
-	sslTypeDV       = "dv"
+	// Aliases for readability within the controller package (canonical order: CA, minTLS, method, type).
+	sslCALetsEncrypt = saasv1beta1.SSLCALetsEncrypt
+	sslCAGoogle      = saasv1beta1.SSLCAGoogle
+	sslMinTLS10      = saasv1beta1.SSLMinTLS10
+	sslMinTLS12      = saasv1beta1.SSLMinTLS12
+	sslMinTLS13      = saasv1beta1.SSLMinTLS13
+	sslMethodHTTP    = saasv1beta1.SSLMethodHTTP
+	sslMethodTXT     = saasv1beta1.SSLMethodTXT
+	sslTypeDV        = saasv1beta1.SSLTypeDV
+	sslSNIHostHeader = saasv1beta1.SSLSNIHostHeader
 )
 
 // CustomHostnameReconciler reconciles a CustomHostname object.
@@ -217,24 +225,16 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	originDrift := existing.CustomOriginServer != ch.Spec.OriginServer || sniDrifted(existing.CustomOriginSNI, ch)
 	sslDrift := sslDrifted(existing.SSL, ch.Spec.SSL)
 	if originDrift || sslDrift {
-		driftFields := sslDriftDetails(existing.SSL, ch.Spec.SSL)
+		di := buildDriftInfo(existing, ch)
 		if mgmtPolicy != ManagementPolicyManage {
 			log.Info("spec differs from CF, not updating per managementPolicy",
 				"hostname", ch.Spec.Hostname,
 				"policy", mgmtPolicy,
-				"cfOrigin", existing.CustomOriginServer,
-				"specOrigin", ch.Spec.OriginServer,
-				"cfSNI", existing.CustomOriginSNI,
-				"specSNI", ch.Spec.OriginSNI,
-				"sslDrift", driftFields)
+				"drift", di)
 		} else {
 			log.Info("custom hostname drifted, updating",
 				"hostname", ch.Spec.Hostname,
-				"currentOrigin", existing.CustomOriginServer,
-				"desiredOrigin", ch.Spec.OriginServer,
-				"currentSNI", existing.CustomOriginSNI,
-				"desiredSNI", ch.Spec.OriginSNI,
-				"sslDrift", driftFields)
+				"drift", di)
 			editParams := custom_hostnames.CustomHostnameEditParams{ZoneID: cloudflare.F(zi.ID)}
 			opts := []option.RequestOption{option.WithJSONSet("custom_origin_server", ch.Spec.OriginServer)}
 			if ch.Spec.OriginSNI != nil {
@@ -245,8 +245,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 			}
 			if r.DryRun {
 				log.Info("dry-run: would update custom hostname", "hostname", ch.Spec.Hostname,
-					"currentOrigin", existing.CustomOriginServer, "desiredOrigin", ch.Spec.OriginServer,
-					"sslDrift", sslDrift)
+					"drift", di)
 			} else {
 				editStart := time.Now()
 				_, editErr := zi.Client.CustomHostnames.Edit(ctx, existing.ID, editParams, opts...)
@@ -627,27 +626,89 @@ func sslDrifted(cfSSL custom_hostnames.CustomHostnameListResponseSSL, spec *saas
 	return false
 }
 
-func sslDriftDetails(cfSSL custom_hostnames.CustomHostnameListResponseSSL, spec *saasv1beta1.CustomHostnameSSL) string {
-	if spec == nil {
-		return ""
+// driftPair is a cf/spec value pair for drifted fields in structured drift logging.
+type driftPair struct {
+	CF   string `json:"cf"`
+	Spec string `json:"spec"`
+}
+
+// buildDriftInfo builds a structured drift object for logging.
+// Three categories: drifted (cf/spec pairs), matched (single value), unmanaged (CF value).
+func buildDriftInfo(existing *custom_hostnames.CustomHostnameListResponse, ch *saasv1beta1.CustomHostname) map[string]any {
+	drifted := map[string]any{}
+	matched := map[string]string{}
+	unmanaged := map[string]string{}
+
+	// Origin — always managed
+	if existing.CustomOriginServer != ch.Spec.OriginServer {
+		drifted["origin"] = driftPair{CF: existing.CustomOriginServer, Spec: ch.Spec.OriginServer}
+	} else {
+		matched["origin"] = ch.Spec.OriginServer
 	}
-	var diffs []string
-	if spec.CertificateAuthority != "" && string(cfSSL.CertificateAuthority) != spec.CertificateAuthority {
-		diffs = append(diffs, "ca:"+string(cfSSL.CertificateAuthority)+"→"+spec.CertificateAuthority)
+
+	// SNI
+	if ch.Spec.OriginSNI != nil {
+		if sniDrifted(existing.CustomOriginSNI, ch) {
+			drifted["sni"] = driftPair{CF: existing.CustomOriginSNI, Spec: *ch.Spec.OriginSNI}
+		} else {
+			matched["sni"] = *ch.Spec.OriginSNI
+		}
+	} else {
+		unmanaged["sni"] = existing.CustomOriginSNI
 	}
-	if spec.MinTLSVersion != "" && string(cfSSL.Settings.MinTLSVersion) != spec.MinTLSVersion {
-		diffs = append(diffs, "minTLS:"+string(cfSSL.Settings.MinTLSVersion)+"→"+spec.MinTLSVersion)
+
+	// SSL fields — CA, minTLS, method, type
+	ssl := existing.SSL
+	spec := ch.Spec.SSL
+	// CA
+	if spec != nil && spec.CertificateAuthority != "" {
+		if string(ssl.CertificateAuthority) != spec.CertificateAuthority {
+			drifted["ca"] = driftPair{CF: string(ssl.CertificateAuthority), Spec: spec.CertificateAuthority}
+		} else {
+			matched["ca"] = spec.CertificateAuthority
+		}
+	} else {
+		unmanaged["ca"] = string(ssl.CertificateAuthority)
 	}
-	if spec.Method != "" && string(cfSSL.Method) != spec.Method {
-		diffs = append(diffs, "method:"+string(cfSSL.Method)+"→"+spec.Method)
+	// minTLS
+	if spec != nil && spec.MinTLSVersion != "" {
+		if string(ssl.Settings.MinTLSVersion) != spec.MinTLSVersion {
+			drifted["minTLS"] = driftPair{CF: string(ssl.Settings.MinTLSVersion), Spec: spec.MinTLSVersion}
+		} else {
+			matched["minTLS"] = spec.MinTLSVersion
+		}
+	} else {
+		unmanaged["minTLS"] = string(ssl.Settings.MinTLSVersion)
 	}
-	if spec.Type != "" && string(cfSSL.Type) != spec.Type {
-		diffs = append(diffs, "type:"+string(cfSSL.Type)+"→"+spec.Type)
+	// method
+	if spec != nil && spec.Method != "" {
+		if string(ssl.Method) != spec.Method {
+			drifted["method"] = driftPair{CF: string(ssl.Method), Spec: spec.Method}
+		} else {
+			matched["method"] = spec.Method
+		}
+	} else {
+		unmanaged["method"] = string(ssl.Method)
 	}
-	if len(diffs) == 0 {
-		return ""
+	// type
+	if spec != nil && spec.Type != "" {
+		if string(ssl.Type) != spec.Type {
+			drifted["type"] = driftPair{CF: string(ssl.Type), Spec: spec.Type}
+		} else {
+			matched["type"] = spec.Type
+		}
+	} else {
+		unmanaged["type"] = string(ssl.Type)
 	}
-	return strings.Join(diffs, ",")
+
+	di := map[string]any{"drifted": drifted}
+	if len(matched) > 0 {
+		di["matched"] = matched
+	}
+	if len(unmanaged) > 0 {
+		di["unmanaged"] = unmanaged
+	}
+	return di
 }
 
 func buildSSLEditParams(ssl *saasv1beta1.CustomHostnameSSL) custom_hostnames.CustomHostnameEditParamsSSL {
@@ -691,16 +752,18 @@ func buildSSLParams(ssl *saasv1beta1.CustomHostnameSSL, defaults SSLDefaults) cu
 	if method == "" {
 		method = defaults.Method
 	}
-	if method != "" {
-		p.Method = cloudflare.F(custom_hostnames.DCVMethod(method))
+	if method == "" {
+		method = sslMethodHTTP // CF requires method on create
 	}
+	p.Method = cloudflare.F(custom_hostnames.DCVMethod(method))
 	t := ssl.Type
 	if t == "" {
 		t = defaults.Type
 	}
-	if t != "" {
-		p.Type = cloudflare.F(custom_hostnames.DomainValidationType(t))
+	if t == "" {
+		t = sslTypeDV // CF requires type on create
 	}
+	p.Type = cloudflare.F(custom_hostnames.DomainValidationType(t))
 	return p
 }
 

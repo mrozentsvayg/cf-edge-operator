@@ -221,12 +221,12 @@ func TestHasDrift(t *testing.T) {
 			ch: saasv1beta1.CustomHostname{
 				Spec: saasv1beta1.CustomHostnameSpec{
 					OriginServer: "origin.example.com",
-					SSL:          &saasv1beta1.CustomHostnameSSL{CertificateAuthority: "google"},
+					SSL:          &saasv1beta1.CustomHostnameSSL{CertificateAuthority: sslCAGoogle},
 				},
 			},
 			cfCH: custom_hostnames.CustomHostnameListResponse{
 				CustomOriginServer: "origin.example.com",
-				SSL:                custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: "lets_encrypt"},
+				SSL:                custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: sslCALetsEncrypt},
 			},
 			want: true,
 		},
@@ -235,12 +235,12 @@ func TestHasDrift(t *testing.T) {
 			ch: saasv1beta1.CustomHostname{
 				Spec: saasv1beta1.CustomHostnameSpec{
 					OriginServer: "origin.example.com",
-					SSL:          &saasv1beta1.CustomHostnameSSL{CertificateAuthority: "google"},
+					SSL:          &saasv1beta1.CustomHostnameSSL{CertificateAuthority: sslCAGoogle},
 				},
 			},
 			cfCH: custom_hostnames.CustomHostnameListResponse{
 				CustomOriginServer: "origin.example.com",
-				SSL:                custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: "google"},
+				SSL:                custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: sslCAGoogle},
 			},
 			want: false,
 		},
@@ -251,7 +251,7 @@ func TestHasDrift(t *testing.T) {
 			},
 			cfCH: custom_hostnames.CustomHostnameListResponse{
 				CustomOriginServer: "origin.example.com",
-				SSL:                custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: "google"},
+				SSL:                custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: sslCAGoogle},
 			},
 			want: false,
 		},

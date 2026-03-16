@@ -19,7 +19,7 @@ Key spec fields:
 - `spec.originServer` — the origin server CF proxies to
 - `spec.originSNI` — (optional) overrides the SNI sent to the origin during TLS handshake. If omitted, the operator does not manage Origin SNI — CF uses its default (the origin server hostname) and external changes to the SNI are not corrected. When set, the operator enforces the value on every reconcile. The special value `:request_host_header:` instructs CF to forward the incoming request's Host header as the SNI — useful when the origin validates connections by the hostname. Requires an account-level entitlement from Cloudflare; setting this field on a zone without the entitlement produces a CF API error.
 - `spec.zoneRef` — references the Zone CR (name + optional namespace, defaults to operator namespace)
-- `spec.ssl` — (optional) SSL configuration: CA (`lets_encrypt`/`google`/`ssl_com`), minTLSVersion (`1.0`–`1.3`), method (`http`/`txt`/`email`), type (`dv`). Empty fields use `--ssl-*` operator defaults, then CF defaults.
+- `spec.ssl` — (optional) SSL configuration: CA (`lets_encrypt`/`google`/`ssl_com`), minTLSVersion (`1.0`–`1.3`), method (`http`/`txt`/`email`), type (`dv`). Empty fields use `--ssl-*` operator defaults; method defaults to `http`, type to `dv`; CA and minTLSVersion default to CF defaults.
 - `spec.managementPolicy` — (optional) per-CR override for `--management-policy`. See [Management Policy](#management-policy).
 - `spec.deletePolicy` — (optional) per-CR override for `--delete-policy`. See [Delete Policy](#delete-policy).
 
