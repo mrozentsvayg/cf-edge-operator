@@ -48,6 +48,7 @@ driftBuffer: 1024
 sslCertificateAuthority: ""
 sslMinTLSVersion: ""
 sslMethod: ""
+sslType: ""
 
 resources:
   limits:

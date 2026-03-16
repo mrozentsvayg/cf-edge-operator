@@ -19,7 +19,7 @@ Key spec fields:
 - `spec.originServer` — the origin server CF proxies to
 - `spec.originSNI` — (optional) overrides the SNI sent to the origin during TLS handshake. If omitted, the operator does not manage Origin SNI — CF uses its default (the origin server hostname) and external changes to the SNI are not corrected. When set, the operator enforces the value on every reconcile. The special value `:request_host_header:` instructs CF to forward the incoming request's Host header as the SNI — useful when the origin validates connections by the hostname. Requires an account-level entitlement from Cloudflare; setting this field on a zone without the entitlement produces a CF API error.
 - `spec.zoneRef` — references the Zone CR (name + optional namespace, defaults to operator namespace)
-- `spec.ssl` — (optional) SSL configuration: DCV type (`dv`), method (`http`/`txt`/`email`), CA, minTLSVersion. Defaults to `type: dv, method: http`.
+- `spec.ssl` — (optional) SSL configuration: CA (`lets_encrypt`/`google`/`ssl_com`), minTLSVersion (`1.0`–`1.3`), method (`http`/`txt`/`email`), type (`dv`). Empty fields use `--ssl-*` operator defaults, then CF defaults.
 - `spec.managementPolicy` — (optional) per-CR override for `--management-policy`. See [Management Policy](#management-policy).
 - `spec.deletePolicy` — (optional) per-CR override for `--delete-policy`. See [Delete Policy](#delete-policy).
 
@@ -87,7 +87,7 @@ On operator restart:
 ## SSL Provisioning (Async)
 
 Cloudflare SSL verification is asynchronous (minutes to hours). SSL status transitions are detected via the zone controller's periodic bulk list — no per-CR polling:
-- Each zone drift cycle compares origin server, SNI, SSL config (method, type, CA, minTLSVersion), and SSL status against the CR spec/status
+- Each zone drift cycle compares origin server, SNI, SSL config (CA, minTLSVersion, method, type), and SSL status against the CR spec/status
 - When the status differs (e.g., `pending_validation` → `active`), the CR is enqueued for the CustomHostname controller
 - `status.ssl.status` reflects current Cloudflare SSL state
 - `status.ssl.validationRecords` surfaces Domain Control Validation (DCV) tokens so operators can complete validation

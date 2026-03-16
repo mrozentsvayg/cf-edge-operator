@@ -85,10 +85,10 @@ kubectl get customhostnames -A
 | `spec.originSNI` | no | SNI sent to the origin. If omitted, the operator does not manage SNI. Requires CF account entitlement. |
 | `spec.zoneRef.name` | yes | Zone CR name |
 | `spec.zoneRef.namespace` | no | Zone CR namespace. Defaults to the operator namespace. |
-| `spec.ssl.type` | no | DV type. Default: `dv` |
-| `spec.ssl.method` | no | DCV method: `http`, `txt`, or `email`. Empty = `--ssl-method` default, then CF default |
 | `spec.ssl.certificateAuthority` | no | CA: `lets_encrypt`, `google`, `ssl_com`. Empty = `--ssl-certificate-authority` default, then CF default |
 | `spec.ssl.minTLSVersion` | no | `1.0`, `1.1`, `1.2`, or `1.3`. Empty = `--ssl-min-tls-version` default, then CF default |
+| `spec.ssl.method` | no | DCV method: `http`, `txt`, or `email`. Empty = `--ssl-method` default, then CF default |
+| `spec.ssl.type` | no | Validation type: `dv`. Empty = `--ssl-type` default, then CF default |
 | `spec.managementPolicy` | no | Per-CR management policy: `manage`, `create`, or `observe`. Overrides `--management-policy`. |
 | `spec.deletePolicy` | no | Per-CR delete policy: `always`, `own-only`, or `never`. Overrides `--delete-policy`. Useful during migration to protect against deleting hostnames managed by other tools. |
 
@@ -119,6 +119,7 @@ kubectl get customhostnames -A
 | `image.repository` | `ghcr.io/mrozentsvayg/cf-edge-operator` | Image repository |
 | `image.tag` | chart appVersion | Image tag |
 | `operatorNamespace` | release namespace | Namespace where Zone CRs live |
+| `managementPolicy` | `manage` | `manage`, `create`, or `observe`. See [docs/architecture.md](docs/architecture.md#management-policy). |
 | `deletePolicy` | `always` | `always`, `own-only`, or `never`. See [docs/architecture.md](docs/architecture.md#delete-policy). |
 | `leaderElect` | `true` | Enable leader election (required for HA) |
 | `replicaCount` | `1` | Number of replicas |
@@ -127,9 +128,10 @@ kubectl get customhostnames -A
 | `dryRun` | `false` | Log CF operations without executing them |
 | `driftInterval` | `1m` | How often the zone controller bulk-lists CF to detect drift |
 | `driftBuffer` | `1024` | Internal channel buffer for drift events |
-| `sslMethod` | _(empty)_ | Default DCV method for new CHs. Empty = CF default |
 | `sslCertificateAuthority` | _(empty)_ | Default CA for new CHs. Empty = CF default |
 | `sslMinTLSVersion` | _(empty)_ | Default min TLS version for new CHs. Empty = CF default |
+| `sslMethod` | _(empty)_ | Default DCV method for new CHs. Empty = CF default |
+| `sslType` | _(empty)_ | Default validation type for new CHs. Empty = CF default |
 | `podDisruptionBudget.enabled` | `false` | Create a PodDisruptionBudget (recommended when `replicaCount > 1`) |
 | `podDisruptionBudget.minAvailable` | `1` | Minimum available replicas during voluntary disruptions |
 | `serviceMonitor.enabled` | `false` | Create a ServiceMonitor for Prometheus Operator |

@@ -57,6 +57,9 @@ spec:
         {{- if .Values.sslMethod }}
         - --ssl-method={{ .Values.sslMethod }}
         {{- end }}
+        {{- if .Values.sslType }}
+        - --ssl-type={{ .Values.sslType }}
+        {{- end }}
         securityContext:
           readOnlyRootFilesystem: true
           allowPrivilegeEscalation: false
