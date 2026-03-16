@@ -642,29 +642,29 @@ func TestBuildSSLParams(t *testing.T) {
 		name       string
 		ssl        saasv1beta1.CustomHostnameSSL
 		defaults   SSLDefaults
-		wantType   bool
 		wantCA     bool
 		wantMinTLS bool
 		wantMethod bool
+		wantType   bool
 	}{
 		{
 			name:       "CR fields set, no defaults",
-			ssl:        saasv1beta1.CustomHostnameSSL{Type: sslTypeDV, Method: sslMethodHTTP},
-			wantType:   true,
+			ssl:        saasv1beta1.CustomHostnameSSL{Method: sslMethodHTTP, Type: sslTypeDV},
 			wantMethod: true,
+			wantType:   true,
 		},
 		{
 			name: "all CR fields set",
 			ssl: saasv1beta1.CustomHostnameSSL{
-				Type:                 sslTypeDV,
-				Method:               "txt",
 				CertificateAuthority: "google",
 				MinTLSVersion:        "1.2",
+				Method:               "txt",
+				Type:                 sslTypeDV,
 			},
-			wantType:   true,
-			wantMethod: true,
 			wantCA:     true,
 			wantMinTLS: true,
+			wantMethod: true,
+			wantType:   true,
 		},
 		{
 			name: "empty CR fields, no defaults",
@@ -673,30 +673,29 @@ func TestBuildSSLParams(t *testing.T) {
 		{
 			name:       "empty CR fields, defaults applied",
 			ssl:        saasv1beta1.CustomHostnameSSL{},
-			defaults:   SSLDefaults{Method: "txt", CertificateAuthority: "google", MinTLSVersion: "1.2"},
-			wantMethod: true,
+			defaults:   SSLDefaults{CertificateAuthority: "google", MinTLSVersion: "1.2", Method: "txt", Type: sslTypeDV},
 			wantCA:     true,
 			wantMinTLS: true,
+			wantMethod: true,
+			wantType:   true,
 		},
 		{
 			name:       "CR fields override defaults",
-			ssl:        saasv1beta1.CustomHostnameSSL{Method: sslMethodHTTP, CertificateAuthority: "lets_encrypt", MinTLSVersion: "1.3"},
-			defaults:   SSLDefaults{Method: "txt", CertificateAuthority: "google", MinTLSVersion: "1.2"},
-			wantMethod: true,
+			ssl:        saasv1beta1.CustomHostnameSSL{CertificateAuthority: "lets_encrypt", MinTLSVersion: "1.3", Method: sslMethodHTTP},
+			defaults:   SSLDefaults{CertificateAuthority: "google", MinTLSVersion: "1.2", Method: "txt", Type: sslTypeDV},
 			wantCA:     true,
 			wantMinTLS: true,
+			wantMethod: true,
+			wantType:   true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := buildSSLParams(&tt.ssl, tt.defaults)
-			hasType := got.Type.Present
 			hasCA := got.CertificateAuthority.Present
 			hasMinTLS := got.Settings.Present
 			hasMethod := got.Method.Present
-			if hasType != tt.wantType {
-				t.Errorf("Type.Present = %v, want %v", hasType, tt.wantType)
-			}
+			hasType := got.Type.Present
 			if hasCA != tt.wantCA {
 				t.Errorf("CertificateAuthority.Present = %v, want %v", hasCA, tt.wantCA)
 			}
@@ -705,6 +704,9 @@ func TestBuildSSLParams(t *testing.T) {
 			}
 			if hasMethod != tt.wantMethod {
 				t.Errorf("Method.Present = %v, want %v", hasMethod, tt.wantMethod)
+			}
+			if hasType != tt.wantType {
+				t.Errorf("Type.Present = %v, want %v", hasType, tt.wantType)
 			}
 		})
 	}

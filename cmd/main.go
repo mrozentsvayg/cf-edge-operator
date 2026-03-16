@@ -69,7 +69,7 @@ func main() {
 	var dryRun bool
 	var driftInterval time.Duration
 	var driftBuffer int
-	var sslMethod, sslCertificateAuthority, sslMinTLSVersion string
+	var sslCertificateAuthority, sslMinTLSVersion, sslMethod, sslType string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -105,15 +105,18 @@ func main() {
 	flag.IntVar(&driftBuffer, "drift-buffer", 1024,
 		"Buffer size of the internal channel used to enqueue drifted CustomHostname CRs. "+
 			"Increase if operating with many zones and very frequent drift cycles.")
-	flag.StringVar(&sslMethod, "ssl-method", "",
-		"Default DCV method for new custom hostnames (http, txt, email). "+
-			"Applied on create when the CR's spec.ssl.method is empty. If empty, Cloudflare uses its own default.")
 	flag.StringVar(&sslCertificateAuthority, "ssl-certificate-authority", "",
 		"Default certificate authority for new custom hostnames (lets_encrypt, google, ssl_com). "+
 			"Applied on create when the CR's spec.ssl.certificateAuthority is empty. If empty, Cloudflare uses its own default.")
 	flag.StringVar(&sslMinTLSVersion, "ssl-min-tls-version", "",
 		"Default minimum TLS version for new custom hostnames (1.0, 1.1, 1.2, 1.3). "+
 			"Applied on create when the CR's spec.ssl.minTLSVersion is empty. If empty, Cloudflare uses its own default.")
+	flag.StringVar(&sslMethod, "ssl-method", "",
+		"Default DCV method for new custom hostnames (http, txt, email). "+
+			"Applied on create when the CR's spec.ssl.method is empty. If empty, Cloudflare uses its own default.")
+	flag.StringVar(&sslType, "ssl-type", "",
+		"Default validation type for new custom hostnames (dv). "+
+			"Applied on create when the CR's spec.ssl.type is empty. If empty, Cloudflare uses its own default.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics server")
 	// NOTE: Development: true = human-readable console logs, DPanic panics.
@@ -134,9 +137,10 @@ func main() {
 		"driftInterval", driftInterval,
 		"driftBuffer", driftBuffer,
 		"leaderElect", enableLeaderElection,
-		"sslMethod", sslMethod,
 		"sslCertificateAuthority", sslCertificateAuthority,
 		"sslMinTLSVersion", sslMinTLSVersion,
+		"sslMethod", sslMethod,
+		"sslType", sslType,
 	)
 	switch managementPolicy {
 	case controller.ManagementPolicyManage, controller.ManagementPolicyCreate, controller.ManagementPolicyObserve:
@@ -158,14 +162,6 @@ func main() {
 		setupLog.Error(nil, "invalid --drift-buffer: must be positive", "value", driftBuffer)
 		os.Exit(1)
 	}
-	if sslMethod != "" {
-		switch sslMethod {
-		case "http", "txt", "email":
-		default:
-			setupLog.Error(nil, "invalid --ssl-method", "value", sslMethod)
-			os.Exit(1)
-		}
-	}
 	if sslCertificateAuthority != "" {
 		switch sslCertificateAuthority {
 		case "lets_encrypt", "google", "ssl_com":
@@ -179,6 +175,22 @@ func main() {
 		case "1.0", "1.1", "1.2", "1.3":
 		default:
 			setupLog.Error(nil, "invalid --ssl-min-tls-version", "value", sslMinTLSVersion)
+			os.Exit(1)
+		}
+	}
+	if sslMethod != "" {
+		switch sslMethod {
+		case "http", "txt", "email":
+		default:
+			setupLog.Error(nil, "invalid --ssl-method", "value", sslMethod)
+			os.Exit(1)
+		}
+	}
+	if sslType != "" {
+		switch sslType {
+		case "dv":
+		default:
+			setupLog.Error(nil, "invalid --ssl-type", "value", sslType)
 			os.Exit(1)
 		}
 	}
@@ -270,9 +282,10 @@ func main() {
 		DeletePolicy:      deletePolicy,
 		DryRun:            dryRun,
 		SSLDefaults: controller.SSLDefaults{
-			Method:               sslMethod,
 			CertificateAuthority: sslCertificateAuthority,
 			MinTLSVersion:        sslMinTLSVersion,
+			Method:               sslMethod,
+			Type:                 sslType,
 		},
 	}).SetupWithManager(mgr, driftEvents); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "CustomHostname")

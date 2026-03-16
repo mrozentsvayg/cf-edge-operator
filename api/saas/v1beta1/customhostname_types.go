@@ -90,18 +90,6 @@ type ZoneRef struct {
 // Each field is independently managed: set = enforce on create and drift correction,
 // empty = use operator default on create (--ssl-* flags), don't correct drift.
 type CustomHostnameSSL struct {
-	// Type of SSL validation. Defaults to "dv".
-	// +kubebuilder:validation:Enum=dv
-	// +kubebuilder:default=dv
-	// +optional
-	Type string `json:"type,omitempty"`
-
-	// Method of DCV (Domain Control Validation). Defaults to "http".
-	// +kubebuilder:validation:Enum=http;txt;email
-	// +kubebuilder:default=http
-	// +optional
-	Method string `json:"method,omitempty"`
-
 	// CertificateAuthority sets the CA for the certificate.
 	// Requires an enterprise plan. Omit if not applicable.
 	// +kubebuilder:validation:Enum=lets_encrypt;google;ssl_com
@@ -112,6 +100,18 @@ type CustomHostnameSSL struct {
 	// +kubebuilder:validation:Enum="1.0";"1.1";"1.2";"1.3"
 	// +optional
 	MinTLSVersion string `json:"minTLSVersion,omitempty"`
+
+	// Method of DCV (Domain Control Validation).
+	// Empty = use --ssl-method operator default, then CF default.
+	// +kubebuilder:validation:Enum=http;txt;email
+	// +optional
+	Method string `json:"method,omitempty"`
+
+	// Type of SSL validation.
+	// Empty = use operator/CF default (typically "dv").
+	// +kubebuilder:validation:Enum=dv
+	// +optional
+	Type string `json:"type,omitempty"`
 }
 
 // CustomHostnameStatus defines the observed state of CustomHostname

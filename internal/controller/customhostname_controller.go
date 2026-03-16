@@ -96,10 +96,12 @@ type CustomHostnameReconciler struct {
 }
 
 // SSLDefaults holds operator-wide default SSL settings for new custom hostnames.
+// Field order: CA, minTLS, method, type.
 type SSLDefaults struct {
-	Method               string
 	CertificateAuthority string
 	MinTLSVersion        string
+	Method               string
+	Type                 string
 }
 
 // +kubebuilder:rbac:groups=saas.cf-edge.io,resources=customhostnames,verbs=get;list;watch;update;patch
@@ -215,6 +217,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	originDrift := existing.CustomOriginServer != ch.Spec.OriginServer || sniDrifted(existing.CustomOriginSNI, ch)
 	sslDrift := sslDrifted(existing.SSL, ch.Spec.SSL)
 	if originDrift || sslDrift {
+		driftFields := sslDriftDetails(existing.SSL, ch.Spec.SSL)
 		if mgmtPolicy != ManagementPolicyManage {
 			log.Info("spec differs from CF, not updating per managementPolicy",
 				"hostname", ch.Spec.Hostname,
@@ -223,7 +226,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 				"specOrigin", ch.Spec.OriginServer,
 				"cfSNI", existing.CustomOriginSNI,
 				"specSNI", ch.Spec.OriginSNI,
-				"sslDrift", sslDrift)
+				"sslDrift", driftFields)
 		} else {
 			log.Info("custom hostname drifted, updating",
 				"hostname", ch.Spec.Hostname,
@@ -231,7 +234,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 				"desiredOrigin", ch.Spec.OriginServer,
 				"currentSNI", existing.CustomOriginSNI,
 				"desiredSNI", ch.Spec.OriginSNI,
-				"sslDrift", sslDrift)
+				"sslDrift", driftFields)
 			editParams := custom_hostnames.CustomHostnameEditParams{ZoneID: cloudflare.F(zi.ID)}
 			opts := []option.RequestOption{option.WithJSONSet("custom_origin_server", ch.Spec.OriginServer)}
 			if ch.Spec.OriginSNI != nil {
@@ -603,15 +606,11 @@ func sniDrifted(currentSNI string, ch *saasv1beta1.CustomHostname) bool {
 	return currentSNI != *ch.Spec.OriginSNI
 }
 
+// SSL field order: CA, minTLS, method, type — maintained across all SSL functions and logs.
+
 func sslDrifted(cfSSL custom_hostnames.CustomHostnameListResponseSSL, spec *saasv1beta1.CustomHostnameSSL) bool {
 	if spec == nil {
 		return false
-	}
-	if spec.Method != "" && string(cfSSL.Method) != spec.Method {
-		return true
-	}
-	if spec.Type != "" && string(cfSSL.Type) != spec.Type {
-		return true
 	}
 	if spec.CertificateAuthority != "" && string(cfSSL.CertificateAuthority) != spec.CertificateAuthority {
 		return true
@@ -619,17 +618,40 @@ func sslDrifted(cfSSL custom_hostnames.CustomHostnameListResponseSSL, spec *saas
 	if spec.MinTLSVersion != "" && string(cfSSL.Settings.MinTLSVersion) != spec.MinTLSVersion {
 		return true
 	}
+	if spec.Method != "" && string(cfSSL.Method) != spec.Method {
+		return true
+	}
+	if spec.Type != "" && string(cfSSL.Type) != spec.Type {
+		return true
+	}
 	return false
+}
+
+func sslDriftDetails(cfSSL custom_hostnames.CustomHostnameListResponseSSL, spec *saasv1beta1.CustomHostnameSSL) string {
+	if spec == nil {
+		return ""
+	}
+	var diffs []string
+	if spec.CertificateAuthority != "" && string(cfSSL.CertificateAuthority) != spec.CertificateAuthority {
+		diffs = append(diffs, "ca:"+string(cfSSL.CertificateAuthority)+"→"+spec.CertificateAuthority)
+	}
+	if spec.MinTLSVersion != "" && string(cfSSL.Settings.MinTLSVersion) != spec.MinTLSVersion {
+		diffs = append(diffs, "minTLS:"+string(cfSSL.Settings.MinTLSVersion)+"→"+spec.MinTLSVersion)
+	}
+	if spec.Method != "" && string(cfSSL.Method) != spec.Method {
+		diffs = append(diffs, "method:"+string(cfSSL.Method)+"→"+spec.Method)
+	}
+	if spec.Type != "" && string(cfSSL.Type) != spec.Type {
+		diffs = append(diffs, "type:"+string(cfSSL.Type)+"→"+spec.Type)
+	}
+	if len(diffs) == 0 {
+		return ""
+	}
+	return strings.Join(diffs, ",")
 }
 
 func buildSSLEditParams(ssl *saasv1beta1.CustomHostnameSSL) custom_hostnames.CustomHostnameEditParamsSSL {
 	p := custom_hostnames.CustomHostnameEditParamsSSL{}
-	if ssl.Type != "" {
-		p.Type = cloudflare.F(custom_hostnames.DomainValidationType(ssl.Type))
-	}
-	if ssl.Method != "" {
-		p.Method = cloudflare.F(custom_hostnames.DCVMethod(ssl.Method))
-	}
 	if ssl.CertificateAuthority != "" {
 		p.CertificateAuthority = cloudflare.F(cloudflare.CertificateCA(ssl.CertificateAuthority))
 	}
@@ -638,21 +660,17 @@ func buildSSLEditParams(ssl *saasv1beta1.CustomHostnameSSL) custom_hostnames.Cus
 			MinTLSVersion: cloudflare.F(custom_hostnames.CustomHostnameEditParamsSSLSettingsMinTLSVersion(ssl.MinTLSVersion)),
 		})
 	}
+	if ssl.Method != "" {
+		p.Method = cloudflare.F(custom_hostnames.DCVMethod(ssl.Method))
+	}
+	if ssl.Type != "" {
+		p.Type = cloudflare.F(custom_hostnames.DomainValidationType(ssl.Type))
+	}
 	return p
 }
 
 func buildSSLParams(ssl *saasv1beta1.CustomHostnameSSL, defaults SSLDefaults) custom_hostnames.CustomHostnameNewParamsSSL {
 	p := custom_hostnames.CustomHostnameNewParamsSSL{}
-	if t := ssl.Type; t != "" {
-		p.Type = cloudflare.F(custom_hostnames.DomainValidationType(t))
-	}
-	method := ssl.Method
-	if method == "" {
-		method = defaults.Method
-	}
-	if method != "" {
-		p.Method = cloudflare.F(custom_hostnames.DCVMethod(method))
-	}
 	ca := ssl.CertificateAuthority
 	if ca == "" {
 		ca = defaults.CertificateAuthority
@@ -668,6 +686,20 @@ func buildSSLParams(ssl *saasv1beta1.CustomHostnameSSL, defaults SSLDefaults) cu
 		p.Settings = cloudflare.F(custom_hostnames.CustomHostnameNewParamsSSLSettings{
 			MinTLSVersion: cloudflare.F(custom_hostnames.CustomHostnameNewParamsSSLSettingsMinTLSVersion(minTLS)),
 		})
+	}
+	method := ssl.Method
+	if method == "" {
+		method = defaults.Method
+	}
+	if method != "" {
+		p.Method = cloudflare.F(custom_hostnames.DCVMethod(method))
+	}
+	t := ssl.Type
+	if t == "" {
+		t = defaults.Type
+	}
+	if t != "" {
+		p.Type = cloudflare.F(custom_hostnames.DomainValidationType(t))
 	}
 	return p
 }
