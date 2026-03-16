@@ -144,162 +144,30 @@ func TestCRState(t *testing.T) {
 	}
 }
 
-func TestHasDrift(t *testing.T) {
-	sni := "sni.example.com"
+func TestSslStatusChangedFields(t *testing.T) {
 	tests := []struct {
-		name string
-		ch   saasv1beta1.CustomHostname
-		cfCH custom_hostnames.CustomHostnameListResponse
-		want bool
+		name        string
+		status      *saasv1beta1.CustomHostnameSSLStatus
+		cfSSL       custom_hostnames.CustomHostnameListResponseSSL
+		wantChanged bool
 	}{
 		{
-			name: "no drift",
-			ch:   saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: "origin.example.com"}},
-			cfCH: custom_hostnames.CustomHostnameListResponse{CustomOriginServer: "origin.example.com"},
-			want: false,
+			name:        "nil status, CF has status → drift",
+			status:      nil,
+			cfSSL:       custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive},
+			wantChanged: true,
 		},
 		{
-			name: "origin server drift",
-			ch:   saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: "new.example.com"}},
-			cfCH: custom_hostnames.CustomHostnameListResponse{CustomOriginServer: "old.example.com"},
-			want: true,
+			name:        "nil status, CF empty → no drift",
+			status:      nil,
+			cfSSL:       custom_hostnames.CustomHostnameListResponseSSL{},
+			wantChanged: false,
 		},
 		{
-			name: "sni set and matches",
-			ch:   saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: "origin.example.com", OriginSNI: &sni}},
-			cfCH: custom_hostnames.CustomHostnameListResponse{CustomOriginServer: "origin.example.com", CustomOriginSNI: sni},
-			want: false,
-		},
-		{
-			name: "sni set and differs",
-			ch:   saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: "origin.example.com", OriginSNI: &sni}},
-			cfCH: custom_hostnames.CustomHostnameListResponse{CustomOriginServer: "origin.example.com", CustomOriginSNI: "other.example.com"},
-			want: true,
-		},
-		{
-			name: "sni not spec'd, cf has sni set",
-			ch:   saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: "origin.example.com"}},
-			cfCH: custom_hostnames.CustomHostnameListResponse{CustomOriginServer: "origin.example.com", CustomOriginSNI: sni},
-			want: false,
-		},
-		{
-			name: "ssl status matches",
-			ch: saasv1beta1.CustomHostname{
-				Spec:   saasv1beta1.CustomHostnameSpec{OriginServer: "origin.example.com"},
-				Status: saasv1beta1.CustomHostnameStatus{SSL: &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive}},
-			},
-			cfCH: custom_hostnames.CustomHostnameListResponse{
-				CustomOriginServer: "origin.example.com",
-				SSL:                custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive},
-			},
-			want: false,
-		},
-		{
-			name: "ssl status transition: pending → active",
-			ch: saasv1beta1.CustomHostname{
-				Spec:   saasv1beta1.CustomHostnameSpec{OriginServer: "origin.example.com"},
-				Status: saasv1beta1.CustomHostnameStatus{SSL: &saasv1beta1.CustomHostnameSSLStatus{Status: "pending_validation"}},
-			},
-			cfCH: custom_hostnames.CustomHostnameListResponse{
-				CustomOriginServer: "origin.example.com",
-				SSL:                custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive},
-			},
-			want: true,
-		},
-		{
-			name: "ssl status: cr has nil ssl, cf has status",
-			ch: saasv1beta1.CustomHostname{
-				Spec: saasv1beta1.CustomHostnameSpec{OriginServer: "origin.example.com"},
-			},
-			cfCH: custom_hostnames.CustomHostnameListResponse{
-				CustomOriginServer: "origin.example.com",
-				SSL:                custom_hostnames.CustomHostnameListResponseSSL{Status: "pending_validation"},
-			},
-			want: true,
-		},
-		{
-			name: "ssl CA differs → drift",
-			ch: saasv1beta1.CustomHostname{
-				Spec: saasv1beta1.CustomHostnameSpec{
-					OriginServer: "origin.example.com",
-					SSL:          &saasv1beta1.CustomHostnameSSL{CertificateAuthority: sslCAGoogle},
-				},
-			},
-			cfCH: custom_hostnames.CustomHostnameListResponse{
-				CustomOriginServer: "origin.example.com",
-				SSL:                custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: sslCALetsEncrypt},
-			},
-			want: true,
-		},
-		{
-			name: "ssl CA matches → no drift",
-			ch: saasv1beta1.CustomHostname{
-				Spec: saasv1beta1.CustomHostnameSpec{
-					OriginServer: "origin.example.com",
-					SSL:          &saasv1beta1.CustomHostnameSSL{CertificateAuthority: sslCAGoogle},
-				},
-			},
-			cfCH: custom_hostnames.CustomHostnameListResponse{
-				CustomOriginServer: "origin.example.com",
-				SSL:                custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: sslCAGoogle},
-			},
-			want: false,
-		},
-		{
-			name: "ssl nil spec, CF has CA → no drift",
-			ch: saasv1beta1.CustomHostname{
-				Spec: saasv1beta1.CustomHostnameSpec{OriginServer: "origin.example.com"},
-			},
-			cfCH: custom_hostnames.CustomHostnameListResponse{
-				CustomOriginServer: "origin.example.com",
-				SSL:                custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: sslCAGoogle},
-			},
-			want: false,
-		},
-		{
-			name: "ssl status: both empty (no ssl)",
-			ch: saasv1beta1.CustomHostname{
-				Spec: saasv1beta1.CustomHostnameSpec{OriginServer: "origin.example.com"},
-			},
-			cfCH: custom_hostnames.CustomHostnameListResponse{
-				CustomOriginServer: "origin.example.com",
-			},
-			want: false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := hasDrift(&tt.ch, tt.cfCH); got != tt.want {
-				t.Errorf("hasDrift() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestSslStatusDrifted(t *testing.T) {
-	tests := []struct {
-		name   string
-		status *saasv1beta1.CustomHostnameSSLStatus
-		cfSSL  custom_hostnames.CustomHostnameListResponseSSL
-		want   bool
-	}{
-		{
-			name:   "nil status, CF has status → drift",
-			status: nil,
-			cfSSL:  custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive},
-			want:   true,
-		},
-		{
-			name:   "nil status, CF empty → no drift",
-			status: nil,
-			cfSSL:  custom_hostnames.CustomHostnameListResponseSSL{},
-			want:   false,
-		},
-		{
-			name:   "status matches CF → no drift",
-			status: &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, CertificateAuthority: sslCAGoogle, Method: sslMethodHTTP, Type: sslTypeDV},
-			cfSSL:  custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, CertificateAuthority: sslCAGoogle, Method: sslMethodHTTP, Type: sslTypeDV},
-			want:   false,
+			name:        "status matches CF → no drift",
+			status:      &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, CertificateAuthority: sslCAGoogle, Method: sslMethodHTTP, Type: sslTypeDV},
+			cfSSL:       custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, CertificateAuthority: sslCAGoogle, Method: sslMethodHTTP, Type: sslTypeDV},
+			wantChanged: false,
 		},
 		{
 			name:   "minTLS differs → drift (status refresh)",
@@ -308,49 +176,50 @@ func TestSslStatusDrifted(t *testing.T) {
 				Status:   sslStatusActive,
 				Settings: custom_hostnames.CustomHostnameListResponseSSLSettings{MinTLSVersion: custom_hostnames.CustomHostnameListResponseSSLSettingsMinTLSVersion(sslMinTLS12)},
 			},
-			want: true,
+			wantChanged: true,
 		},
 		{
-			name:   "cert ID differs → drift (reissue detected)",
-			status: &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, ID: "old-cert-id"},
-			cfSSL:  custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, ID: "new-cert-id"},
-			want:   true,
+			name:        "cert ID differs → drift (reissue detected)",
+			status:      &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, ID: "old-cert-id"},
+			cfSSL:       custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, ID: "new-cert-id"},
+			wantChanged: true,
 		},
 		{
-			name:   "issuer differs → drift",
-			status: &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, Issuer: "Let's Encrypt"},
-			cfSSL:  custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, Issuer: "Google Trust Services"},
-			want:   true,
+			name:        "issuer differs → drift",
+			status:      &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, Issuer: "Let's Encrypt"},
+			cfSSL:       custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, Issuer: "Google Trust Services"},
+			wantChanged: true,
 		},
 		{
-			name:   "serialNumber differs → drift (reissue)",
-			status: &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, SerialNumber: "old-serial"},
-			cfSSL:  custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, SerialNumber: "new-serial"},
-			want:   true,
+			name:        "serialNumber differs → drift (reissue)",
+			status:      &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, SerialNumber: "old-serial"},
+			cfSSL:       custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, SerialNumber: "new-serial"},
+			wantChanged: true,
 		},
 		{
-			name:   "bundleMethod differs → drift",
-			status: &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, BundleMethod: "ubiquitous"},
-			cfSSL:  custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, BundleMethod: "optimal"},
-			want:   true,
+			name:        "bundleMethod differs → drift",
+			status:      &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, BundleMethod: "ubiquitous"},
+			cfSSL:       custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, BundleMethod: "optimal"},
+			wantChanged: true,
 		},
 		{
-			name:   "wildcard differs → drift",
-			status: &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, Wildcard: false},
-			cfSSL:  custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, Wildcard: true},
-			want:   true,
+			name:        "wildcard differs → drift",
+			status:      &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, Wildcard: false},
+			cfSSL:       custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, Wildcard: true},
+			wantChanged: true,
 		},
 		{
-			name:   "expiresOn appears → drift (cert issued)",
-			status: &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive},
-			cfSSL:  custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, ExpiresOn: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)},
-			want:   true,
+			name:        "expiresOn appears → drift (cert issued)",
+			status:      &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive},
+			cfSSL:       custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, ExpiresOn: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)},
+			wantChanged: true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := sslStatusDrifted(tt.status, tt.cfSSL); got != tt.want {
-				t.Errorf("sslStatusDrifted() = %v, want %v", got, tt.want)
+			got := sslStatusChangedFields(tt.status, tt.cfSSL)
+			if (got != nil) != tt.wantChanged {
+				t.Errorf("sslStatusChangedFields() changed=%v, wantChanged=%v, fields=%v", got != nil, tt.wantChanged, got)
 			}
 		})
 	}

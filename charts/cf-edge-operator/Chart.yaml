@@ -2,5 +2,7 @@ apiVersion: v2
 name: cf-edge-operator
 description: Kubernetes operator for Cloudflare edge features (custom hostnames, Origin SNI, SSL lifecycle, drift detection)
 type: application
-version: 0.2.1
-appVersion: "0.3.1"
+# version: chart version, bumped independently for chart-only changes (values, templates, CRDs).
+# appVersion: default image tag (without v prefix). Bumped on operator code changes.
+version: 0.2.2
+appVersion: "0.3.4"

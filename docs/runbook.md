@@ -228,6 +228,16 @@ kubectl port-forward -n <operator-namespace> \
   svc/$(kubectl get svc -n <operator-namespace> -l app.kubernetes.io/name=cf-edge-operator -o name | head -1) \
   8080:8080
 curl -s localhost:8080/metrics | grep cf_edge_operator
+
+# Key PromQL queries for drift diagnostics
+# Drifted custom hostnames (should be 0 in steady state):
+#   cf_edge_operator_zone_customhostnames{type="drifted"}
+# Total CF hostnames per zone (quota usage):
+#   cf_edge_operator_zone_customhostnames{type="total"}
+# Drift detection errors (API failures during bulk-list):
+#   cf_edge_operator_drift_detection_errors_total
+# CF API error rate by status code:
+#   rate(cf_edge_operator_api_errors_by_code_total[5m])
 ```
 
 ---

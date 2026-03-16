@@ -46,6 +46,10 @@ var (
 		Buckets: []float64{60, 300, 600, 1800, 3600, 7200, 21600, 43200, 86400, 259200, 604800},
 		// 1m, 5m, 10m, 30m, 1h, 2h, 6h, 12h, 1d, 3d, 1w
 	}, []string{"zone_cr", "hostname", "method"})
+	// NOTE: The "hostname" label creates one histogram per custom hostname (14 series each
+	// with 11 buckets). This is intentional — per-hostname provisioning visibility is needed
+	// for debugging slow SSL issuance. The cardinality is bounded by the number of managed
+	// hostnames and each series is static after SSL becomes active (fires once per lifecycle).
 
 	// customHostnames counts CustomHostname CRs by zone and state.
 	// States are mutually exclusive: conflict > ready > unhealthy > pending.

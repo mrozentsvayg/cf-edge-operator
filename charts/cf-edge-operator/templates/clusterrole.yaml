@@ -10,7 +10,7 @@ rules:
   verbs: [get, list, watch]
 - apiGroups: [saas.cf-edge.io]
   resources: [customhostnames]
-  verbs: [get, list, watch, update, patch]
+  verbs: [get, list, patch, update, watch]
 - apiGroups: [domains.cf-edge.io]
   resources: [zones]
   verbs: [get, list, watch]

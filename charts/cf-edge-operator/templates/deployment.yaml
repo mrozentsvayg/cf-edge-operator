@@ -60,6 +60,14 @@ spec:
         {{- if .Values.sslType }}
         - --ssl-type={{ .Values.sslType }}
         {{- end }}
+        - --zap-devel={{ .Values.zapDevel }}
+        ports:
+        - name: metrics
+          containerPort: 8080
+          protocol: TCP
+        - name: health
+          containerPort: 8081
+          protocol: TCP
         securityContext:
           readOnlyRootFilesystem: true
           allowPrivilegeEscalation: false

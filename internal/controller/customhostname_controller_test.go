@@ -714,6 +714,67 @@ func TestBuildSSLParams(t *testing.T) {
 	}
 }
 
+func TestBuildSSLEditParams(t *testing.T) {
+	tests := []struct {
+		name       string
+		ssl        saasv1beta1.CustomHostnameSSL
+		wantCA     bool
+		wantMinTLS bool
+		wantMethod bool
+		wantType   bool
+	}{
+		{
+			name:       "all fields set",
+			ssl:        saasv1beta1.CustomHostnameSSL{CertificateAuthority: sslCAGoogle, MinTLSVersion: sslMinTLS12, Method: sslMethodHTTP, Type: sslTypeDV},
+			wantCA:     true,
+			wantMinTLS: true,
+			wantMethod: true,
+			wantType:   true,
+		},
+		{
+			name:   "only CA set",
+			ssl:    saasv1beta1.CustomHostnameSSL{CertificateAuthority: sslCAGoogle},
+			wantCA: true,
+		},
+		{
+			name:       "only minTLS set",
+			ssl:        saasv1beta1.CustomHostnameSSL{MinTLSVersion: sslMinTLS12},
+			wantMinTLS: true,
+		},
+		{
+			name:       "only method set",
+			ssl:        saasv1beta1.CustomHostnameSSL{Method: sslMethodTXT},
+			wantMethod: true,
+		},
+		{
+			name:     "only type set",
+			ssl:      saasv1beta1.CustomHostnameSSL{Type: sslTypeDV},
+			wantType: true,
+		},
+		{
+			name: "empty — no fields sent",
+			ssl:  saasv1beta1.CustomHostnameSSL{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := buildSSLEditParams(&tt.ssl)
+			if p.CertificateAuthority.Present != tt.wantCA {
+				t.Errorf("CA.Present = %v, want %v", p.CertificateAuthority.Present, tt.wantCA)
+			}
+			if p.Settings.Present != tt.wantMinTLS {
+				t.Errorf("Settings.Present = %v, want %v", p.Settings.Present, tt.wantMinTLS)
+			}
+			if p.Method.Present != tt.wantMethod {
+				t.Errorf("Method.Present = %v, want %v", p.Method.Present, tt.wantMethod)
+			}
+			if p.Type.Present != tt.wantType {
+				t.Errorf("Type.Present = %v, want %v", p.Type.Present, tt.wantType)
+			}
+		})
+	}
+}
+
 func TestBuildDriftInfo(t *testing.T) {
 	minTLS := sslMinTLS12
 	sni := sslSNIHostHeader

@@ -8,7 +8,7 @@ external-dns manages Cloudflare (CF) custom hostnames as a side-effect of DNS re
 
 - Origin Server Name Indication (SNI) override support
 - SSL lifecycle visibility (validation records, expiry)
-- Drift detection and automatic reconciliation
+- Drift detection and automatic reconciliation (origin, SNI, SSL config: CA, minTLSVersion, method, type)
 - Prometheus metrics
 - Per-hostname observability (`status.createCount`, `status.consecutiveErrors`)
 

@@ -6,11 +6,13 @@ metadata:
   name: customer-app-sni
   namespace: my-app-namespace
 spec:
-  hostname: app.customer.example.com
+  hostname: api.customer.example.com
   originServer: origin.example.com
   originSNI: sni.internal.example.com
   zoneRef:
     name: example-com
-  ssl:
-    type: dv
-    method: http
+  # managementPolicy: manage
+  # deletePolicy: always
+  # ssl:
+  #   certificateAuthority: google
+  #   minTLSVersion: "1.2"
