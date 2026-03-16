@@ -113,10 +113,10 @@ func main() {
 			"Applied on create when the CR's spec.ssl.minTLSVersion is empty. If empty, Cloudflare uses its own default.")
 	flag.StringVar(&sslMethod, "ssl-method", "",
 		"Default DCV method for new custom hostnames (http, txt, email). "+
-			"Applied on create when the CR's spec.ssl.method is empty. If empty, Cloudflare uses its own default.")
+			"Applied on create when the CR's spec.ssl.method is empty. If empty, defaults to http.")
 	flag.StringVar(&sslType, "ssl-type", "",
 		"Default validation type for new custom hostnames (dv). "+
-			"Applied on create when the CR's spec.ssl.type is empty. If empty, Cloudflare uses its own default.")
+			"Applied on create when the CR's spec.ssl.type is empty. If empty, defaults to dv.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics server")
 	// NOTE: Development: true = human-readable console logs, DPanic panics.
@@ -164,7 +164,7 @@ func main() {
 	}
 	if sslCertificateAuthority != "" {
 		switch sslCertificateAuthority {
-		case "lets_encrypt", "google", "ssl_com":
+		case saasv1beta1.SSLCALetsEncrypt, saasv1beta1.SSLCAGoogle, saasv1beta1.SSLCASSLCom:
 		default:
 			setupLog.Error(nil, "invalid --ssl-certificate-authority", "value", sslCertificateAuthority)
 			os.Exit(1)
@@ -172,7 +172,7 @@ func main() {
 	}
 	if sslMinTLSVersion != "" {
 		switch sslMinTLSVersion {
-		case "1.0", "1.1", "1.2", "1.3":
+		case saasv1beta1.SSLMinTLS10, saasv1beta1.SSLMinTLS11, saasv1beta1.SSLMinTLS12, saasv1beta1.SSLMinTLS13:
 		default:
 			setupLog.Error(nil, "invalid --ssl-min-tls-version", "value", sslMinTLSVersion)
 			os.Exit(1)
@@ -180,7 +180,7 @@ func main() {
 	}
 	if sslMethod != "" {
 		switch sslMethod {
-		case "http", "txt", "email":
+		case saasv1beta1.SSLMethodHTTP, saasv1beta1.SSLMethodTXT, saasv1beta1.SSLMethodEmail:
 		default:
 			setupLog.Error(nil, "invalid --ssl-method", "value", sslMethod)
 			os.Exit(1)
@@ -188,7 +188,7 @@ func main() {
 	}
 	if sslType != "" {
 		switch sslType {
-		case "dv":
+		case saasv1beta1.SSLTypeDV:
 		default:
 			setupLog.Error(nil, "invalid --ssl-type", "value", sslType)
 			os.Exit(1)

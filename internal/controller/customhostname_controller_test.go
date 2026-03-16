@@ -310,7 +310,7 @@ func TestShouldDeleteInCF(t *testing.T) {
 
 func TestSniDrifted(t *testing.T) {
 	sni := "sni.example.com"
-	hostHeader := ":request_host_header:"
+	hostHeader := sslSNIHostHeader
 	originServer := "origin.example.com"
 	tests := []struct {
 		name       string
@@ -398,33 +398,33 @@ func TestSslDrifted(t *testing.T) {
 		{
 			name: "nil spec → no drift",
 			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{
-				CertificateAuthority: "lets_encrypt",
+				CertificateAuthority: sslCALetsEncrypt,
 			},
 			spec: nil,
 			want: false,
 		},
 		{
 			name:  "empty spec → no drift",
-			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: "lets_encrypt"},
+			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: sslCALetsEncrypt},
 			spec:  &saasv1beta1.CustomHostnameSSL{},
 			want:  false,
 		},
 		{
 			name:  "CA matches → no drift",
-			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: "google"},
-			spec:  &saasv1beta1.CustomHostnameSSL{CertificateAuthority: "google"},
+			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: sslCAGoogle},
+			spec:  &saasv1beta1.CustomHostnameSSL{CertificateAuthority: sslCAGoogle},
 			want:  false,
 		},
 		{
 			name:  "CA differs → drift",
-			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: "lets_encrypt"},
-			spec:  &saasv1beta1.CustomHostnameSSL{CertificateAuthority: "google"},
+			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: sslCALetsEncrypt},
+			spec:  &saasv1beta1.CustomHostnameSSL{CertificateAuthority: sslCAGoogle},
 			want:  true,
 		},
 		{
 			name:  "method differs → drift",
 			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{Method: sslMethodHTTP},
-			spec:  &saasv1beta1.CustomHostnameSSL{Method: "txt"},
+			spec:  &saasv1beta1.CustomHostnameSSL{Method: sslMethodTXT},
 			want:  true,
 		},
 		{
@@ -436,14 +436,14 @@ func TestSslDrifted(t *testing.T) {
 		{
 			name: "minTLSVersion differs → drift",
 			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{
-				Settings: custom_hostnames.CustomHostnameListResponseSSLSettings{MinTLSVersion: "1.0"},
+				Settings: custom_hostnames.CustomHostnameListResponseSSLSettings{MinTLSVersion: custom_hostnames.CustomHostnameListResponseSSLSettingsMinTLSVersion(sslMinTLS10)},
 			},
-			spec: &saasv1beta1.CustomHostnameSSL{MinTLSVersion: "1.2"},
+			spec: &saasv1beta1.CustomHostnameSSL{MinTLSVersion: sslMinTLS12},
 			want: true,
 		},
 		{
 			name:  "CA not in spec, CF has CA → no drift (unmanaged field)",
-			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: "google", Method: sslMethodHTTP},
+			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: sslCAGoogle, Method: sslMethodHTTP},
 			spec:  &saasv1beta1.CustomHostnameSSL{Method: sslMethodHTTP},
 			want:  false,
 		},
@@ -656,9 +656,9 @@ func TestBuildSSLParams(t *testing.T) {
 		{
 			name: "all CR fields set",
 			ssl: saasv1beta1.CustomHostnameSSL{
-				CertificateAuthority: "google",
-				MinTLSVersion:        "1.2",
-				Method:               "txt",
+				CertificateAuthority: sslCAGoogle,
+				MinTLSVersion:        sslMinTLS12,
+				Method:               sslMethodTXT,
 				Type:                 sslTypeDV,
 			},
 			wantCA:     true,
@@ -667,13 +667,15 @@ func TestBuildSSLParams(t *testing.T) {
 			wantType:   true,
 		},
 		{
-			name: "empty CR fields, no defaults",
-			ssl:  saasv1beta1.CustomHostnameSSL{},
+			name:       "empty CR fields, no defaults — method/type always set (CF requires them)",
+			ssl:        saasv1beta1.CustomHostnameSSL{},
+			wantMethod: true,
+			wantType:   true,
 		},
 		{
 			name:       "empty CR fields, defaults applied",
 			ssl:        saasv1beta1.CustomHostnameSSL{},
-			defaults:   SSLDefaults{CertificateAuthority: "google", MinTLSVersion: "1.2", Method: "txt", Type: sslTypeDV},
+			defaults:   SSLDefaults{CertificateAuthority: sslCAGoogle, MinTLSVersion: sslMinTLS12, Method: sslMethodTXT, Type: sslTypeDV},
 			wantCA:     true,
 			wantMinTLS: true,
 			wantMethod: true,
@@ -681,8 +683,8 @@ func TestBuildSSLParams(t *testing.T) {
 		},
 		{
 			name:       "CR fields override defaults",
-			ssl:        saasv1beta1.CustomHostnameSSL{CertificateAuthority: "lets_encrypt", MinTLSVersion: "1.3", Method: sslMethodHTTP},
-			defaults:   SSLDefaults{CertificateAuthority: "google", MinTLSVersion: "1.2", Method: "txt", Type: sslTypeDV},
+			ssl:        saasv1beta1.CustomHostnameSSL{CertificateAuthority: sslCALetsEncrypt, MinTLSVersion: sslMinTLS13, Method: sslMethodHTTP},
+			defaults:   SSLDefaults{CertificateAuthority: sslCAGoogle, MinTLSVersion: sslMinTLS12, Method: sslMethodTXT, Type: sslTypeDV},
 			wantCA:     true,
 			wantMinTLS: true,
 			wantMethod: true,
@@ -712,13 +714,93 @@ func TestBuildSSLParams(t *testing.T) {
 	}
 }
 
+func TestBuildDriftInfo(t *testing.T) {
+	minTLS := sslMinTLS12
+	sni := sslSNIHostHeader
+	ch := &saasv1beta1.CustomHostname{
+		Spec: saasv1beta1.CustomHostnameSpec{
+			Hostname:     "test.example.com",
+			OriginServer: "origin.example.com",
+			OriginSNI:    &sni,
+			SSL:          &saasv1beta1.CustomHostnameSSL{CertificateAuthority: sslCAGoogle},
+		},
+	}
+	existing := &custom_hostnames.CustomHostnameListResponse{
+		CustomOriginServer: "origin.example.com",
+		CustomOriginSNI:    sslSNIHostHeader,
+	}
+	existing.SSL.CertificateAuthority = sslCALetsEncrypt
+	existing.SSL.Method = sslMethodHTTP
+	existing.SSL.Type = sslTypeDV
+	existing.SSL.Settings.MinTLSVersion = custom_hostnames.CustomHostnameListResponseSSLSettingsMinTLSVersion(minTLS)
+
+	di := buildDriftInfo(existing, ch)
+
+	// CA should be drifted
+	drifted, ok := di["drifted"].(map[string]any)
+	if !ok {
+		t.Fatal("drifted missing or wrong type")
+	}
+	ca, ok := drifted["ca"].(driftPair)
+	if !ok || ca.CF != sslCALetsEncrypt || ca.Spec != sslCAGoogle {
+		t.Errorf("drifted.ca = %v, want {lets_encrypt google}", drifted["ca"])
+	}
+	if len(drifted) != 1 {
+		t.Errorf("drifted has %d entries, want 1 (ca only)", len(drifted))
+	}
+
+	// Origin and SNI should be matched
+	matched, ok := di["matched"].(map[string]string)
+	if !ok {
+		t.Fatal("matched missing or wrong type")
+	}
+	if matched["origin"] != "origin.example.com" {
+		t.Errorf("matched.origin = %q, want origin.example.com", matched["origin"])
+	}
+	if matched["sni"] != sslSNIHostHeader {
+		t.Errorf("matched.sni = %q, want :request_host_header:", matched["sni"])
+	}
+
+	// Unmanaged SSL fields (minTLS, method, type — not in spec)
+	unmanaged, ok := di["unmanaged"].(map[string]string)
+	if !ok {
+		t.Fatal("unmanaged missing or wrong type")
+	}
+	if unmanaged["minTLS"] != minTLS {
+		t.Errorf("unmanaged.minTLS = %q, want %s", unmanaged["minTLS"], minTLS)
+	}
+	if unmanaged["method"] != sslMethodHTTP {
+		t.Errorf("unmanaged.method = %q, want http", unmanaged["method"])
+	}
+	if unmanaged["type"] != sslTypeDV {
+		t.Errorf("unmanaged.type = %q, want dv", unmanaged["type"])
+	}
+
+	// Test nil SNI → unmanaged
+	chNilSNI := &saasv1beta1.CustomHostname{
+		Spec: saasv1beta1.CustomHostnameSpec{
+			OriginServer: "origin.example.com",
+			SSL:          &saasv1beta1.CustomHostnameSSL{CertificateAuthority: sslCAGoogle},
+		},
+	}
+	di2 := buildDriftInfo(existing, chNilSNI)
+	unmanaged2 := di2["unmanaged"].(map[string]string)
+	if unmanaged2["sni"] != sslSNIHostHeader {
+		t.Errorf("nil SNI: unmanaged.sni = %q, want :request_host_header:", unmanaged2["sni"])
+	}
+	if _, hasSNI := di2["matched"].(map[string]string)["sni"]; hasSNI {
+		t.Error("nil SNI should not appear in matched")
+	}
+}
+
 func TestSslStatusFromList(t *testing.T) {
+	minTLS := sslMinTLS12
 	resp := &custom_hostnames.CustomHostnameListResponse{}
 	resp.SSL.Status = sslStatusActive
 	resp.SSL.Method = sslMethodHTTP
 	resp.SSL.Type = sslTypeDV
-	resp.SSL.CertificateAuthority = "google"
-	resp.SSL.Settings.MinTLSVersion = "1.2"
+	resp.SSL.CertificateAuthority = sslCAGoogle
+	resp.SSL.Settings.MinTLSVersion = custom_hostnames.CustomHostnameListResponseSSLSettingsMinTLSVersion(minTLS)
 
 	s := sslStatusFromList(resp)
 	if s.Status != sslStatusActive {
@@ -730,11 +812,11 @@ func TestSslStatusFromList(t *testing.T) {
 	if s.Type != sslTypeDV {
 		t.Errorf("Type = %q, want %q", s.Type, sslTypeDV)
 	}
-	if s.CertificateAuthority != "google" {
-		t.Errorf("CertificateAuthority = %q, want %q", s.CertificateAuthority, "google")
+	if s.CertificateAuthority != sslCAGoogle {
+		t.Errorf("CertificateAuthority = %q, want %q", s.CertificateAuthority, sslCAGoogle)
 	}
-	if s.MinTLSVersion != "1.2" {
-		t.Errorf("MinTLSVersion = %q, want %q", s.MinTLSVersion, "1.2")
+	if s.MinTLSVersion != minTLS {
+		t.Errorf("MinTLSVersion = %q, want %q", s.MinTLSVersion, minTLS)
 	}
 }
 

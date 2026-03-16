@@ -86,6 +86,23 @@ type ZoneRef struct {
 	Namespace string `json:"namespace,omitempty"`
 }
 
+// SSL constant values matching CF API and kubebuilder Enum markers.
+// Canonical order: CA, minTLS, method, type.
+const (
+	SSLCALetsEncrypt = "lets_encrypt"
+	SSLCAGoogle      = "google"
+	SSLCASSLCom      = "ssl_com"
+	SSLMinTLS10      = "1.0"
+	SSLMinTLS11      = "1.1"
+	SSLMinTLS12      = "1.2"
+	SSLMinTLS13      = "1.3"
+	SSLMethodHTTP    = "http"
+	SSLMethodTXT     = "txt"
+	SSLMethodEmail   = "email"
+	SSLTypeDV        = "dv"
+	SSLSNIHostHeader = ":request_host_header:"
+)
+
 // CustomHostnameSSL configures SSL for a custom hostname.
 // Each field is independently managed: set = enforce on create and drift correction,
 // empty = use operator default on create (--ssl-* flags), don't correct drift.
@@ -102,13 +119,13 @@ type CustomHostnameSSL struct {
 	MinTLSVersion string `json:"minTLSVersion,omitempty"`
 
 	// Method of DCV (Domain Control Validation).
-	// Empty = use --ssl-method operator default, then CF default.
+	// Empty = use --ssl-method operator default, then http.
 	// +kubebuilder:validation:Enum=http;txt;email
 	// +optional
 	Method string `json:"method,omitempty"`
 
 	// Type of SSL validation.
-	// Empty = use operator/CF default (typically "dv").
+	// Empty = use --ssl-type operator default, then dv.
 	// +kubebuilder:validation:Enum=dv
 	// +optional
 	Type string `json:"type,omitempty"`

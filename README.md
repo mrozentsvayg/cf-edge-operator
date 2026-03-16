@@ -87,8 +87,8 @@ kubectl get customhostnames -A
 | `spec.zoneRef.namespace` | no | Zone CR namespace. Defaults to the operator namespace. |
 | `spec.ssl.certificateAuthority` | no | CA: `lets_encrypt`, `google`, `ssl_com`. Empty = `--ssl-certificate-authority` default, then CF default |
 | `spec.ssl.minTLSVersion` | no | `1.0`, `1.1`, `1.2`, or `1.3`. Empty = `--ssl-min-tls-version` default, then CF default |
-| `spec.ssl.method` | no | DCV method: `http`, `txt`, or `email`. Empty = `--ssl-method` default, then CF default |
-| `spec.ssl.type` | no | Validation type: `dv`. Empty = `--ssl-type` default, then CF default |
+| `spec.ssl.method` | no | DCV method: `http`, `txt`, or `email`. Empty = `--ssl-method` default, then `http` |
+| `spec.ssl.type` | no | Validation type: `dv`. Empty = `--ssl-type` default, then `dv` |
 | `spec.managementPolicy` | no | Per-CR management policy: `manage`, `create`, or `observe`. Overrides `--management-policy`. |
 | `spec.deletePolicy` | no | Per-CR delete policy: `always`, `own-only`, or `never`. Overrides `--delete-policy`. Useful during migration to protect against deleting hostnames managed by other tools. |
 
@@ -130,8 +130,8 @@ kubectl get customhostnames -A
 | `driftBuffer` | `1024` | Internal channel buffer for drift events |
 | `sslCertificateAuthority` | _(empty)_ | Default CA for new CHs. Empty = CF default |
 | `sslMinTLSVersion` | _(empty)_ | Default min TLS version for new CHs. Empty = CF default |
-| `sslMethod` | _(empty)_ | Default DCV method for new CHs. Empty = CF default |
-| `sslType` | _(empty)_ | Default validation type for new CHs. Empty = CF default |
+| `sslMethod` | _(empty)_ | Default DCV method for new CHs. Empty = `http` |
+| `sslType` | _(empty)_ | Default validation type for new CHs. Empty = `dv` |
 | `podDisruptionBudget.enabled` | `false` | Create a PodDisruptionBudget (recommended when `replicaCount > 1`) |
 | `podDisruptionBudget.minAvailable` | `1` | Minimum available replicas during voluntary disruptions |
 | `serviceMonitor.enabled` | `false` | Create a ServiceMonitor for Prometheus Operator |
