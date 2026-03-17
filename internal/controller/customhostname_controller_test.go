@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cloudflare/cloudflare-go/v6"
 	"github.com/cloudflare/cloudflare-go/v6/custom_hostnames"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -805,63 +806,64 @@ func TestBuildSSLParams(t *testing.T) {
 }
 
 func TestBuildSSLEditParams(t *testing.T) {
+	cfSSL := func(ca, minTLS, method, typ string) custom_hostnames.CustomHostnameListResponseSSL {
+		s := custom_hostnames.CustomHostnameListResponseSSL{}
+		s.CertificateAuthority = cloudflare.CertificateCA(ca)
+		s.Settings.MinTLSVersion = custom_hostnames.CustomHostnameListResponseSSLSettingsMinTLSVersion(minTLS)
+		s.Method = custom_hostnames.DCVMethod(method)
+		s.Type = custom_hostnames.DomainValidationType(typ)
+		return s
+	}
 	tests := []struct {
 		name       string
 		ssl        saasv1beta1.CustomHostnameSSL
+		cf         custom_hostnames.CustomHostnameListResponseSSL
 		wantCA     bool
 		wantMinTLS bool
-		wantMethod bool
-		wantType   bool
 	}{
 		{
-			name:       "all fields set",
+			name:       "all fields from spec",
 			ssl:        saasv1beta1.CustomHostnameSSL{CertificateAuthority: sslCAGoogle, MinTLSVersion: sslMinTLS12, Method: sslMethodHTTP, Type: sslTypeDV},
+			cf:         cfSSL("", "", "", ""),
 			wantCA:     true,
 			wantMinTLS: true,
-			wantMethod: true,
-			wantType:   true,
 		},
 		{
-			name:   "only CA set",
-			ssl:    saasv1beta1.CustomHostnameSSL{CertificateAuthority: sslCAGoogle},
-			wantCA: true,
-		},
-		{
-			name:       "only minTLS set",
-			ssl:        saasv1beta1.CustomHostnameSSL{MinTLSVersion: sslMinTLS12},
+			name:       "spec empty — all fields from CF",
+			ssl:        saasv1beta1.CustomHostnameSSL{},
+			cf:         cfSSL(sslCAGoogle, sslMinTLS12, sslMethodHTTP, sslTypeDV),
+			wantCA:     true,
 			wantMinTLS: true,
 		},
 		{
-			name:       "only method set — type defaults to dv",
-			ssl:        saasv1beta1.CustomHostnameSSL{Method: sslMethodTXT},
-			wantMethod: true,
-			wantType:   true,
+			name:   "spec overrides CF",
+			ssl:    saasv1beta1.CustomHostnameSSL{CertificateAuthority: sslCAGoogle, Method: sslMethodTXT},
+			cf:     cfSSL(sslCALetsEncrypt, sslMinTLS12, sslMethodHTTP, sslTypeDV),
+			wantCA: true,
+			// minTLS comes from CF
+			wantMinTLS: true,
 		},
 		{
-			name:       "only type set — method defaults to http",
-			ssl:        saasv1beta1.CustomHostnameSSL{Type: sslTypeDV},
-			wantMethod: true,
-			wantType:   true,
-		},
-		{
-			name: "empty — no fields sent",
+			name: "both empty — method/type default to http/dv",
 			ssl:  saasv1beta1.CustomHostnameSSL{},
+			cf:   cfSSL("", "", "", ""),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := buildSSLEditParams(&tt.ssl)
+			p := buildSSLEditParams(&tt.ssl, tt.cf)
 			if p.CertificateAuthority.Present != tt.wantCA {
 				t.Errorf("CA.Present = %v, want %v", p.CertificateAuthority.Present, tt.wantCA)
 			}
 			if p.Settings.Present != tt.wantMinTLS {
 				t.Errorf("Settings.Present = %v, want %v", p.Settings.Present, tt.wantMinTLS)
 			}
-			if p.Method.Present != tt.wantMethod {
-				t.Errorf("Method.Present = %v, want %v", p.Method.Present, tt.wantMethod)
+			// method and type are always sent
+			if !p.Method.Present {
+				t.Error("Method.Present = false, want true (always sent)")
 			}
-			if p.Type.Present != tt.wantType {
-				t.Errorf("Type.Present = %v, want %v", p.Type.Present, tt.wantType)
+			if !p.Type.Present {
+				t.Error("Type.Present = false, want true (always sent)")
 			}
 		})
 	}

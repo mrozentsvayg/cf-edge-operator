@@ -247,7 +247,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 				opts = append(opts, option.WithJSONSet("custom_origin_sni", *ch.Spec.OriginSNI))
 			}
 			if ch.Spec.SSL != nil {
-				editParams.SSL = cloudflare.F(buildSSLEditParams(ch.Spec.SSL))
+				editParams.SSL = cloudflare.F(buildSSLEditParams(ch.Spec.SSL, existing.SSL))
 			}
 			if r.DryRun {
 				log.Info("dry-run: would update custom hostname", "hostname", ch.Spec.Hostname,
@@ -750,30 +750,52 @@ func buildDriftInfo(existing *custom_hostnames.CustomHostnameListResponse, ch *s
 	return di
 }
 
-func buildSSLEditParams(ssl *saasv1beta1.CustomHostnameSSL) custom_hostnames.CustomHostnameEditParamsSSL {
+// buildSSLEditParams builds SSL params for a drift-correction edit.
+// CF re-provisions the certificate when certain fields change (method, type, CA),
+// which resets other fields (e.g. minTLSVersion). To prevent silent resets, we
+// always send all four SSL fields: spec value if set, otherwise the current CF
+// value (preserving what's already in Cloudflare).
+func buildSSLEditParams(ssl *saasv1beta1.CustomHostnameSSL, cfSSL custom_hostnames.CustomHostnameListResponseSSL) custom_hostnames.CustomHostnameEditParamsSSL {
 	p := custom_hostnames.CustomHostnameEditParamsSSL{}
-	if ssl.CertificateAuthority != "" {
-		p.CertificateAuthority = cloudflare.F(cloudflare.CertificateCA(ssl.CertificateAuthority))
+
+	// certificateAuthority
+	ca := ssl.CertificateAuthority
+	if ca == "" {
+		ca = string(cfSSL.CertificateAuthority)
 	}
-	if ssl.MinTLSVersion != "" {
+	if ca != "" {
+		p.CertificateAuthority = cloudflare.F(cloudflare.CertificateCA(ca))
+	}
+
+	// minTLSVersion
+	minTLS := ssl.MinTLSVersion
+	if minTLS == "" {
+		minTLS = string(cfSSL.Settings.MinTLSVersion)
+	}
+	if minTLS != "" {
 		p.Settings = cloudflare.F(custom_hostnames.CustomHostnameEditParamsSSLSettings{
-			MinTLSVersion: cloudflare.F(custom_hostnames.CustomHostnameEditParamsSSLSettingsMinTLSVersion(ssl.MinTLSVersion)),
+			MinTLSVersion: cloudflare.F(custom_hostnames.CustomHostnameEditParamsSSLSettingsMinTLSVersion(minTLS)),
 		})
 	}
-	// CF requires both method and type when either is sent on edit.
-	// Default the missing one to http/dv (same as buildSSLParams on create).
-	if ssl.Method != "" || ssl.Type != "" {
-		method := ssl.Method
-		if method == "" {
-			method = sslMethodHTTP
-		}
-		p.Method = cloudflare.F(custom_hostnames.DCVMethod(method))
-		t := ssl.Type
-		if t == "" {
-			t = sslTypeDV
-		}
-		p.Type = cloudflare.F(custom_hostnames.DomainValidationType(t))
+
+	// method + type — CF requires both when either is sent.
+	method := ssl.Method
+	if method == "" {
+		method = string(cfSSL.Method)
 	}
+	if method == "" {
+		method = sslMethodHTTP
+	}
+	t := ssl.Type
+	if t == "" {
+		t = string(cfSSL.Type)
+	}
+	if t == "" {
+		t = sslTypeDV
+	}
+	p.Method = cloudflare.F(custom_hostnames.DCVMethod(method))
+	p.Type = cloudflare.F(custom_hostnames.DomainValidationType(t))
+
 	return p
 }
 
