@@ -94,6 +94,15 @@ Cloudflare SSL verification is asynchronous (minutes to hours). SSL status trans
 - While `ssl.status != "active"`: `Ready=False`; the next zone cycle detects the change
 - When `ssl.status == "active"`: `Ready=True`, SSL provisioning duration metric observed
 
+### Field lifecycle: set vs. unset
+
+Removing a managed field from the CR spec (setting it to empty or removing the key) stops the operator from enforcing that field — it does **not** revert the Cloudflare value to its default. This applies to both `originSNI` and all `ssl.*` fields:
+
+- **originSNI:** Setting it applies it on every reconcile. Removing it means the operator stops managing SNI; the existing CF value is preserved until changed externally (dashboard, API, or another tool).
+- **ssl fields (CA, minTLSVersion, method, type):** Same behavior. An empty spec field means "don't manage this field on edits." To revert to CF defaults, clear the field via the CF dashboard or API.
+
+Additionally, operator-wide SSL defaults (`--ssl-certificate-authority`, `--ssl-min-tls-version`, `--ssl-method`, `--ssl-type`) are applied only on **create**, not on drift correction edits. This prevents the operator from overriding intentional per-hostname customizations made after initial provisioning.
+
 ## Cloudflare API Efficiency
 
 | Operation | API calls |

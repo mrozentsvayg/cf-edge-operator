@@ -43,13 +43,10 @@ spec:
         severity: critical
       annotations:
         summary: cf-edge-operator is not running
-        # NOTE: The {{- if }} inside the >- block is a standard Helm pattern for optional
-        # annotations. The >- strips the final newline, {{- strips leading whitespace,
-        # making runbook_url a sibling key of description. Consistent across all alerts.
         description: >-
           The operator metrics endpoint has been unreachable for 2 minutes.
           Custom hostname management (create, update, delete, drift detection) is suspended.
-          {{- if .Values.prometheusRule.runbookUrl }}
+        {{- if .Values.prometheusRule.runbookUrl }}
         runbook_url: {{ .Values.prometheusRule.runbookUrl }}/CfEdgeOperatorDown
         {{- end }}
 

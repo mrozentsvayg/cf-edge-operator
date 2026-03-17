@@ -227,6 +227,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	}
 
 	// Check drift — only correct it if management policy is "manage"
+	edited := false
 	originDrift := existing.CustomOriginServer != ch.Spec.OriginServer || sniDrifted(existing.CustomOriginSNI, ch)
 	sslDrift := sslDrifted(existing.SSL, ch.Spec.SSL)
 	if originDrift || sslDrift {
@@ -253,23 +254,30 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 					"drift", di)
 			} else {
 				editStart := time.Now()
-				_, editErr := zi.Client.CustomHostnames.Edit(ctx, existing.ID, editParams, opts...)
+				editResp, editErr := zi.Client.CustomHostnames.Edit(ctx, existing.ID, editParams, opts...)
 				recordCFCall(cfResourceCustomHostname, cfOpUpdate, editStart, &editErr)
 				if editErr != nil {
 					log.Error(editErr, "failed to update custom hostname", "id", existing.ID)
 					return ctrl.Result{}, r.setError(ctx, ch, "UpdateFailed", editErr.Error())
 				}
 				operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpUpdate).Inc()
+				// Use post-edit response for status — reflects the corrected CF state.
+				ch.Status.SSL = sslStatusFromEdit(editResp)
+				edited = true
 			}
 		}
 	}
 	// Set SSL status in memory; persisted by setCondition's r.Status().Update()
 	// inside requeueOrReady — single write covers SSL, conditions, and counters.
-	newSSL := sslStatusFromList(existing)
-	if !sslStatusEqual(ch.Status.SSL, newSSL) {
-		log.V(1).Info("status.ssl refreshed (external change detected)", "hostname", ch.Spec.Hostname)
+	// When an edit occurred, ch.Status.SSL already has the post-edit state (set above);
+	// otherwise, refresh from the pre-edit list response to catch external CF changes.
+	if !edited {
+		newSSL := sslStatusFromList(existing)
+		if !sslStatusEqual(ch.Status.SSL, newSSL) {
+			log.V(1).Info("status.ssl refreshed (external change detected)", "hostname", ch.Spec.Hostname)
+		}
+		ch.Status.SSL = newSSL
 	}
-	ch.Status.SSL = newSSL
 	return r.requeueOrReady(ctx, zi.CR, ch)
 }
 
@@ -383,7 +391,9 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 			current, err := r.findByHostname(ctx, cf, zoneID, ch.Spec.Hostname)
 			if err != nil {
 				log.Error(err, "failed to look up hostname before delete", "hostname", ch.Spec.Hostname)
-				return ctrl.Result{}, err
+				return ctrl.Result{}, err // Return raw error for controller-runtime backoff retry;
+				// don't setError — CR is being deleted, status updates are pointless and
+				// setError returns nil (no requeue), which would delay finalizer removal.
 			}
 			if !shouldDeleteInCF(ch.Status.ID, current) {
 				log.Info("own-only: releasing finalizer without deleting",
@@ -457,9 +467,8 @@ func (r *CustomHostnameReconciler) findByHostname(ctx context.Context, cf *cloud
 	for pager.Next() {
 		ch := pager.Current()
 		if ch.Hostname == hostname {
-			err := pager.Err()
-			recordCFCall(cfResourceCustomHostname, cfOpGet, start, &err)
-			return &ch, err
+			recordCFCall(cfResourceCustomHostname, cfOpGet, start, nil)
+			return &ch, nil
 		}
 	}
 	err := pager.Err()
@@ -485,7 +494,9 @@ func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneCR st
 			}
 			if !alreadyReady {
 				method := sslMethodHTTP
-				if ch.Spec.SSL != nil && ch.Spec.SSL.Method != "" {
+				if ch.Status.SSL.Method != "" {
+					method = ch.Status.SSL.Method
+				} else if ch.Spec.SSL != nil && ch.Spec.SSL.Method != "" {
 					method = ch.Spec.SSL.Method
 				}
 				duration := time.Since(ch.Status.SSLProvisioningStartedAt.Time)
@@ -796,9 +807,9 @@ func buildSSLParams(ssl *saasv1beta1.CustomHostnameSSL, defaults SSLDefaults) cu
 }
 
 // sslStatusFromNew maps the CF create response to status.ssl.
-// Mirror of sslStatusFromList — if you change one, change the other.
+// Mirror of sslStatusFromList / sslStatusFromEdit — if you change one, change the others.
 // Not deduplicated because the CF SDK uses separate generated types for
-// create vs list responses with no shared interface.
+// create, list, and edit responses with no shared interface.
 func sslStatusFromNew(resp *custom_hostnames.CustomHostnameNewResponse) *saasv1beta1.CustomHostnameSSLStatus {
 	s := &saasv1beta1.CustomHostnameSSLStatus{
 		Status:               string(resp.SSL.Status),
@@ -837,8 +848,47 @@ func sslStatusFromNew(resp *custom_hostnames.CustomHostnameNewResponse) *saasv1b
 }
 
 // sslStatusFromList maps the CF list/get response to status.ssl.
-// Mirror of sslStatusFromNew — if you change one, change the other.
+// Mirror of sslStatusFromNew / sslStatusFromEdit — if you change one, change the others.
 func sslStatusFromList(resp *custom_hostnames.CustomHostnameListResponse) *saasv1beta1.CustomHostnameSSLStatus {
+	s := &saasv1beta1.CustomHostnameSSLStatus{
+		Status:               string(resp.SSL.Status),
+		CertificateAuthority: string(resp.SSL.CertificateAuthority),
+		MinTLSVersion:        string(resp.SSL.Settings.MinTLSVersion),
+		Method:               string(resp.SSL.Method),
+		Type:                 string(resp.SSL.Type),
+		ID:                   resp.SSL.ID,
+		Issuer:               resp.SSL.Issuer,
+		SerialNumber:         resp.SSL.SerialNumber,
+		BundleMethod:         string(resp.SSL.BundleMethod),
+		Wildcard:             resp.SSL.Wildcard,
+		Hosts:                resp.SSL.Hosts,
+	}
+	if !resp.SSL.UploadedOn.IsZero() {
+		t := metav1.NewTime(resp.SSL.UploadedOn)
+		s.UploadedOn = &t
+	}
+	if !resp.SSL.ExpiresOn.IsZero() {
+		t := metav1.NewTime(resp.SSL.ExpiresOn)
+		s.ExpiresOn = &t
+	}
+	for _, vr := range resp.SSL.ValidationRecords {
+		s.ValidationRecords = append(s.ValidationRecords, saasv1beta1.SSLValidationRecord{
+			TXTName:  vr.TXTName,
+			TXTValue: vr.TXTValue,
+			HTTPUrl:  vr.HTTPURL,
+			HTTPBody: vr.HTTPBody,
+			Emails:   vr.Emails,
+		})
+	}
+	for _, ve := range resp.SSL.ValidationErrors {
+		s.ValidationErrors = append(s.ValidationErrors, ve.Message)
+	}
+	return s
+}
+
+// sslStatusFromEdit maps the CF edit response to status.ssl.
+// Mirror of sslStatusFromNew / sslStatusFromList — if you change one, change the others.
+func sslStatusFromEdit(resp *custom_hostnames.CustomHostnameEditResponse) *saasv1beta1.CustomHostnameSSLStatus {
 	s := &saasv1beta1.CustomHostnameSSLStatus{
 		Status:               string(resp.SSL.Status),
 		CertificateAuthority: string(resp.SSL.CertificateAuthority),

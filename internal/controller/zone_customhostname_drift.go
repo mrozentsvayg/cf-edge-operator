@@ -167,6 +167,11 @@ func (r *ZoneReconciler) listCloudflareHostnames(ctx context.Context, cf *cloudf
 	return result, err
 }
 
+// NOTE: Empty zoneRef.namespace matches any Zone with the same name. This is intentional —
+// Zone CRs live in the operator namespace, app CRs omit the namespace field. If same-named
+// Zones exist in different namespaces, the "wrong" zone controller lists its own CF hostnames
+// (different zone ID), doesn't find the CH, and enqueues a harmless no-op reconcile.
+// The CH controller resolves via OperatorNamespace and uses the correct zone. (Reviewed Mar 5-6.)
 func (r *ZoneReconciler) refersToZone(ch *saasv1beta1.CustomHostname, zone *domainsv1beta1.Zone) bool {
 	if ch.Spec.ZoneRef.Name != zone.Name {
 		return false

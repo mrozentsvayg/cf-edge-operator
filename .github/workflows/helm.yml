@@ -28,5 +28,14 @@ jobs:
             --set prometheusRule.namespace=monitoring \
             > /dev/null
 
+      - name: Helm template (all features + runbook URL)
+        run: |
+          helm template test charts/cf-edge-operator/ \
+            --set podDisruptionBudget.enabled=true \
+            --set serviceMonitor.enabled=true \
+            --set prometheusRule.enabled=true \
+            --set prometheusRule.runbookUrl=https://example.com/runbooks \
+            > /dev/null
+
       - name: Verify chart CRDs match generated CRDs
         run: diff -q config/crd/bases/ charts/cf-edge-operator/crds/

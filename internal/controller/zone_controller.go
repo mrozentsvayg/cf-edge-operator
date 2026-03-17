@@ -75,10 +75,11 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	var zone domainsv1beta1.Zone
 	if err := r.Get(ctx, req.NamespacedName, &zone); err != nil {
 		if client.IgnoreNotFound(err) == nil {
-			// Zone deleted — remove stale gauge series.
+			// Zone deleted — remove stale metric series.
 			zoneReady.DeleteLabelValues(req.Name)
 			customHostnames.DeletePartialMatch(prometheus.Labels{"zone_cr": req.Name})
 			zoneCustomHostnames.DeletePartialMatch(prometheus.Labels{"zone_cr": req.Name})
+			sslProvisioningDuration.DeletePartialMatch(prometheus.Labels{"zone_cr": req.Name})
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
