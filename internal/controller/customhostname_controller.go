@@ -760,11 +760,19 @@ func buildSSLEditParams(ssl *saasv1beta1.CustomHostnameSSL) custom_hostnames.Cus
 			MinTLSVersion: cloudflare.F(custom_hostnames.CustomHostnameEditParamsSSLSettingsMinTLSVersion(ssl.MinTLSVersion)),
 		})
 	}
-	if ssl.Method != "" {
-		p.Method = cloudflare.F(custom_hostnames.DCVMethod(ssl.Method))
-	}
-	if ssl.Type != "" {
-		p.Type = cloudflare.F(custom_hostnames.DomainValidationType(ssl.Type))
+	// CF requires both method and type when either is sent on edit.
+	// Default the missing one to http/dv (same as buildSSLParams on create).
+	if ssl.Method != "" || ssl.Type != "" {
+		method := ssl.Method
+		if method == "" {
+			method = sslMethodHTTP
+		}
+		p.Method = cloudflare.F(custom_hostnames.DCVMethod(method))
+		t := ssl.Type
+		if t == "" {
+			t = sslTypeDV
+		}
+		p.Type = cloudflare.F(custom_hostnames.DomainValidationType(t))
 	}
 	return p
 }
