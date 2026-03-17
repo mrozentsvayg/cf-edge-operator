@@ -637,6 +637,96 @@ func TestSSLStatusFromList(t *testing.T) {
 	}
 }
 
+func TestSSLStatusFromEdit(t *testing.T) {
+	expires := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name string
+		resp custom_hostnames.CustomHostnameEditResponse
+		want saasv1beta1.CustomHostnameSSLStatus
+	}{
+		{
+			name: "status only",
+			resp: custom_hostnames.CustomHostnameEditResponse{
+				SSL: custom_hostnames.CustomHostnameEditResponseSSL{Status: "pending_validation"},
+			},
+			want: saasv1beta1.CustomHostnameSSLStatus{Status: "pending_validation"},
+		},
+		{
+			name: "expires on set",
+			resp: custom_hostnames.CustomHostnameEditResponse{
+				SSL: custom_hostnames.CustomHostnameEditResponseSSL{
+					Status:    sslStatusActive,
+					ExpiresOn: expires,
+				},
+			},
+			want: saasv1beta1.CustomHostnameSSLStatus{
+				Status:    sslStatusActive,
+				ExpiresOn: func() *metav1.Time { t := metav1.NewTime(expires); return &t }(),
+			},
+		},
+		{
+			name: "validation record fields mapped",
+			resp: custom_hostnames.CustomHostnameEditResponse{
+				SSL: custom_hostnames.CustomHostnameEditResponseSSL{
+					Status: "pending_validation",
+					ValidationRecords: []custom_hostnames.CustomHostnameEditResponseSSLValidationRecord{
+						{TXTName: "_cf-txt.example.com", TXTValue: "abc123", HTTPURL: "http://example.com/.well-known/pki-validation/x.txt", HTTPBody: "body"},
+					},
+				},
+			},
+			want: saasv1beta1.CustomHostnameSSLStatus{
+				Status: "pending_validation",
+				ValidationRecords: []saasv1beta1.SSLValidationRecord{
+					{TXTName: "_cf-txt.example.com", TXTValue: "abc123", HTTPUrl: "http://example.com/.well-known/pki-validation/x.txt", HTTPBody: "body"},
+				},
+			},
+		},
+		{
+			name: "validation error mapped",
+			resp: custom_hostnames.CustomHostnameEditResponse{
+				SSL: custom_hostnames.CustomHostnameEditResponseSSL{
+					Status:           "validation_timed_out",
+					ValidationErrors: []custom_hostnames.CustomHostnameEditResponseSSLValidationError{{Message: "timed out"}},
+				},
+			},
+			want: saasv1beta1.CustomHostnameSSLStatus{
+				Status:           "validation_timed_out",
+				ValidationErrors: []string{"timed out"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sslStatusFromEdit(&tt.resp)
+			if got.Status != tt.want.Status {
+				t.Errorf("Status = %q, want %q", got.Status, tt.want.Status)
+			}
+			if (got.ExpiresOn == nil) != (tt.want.ExpiresOn == nil) {
+				t.Errorf("ExpiresOn nil mismatch: got %v, want %v", got.ExpiresOn, tt.want.ExpiresOn)
+			} else if got.ExpiresOn != nil && !got.ExpiresOn.Equal(tt.want.ExpiresOn) {
+				t.Errorf("ExpiresOn = %v, want %v", got.ExpiresOn, tt.want.ExpiresOn)
+			}
+			if len(got.ValidationRecords) != len(tt.want.ValidationRecords) {
+				t.Fatalf("ValidationRecords len = %d, want %d", len(got.ValidationRecords), len(tt.want.ValidationRecords))
+			}
+			for i, vr := range got.ValidationRecords {
+				if !reflect.DeepEqual(vr, tt.want.ValidationRecords[i]) {
+					t.Errorf("ValidationRecords[%d] = %+v, want %+v", i, vr, tt.want.ValidationRecords[i])
+				}
+			}
+			if len(got.ValidationErrors) != len(tt.want.ValidationErrors) {
+				t.Fatalf("ValidationErrors len = %d, want %d", len(got.ValidationErrors), len(tt.want.ValidationErrors))
+			}
+			for i, ve := range got.ValidationErrors {
+				if ve != tt.want.ValidationErrors[i] {
+					t.Errorf("ValidationErrors[%d] = %q, want %q", i, ve, tt.want.ValidationErrors[i])
+				}
+			}
+		})
+	}
+}
+
 func TestBuildSSLParams(t *testing.T) {
 	tests := []struct {
 		name       string
