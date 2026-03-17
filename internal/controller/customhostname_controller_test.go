@@ -832,14 +832,16 @@ func TestBuildSSLEditParams(t *testing.T) {
 			wantMinTLS: true,
 		},
 		{
-			name:       "only method set",
+			name:       "only method set — type defaults to dv",
 			ssl:        saasv1beta1.CustomHostnameSSL{Method: sslMethodTXT},
 			wantMethod: true,
+			wantType:   true,
 		},
 		{
-			name:     "only type set",
-			ssl:      saasv1beta1.CustomHostnameSSL{Type: sslTypeDV},
-			wantType: true,
+			name:       "only type set — method defaults to http",
+			ssl:        saasv1beta1.CustomHostnameSSL{Type: sslTypeDV},
+			wantMethod: true,
+			wantType:   true,
 		},
 		{
 			name: "empty — no fields sent",
