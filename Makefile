@@ -178,7 +178,7 @@ dev-stop: ## Stop the locally running operator and verify it is gone.
 		sleep 0.5; \
 	done
 	@lsof -ti :$(DEV_PROBE_PORT) >/dev/null 2>&1 \
-		&& { echo "ERROR: port $(DEV_PROBE_PORT) still in use after stop — something may have restarted it"; exit 1; } \
+		&& { echo "ERROR: port $(DEV_PROBE_PORT) still in use after stop -- something may have restarted it"; exit 1; } \
 		|| { echo "Stopped"; exit 0; }
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.

@@ -48,10 +48,10 @@ Controls how often each Zone CR triggers a bulk list of Cloudflare custom hostna
 
 | Interval | CF API list calls/hour (per zone) | External drift window |
 |----------|----------------------------------|-----------------------|
-| `30s` | ~120 | ≤30s |
-| `1m` *(default)* | ~60 | ≤1m |
-| `2m` | ~30 | ≤2m |
-| `5m` | ~12 | ≤5m |
+| `30s` | ~120 | <=30s |
+| `1m` *(default)* | ~60 | <=1m |
+| `2m` | ~30 | <=2m |
+| `5m` | ~12 | <=5m |
 
 **Cloudflare API rate limit:** 1200 requests/5min = 240/min. At `1m` with 5 zones of 1000 hostnames each (~10 list calls per zone per cycle = 50 calls/min), you are well within limits.
 
@@ -67,8 +67,8 @@ Size of the internal Go channel used by the zone controller to signal drifted Cu
 
 | Scenario | Recommended buffer |
 |----------|--------------------|
-| 1 zone, ≤100 CHs | 128 |
-| 1-3 zones, ≤500 CHs each | 1024 *(default)* |
+| 1 zone, <=100 CHs | 128 |
+| 1-3 zones, <=500 CHs each | 1024 *(default)* |
 | 5+ zones, 1000+ CHs each | 4096+ |
 
 In practice the buffer rarely fills -- drifted CRs are consumed quickly by the CustomHostname controller (~200-500ms per CR). Only increase if you see zone reconcile cycles taking longer than expected at high drift volumes.
@@ -83,7 +83,7 @@ This is intentionally not configurable:
 - Raising it recreates the original controller-runtime default of ~16 minutes, causing slow recovery after fixing a configuration error
 - Lowering it risks hammering the Cloudflare API on persistent errors
 
-The 30s cap means any CR recovers within ≤30s of the underlying issue being fixed -- either via its own backoff retry, or via the zone controller's drift detection cycle (≤`--drift-interval`), whichever fires first.
+The 30s cap means any CR recovers within <=30s of the underlying issue being fixed -- either via its own backoff retry, or via the zone controller's drift detection cycle (<=`--drift-interval`), whichever fires first.
 
 ### Memory and CPU Resources
 
@@ -93,7 +93,7 @@ The operator's memory footprint is dominated by the controller-runtime informer 
 
 | Scale | Approximate memory | CPU |
 |-------|--------------------|-----|
-| ≤100 CHs | 64Mi | minimal |
+| <=100 CHs | 64Mi | minimal |
 | ~500 CHs | 80-100Mi | minimal |
 | ~1000 CHs | 100-128Mi *(default limit)* | minimal |
 | 5000+ CHs | 256Mi+ | low |
@@ -186,7 +186,7 @@ Before going live:
 - [ ] Secret referenced by `spec.credentialsRef` exists and contains a valid API token with `Zone: Read` and `SSL and Certificates: Edit` permissions
 - [ ] `--management-policy` set appropriately -- use `create` during migration to prevent update loops (see [migration.md](migration.md))
 - [ ] `--delete-policy` set appropriately -- use `own-only` or `never` during any migration window where another tool may manage the same zone (see [migration.md](migration.md))
-- [ ] `replicaCount ≥ 2` and `leaderElect: true` for HA
+- [ ] `replicaCount >= 2` and `leaderElect: true` for HA
 - [ ] `podDisruptionBudget.enabled: true` if availability during node drains is required
 - [ ] `serviceMonitor.enabled: true` and `prometheusRule.enabled: true` if using Prometheus Operator
 - [ ] `prometheusRule.runbookUrl` set to point to your copy of [runbook.md](runbook.md)

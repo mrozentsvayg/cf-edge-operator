@@ -82,12 +82,12 @@ func TestCRState(t *testing.T) {
 		want string
 	}{
 		{
-			name: "no conditions, no errors → pending",
+			name: "no conditions, no errors -> pending",
 			ch:   saasv1beta1.CustomHostname{},
 			want: "pending",
 		},
 		{
-			name: "Ready=True, no errors → ready",
+			name: "Ready=True, no errors -> ready",
 			ch: saasv1beta1.CustomHostname{Status: saasv1beta1.CustomHostnameStatus{
 				Conditions: []metav1.Condition{
 					{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready"},
@@ -96,7 +96,7 @@ func TestCRState(t *testing.T) {
 			want: "ready",
 		},
 		{
-			name: "Ready=True with errors → ready (ready beats unhealthy)",
+			name: "Ready=True with errors -> ready (ready beats unhealthy)",
 			ch: saasv1beta1.CustomHostname{Status: saasv1beta1.CustomHostnameStatus{
 				Conditions: []metav1.Condition{
 					{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready"},
@@ -106,7 +106,7 @@ func TestCRState(t *testing.T) {
 			want: "ready",
 		},
 		{
-			name: "consecutiveErrors > 0, Ready=False → unhealthy",
+			name: "consecutiveErrors > 0, Ready=False -> unhealthy",
 			ch: saasv1beta1.CustomHostname{Status: saasv1beta1.CustomHostnameStatus{
 				Conditions: []metav1.Condition{
 					{Type: "Ready", Status: metav1.ConditionFalse, Reason: "CreateFailed"},
@@ -116,7 +116,7 @@ func TestCRState(t *testing.T) {
 			want: "unhealthy",
 		},
 		{
-			name: "Ready=False, no errors → pending",
+			name: "Ready=False, no errors -> pending",
 			ch: saasv1beta1.CustomHostname{Status: saasv1beta1.CustomHostnameStatus{
 				Conditions: []metav1.Condition{
 					{Type: "Ready", Status: metav1.ConditionFalse, Reason: "SSLPending"},
@@ -125,7 +125,7 @@ func TestCRState(t *testing.T) {
 			want: "pending",
 		},
 		{
-			name: "HostnameConflict → conflict (beats everything)",
+			name: "HostnameConflict -> conflict (beats everything)",
 			ch: saasv1beta1.CustomHostname{Status: saasv1beta1.CustomHostnameStatus{
 				Conditions: []metav1.Condition{
 					{Type: "Ready", Status: metav1.ConditionFalse, Reason: "HostnameConflict"},
@@ -152,25 +152,25 @@ func TestSslStatusChangedFields(t *testing.T) {
 		wantChanged bool
 	}{
 		{
-			name:        "nil status, CF has status → drift",
+			name:        "nil status, CF has status -> drift",
 			status:      nil,
 			cfSSL:       custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive},
 			wantChanged: true,
 		},
 		{
-			name:        "nil status, CF empty → no drift",
+			name:        "nil status, CF empty -> no drift",
 			status:      nil,
 			cfSSL:       custom_hostnames.CustomHostnameListResponseSSL{},
 			wantChanged: false,
 		},
 		{
-			name:        "status matches CF → no drift",
+			name:        "status matches CF -> no drift",
 			status:      &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, CertificateAuthority: sslCAGoogle, Method: sslMethodHTTP, Type: sslTypeDV},
 			cfSSL:       custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, CertificateAuthority: sslCAGoogle, Method: sslMethodHTTP, Type: sslTypeDV},
 			wantChanged: false,
 		},
 		{
-			name:   "minTLS differs → drift (status refresh)",
+			name:   "minTLS differs -> drift (status refresh)",
 			status: &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive},
 			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{
 				Status:   sslStatusActive,
@@ -179,37 +179,37 @@ func TestSslStatusChangedFields(t *testing.T) {
 			wantChanged: true,
 		},
 		{
-			name:        "cert ID differs → drift (reissue detected)",
+			name:        "cert ID differs -> drift (reissue detected)",
 			status:      &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, ID: "old-cert-id"},
 			cfSSL:       custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, ID: "new-cert-id"},
 			wantChanged: true,
 		},
 		{
-			name:        "issuer differs → drift",
+			name:        "issuer differs -> drift",
 			status:      &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, Issuer: "Let's Encrypt"},
 			cfSSL:       custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, Issuer: "Google Trust Services"},
 			wantChanged: true,
 		},
 		{
-			name:        "serialNumber differs → drift (reissue)",
+			name:        "serialNumber differs -> drift (reissue)",
 			status:      &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, SerialNumber: "old-serial"},
 			cfSSL:       custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, SerialNumber: "new-serial"},
 			wantChanged: true,
 		},
 		{
-			name:        "bundleMethod differs → drift",
+			name:        "bundleMethod differs -> drift",
 			status:      &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, BundleMethod: "ubiquitous"},
 			cfSSL:       custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, BundleMethod: "optimal"},
 			wantChanged: true,
 		},
 		{
-			name:        "wildcard differs → drift",
+			name:        "wildcard differs -> drift",
 			status:      &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive, Wildcard: false},
 			cfSSL:       custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, Wildcard: true},
 			wantChanged: true,
 		},
 		{
-			name:        "expiresOn appears → drift (cert issued)",
+			name:        "expiresOn appears -> drift (cert issued)",
 			status:      &saasv1beta1.CustomHostnameSSLStatus{Status: sslStatusActive},
 			cfSSL:       custom_hostnames.CustomHostnameListResponseSSL{Status: sslStatusActive, ExpiresOn: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)},
 			wantChanged: true,

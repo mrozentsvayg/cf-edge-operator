@@ -342,7 +342,7 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, zi *zoneInf
 	ch.Status.CreateCount++
 	ch.Status.ID = resp.ID
 	ch.Status.SSL = sslStatusFromNew(resp)
-	// Single write: requeueOrReady → setCondition persists ID, SSL, and condition together.
+	// Single write: requeueOrReady -> setCondition persists ID, SSL, and condition together.
 	return r.requeueOrReady(ctx, zi.CR, ch)
 }
 
@@ -525,7 +525,7 @@ func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneCR st
 // returns false, allowing normal provisioning to proceed.
 // NOTE: If two CRs with the same hostname are created simultaneously (neither has an ID yet),
 // both pass this check and race to CF. CF returns success for one; the other fails or creates
-// a duplicate. On the next reconcile, adoption sets Status.ID on both → conflict detected.
+// a duplicate. On the next reconcile, adoption sets Status.ID on both -> conflict detected.
 // Self-heals within one drift cycle.
 func (r *CustomHostnameReconciler) detectConflict(ctx context.Context, ch *saasv1beta1.CustomHostname) (bool, error) {
 	log := logf.FromContext(ctx)
@@ -663,7 +663,7 @@ func sslDrifted(cfSSL custom_hostnames.CustomHostnameListResponseSSL, spec *saas
 
 // driftPair is a cf/spec value pair for drifted fields in structured drift logging.
 // NOTE: Field order {CF, Spec} differs from statusPair {Status, CF} in zone_customhostname_drift.go.
-// Both read naturally as "what was → what should be" in their context:
+// Both read naturally as "what was -> what should be" in their context:
 // driftPair: CF has X, spec wants Y. statusPair: status had X, CF now has Y.
 type driftPair struct {
 	CF   string `json:"cf"`
@@ -958,12 +958,12 @@ func sslStatusFromEdit(resp *custom_hostnames.CustomHostnameEditResponse) *saasv
 //
 // On pod restart, the informer emits Create events for all existing CRs.
 // We distinguish them from genuinely new CRs using status.ID:
-//   - status.ID != "" → existing CR, already provisioned; drop it and let the
+//   - status.ID != "" -> existing CR, already provisioned; drop it and let the
 //     Zone coordinator's periodic bulk-list handle drift detection (including
-//     SSL status transitions: initializing → pending_validation → active).
-//   - status.ID == "" → genuinely new CR (or crash-recovery case); let it through
+//     SSL status transitions: initializing -> pending_validation -> active).
+//   - status.ID == "" -> genuinely new CR (or crash-recovery case); let it through
 //     for immediate provisioning.
-//   - DeletionTimestamp set → terminating CR; always let it through regardless of
+//   - DeletionTimestamp set -> terminating CR; always let it through regardless of
 //     status.ID so the finalizer is removed and the CR can be fully deleted.
 //     Without this, a restart with a terminating CR would leave it stuck forever.
 //
