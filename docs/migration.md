@@ -111,8 +111,8 @@ If you then delete the CR (e.g., rolling back the migration):
 
 | Policy | Behavior |
 |--------|----------|
-| `always` | Tries `DELETE <stale-id>` → 404 → releases the finalizer. The live hostname survives by accident. |
-| `own-only` | Looks up current CF state, sees ID mismatch → releases the finalizer without any CF API call. Explicitly safe. |
+| `always` | Tries `DELETE <stale-id>` -> 404 -> releases the finalizer. The live hostname survives by accident. |
+| `own-only` | Looks up current CF state, sees ID mismatch -> releases the finalizer without any CF API call. Explicitly safe. |
 | `never` | Releases the finalizer without any CF API call, regardless of ID match. Safest during coexistence. |
 
 Note: when `managementPolicy: observe`, the operator always releases the finalizer without deleting -- `deletePolicy` is ignored entirely.

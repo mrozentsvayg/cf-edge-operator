@@ -148,17 +148,17 @@ func TestFastWritePredicateTerminating(t *testing.T) {
 		want bool
 	}{
 		{
-			name: "new CR, no ID → let through",
+			name: "new CR, no ID -> let through",
 			ch:   saasv1beta1.CustomHostname{},
 			want: true,
 		},
 		{
-			name: "existing CR, has ID → block (Zone controller handles drift)",
+			name: "existing CR, has ID -> block (Zone controller handles drift)",
 			ch:   saasv1beta1.CustomHostname{Status: saasv1beta1.CustomHostnameStatus{ID: "cf-id-abc"}},
 			want: false,
 		},
 		{
-			name: "terminating CR with ID → let through (must remove finalizer)",
+			name: "terminating CR with ID -> let through (must remove finalizer)",
 			ch: saasv1beta1.CustomHostname{
 				ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now},
 				Status:     saasv1beta1.CustomHostnameStatus{ID: "cf-id-abc"},
@@ -166,7 +166,7 @@ func TestFastWritePredicateTerminating(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "terminating CR without ID → let through",
+			name: "terminating CR without ID -> let through",
 			ch:   saasv1beta1.CustomHostname{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now}},
 			want: true,
 		},
@@ -320,61 +320,61 @@ func TestSniDrifted(t *testing.T) {
 		want       bool
 	}{
 		{
-			name:       "nil spec, CF empty → no drift (don't manage)",
+			name:       "nil spec, CF empty -> no drift (don't manage)",
 			currentSNI: "",
 			ch:         saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: originServer}},
 			want:       false,
 		},
 		{
-			name:       "nil spec, CF has origin server → no drift (don't manage)",
+			name:       "nil spec, CF has origin server -> no drift (don't manage)",
 			currentSNI: originServer,
 			ch:         saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: originServer}},
 			want:       false,
 		},
 		{
-			name:       "nil spec, CF has custom SNI → no drift (don't manage)",
+			name:       "nil spec, CF has custom SNI -> no drift (don't manage)",
 			currentSNI: sni,
 			ch:         saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: originServer}},
 			want:       false,
 		},
 		{
-			name:       "nil spec, CF has :request_host_header: → no drift (don't manage)",
+			name:       "nil spec, CF has :request_host_header: -> no drift (don't manage)",
 			currentSNI: hostHeader,
 			ch:         saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: originServer}},
 			want:       false,
 		},
 		{
-			name:       "spec matches CF → no drift",
+			name:       "spec matches CF -> no drift",
 			currentSNI: sni,
 			ch:         saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: originServer, OriginSNI: &sni}},
 			want:       false,
 		},
 		{
-			name:       "spec differs from CF → drift",
+			name:       "spec differs from CF -> drift",
 			currentSNI: "other.example.com",
 			ch:         saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: originServer, OriginSNI: &sni}},
 			want:       true,
 		},
 		{
-			name:       "spec = origin server, CF empty (no entitlement) → drift",
+			name:       "spec = origin server, CF empty (no entitlement) -> drift",
 			currentSNI: "",
 			ch:         saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: originServer, OriginSNI: &originServer}},
 			want:       true,
 		},
 		{
-			name:       "spec = origin server, CF = origin server → no drift",
+			name:       "spec = origin server, CF = origin server -> no drift",
 			currentSNI: originServer,
 			ch:         saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: originServer, OriginSNI: &originServer}},
 			want:       false,
 		},
 		{
-			name:       "spec = :request_host_header:, CF = :request_host_header: → no drift",
+			name:       "spec = :request_host_header:, CF = :request_host_header: -> no drift",
 			currentSNI: hostHeader,
 			ch:         saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: originServer, OriginSNI: &hostHeader}},
 			want:       false,
 		},
 		{
-			name:       "spec = :request_host_header:, CF has origin server → drift",
+			name:       "spec = :request_host_header:, CF has origin server -> drift",
 			currentSNI: originServer,
 			ch:         saasv1beta1.CustomHostname{Spec: saasv1beta1.CustomHostnameSpec{OriginServer: originServer, OriginSNI: &hostHeader}},
 			want:       true,
@@ -397,7 +397,7 @@ func TestSslDrifted(t *testing.T) {
 		want  bool
 	}{
 		{
-			name: "nil spec → no drift",
+			name: "nil spec -> no drift",
 			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{
 				CertificateAuthority: sslCALetsEncrypt,
 			},
@@ -405,37 +405,37 @@ func TestSslDrifted(t *testing.T) {
 			want: false,
 		},
 		{
-			name:  "empty spec → no drift",
+			name:  "empty spec -> no drift",
 			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: sslCALetsEncrypt},
 			spec:  &saasv1beta1.CustomHostnameSSL{},
 			want:  false,
 		},
 		{
-			name:  "CA matches → no drift",
+			name:  "CA matches -> no drift",
 			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: sslCAGoogle},
 			spec:  &saasv1beta1.CustomHostnameSSL{CertificateAuthority: sslCAGoogle},
 			want:  false,
 		},
 		{
-			name:  "CA differs → drift",
+			name:  "CA differs -> drift",
 			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: sslCALetsEncrypt},
 			spec:  &saasv1beta1.CustomHostnameSSL{CertificateAuthority: sslCAGoogle},
 			want:  true,
 		},
 		{
-			name:  "method differs → drift",
+			name:  "method differs -> drift",
 			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{Method: sslMethodHTTP},
 			spec:  &saasv1beta1.CustomHostnameSSL{Method: sslMethodTXT},
 			want:  true,
 		},
 		{
-			name:  "type matches → no drift",
+			name:  "type matches -> no drift",
 			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{Type: sslTypeDV},
 			spec:  &saasv1beta1.CustomHostnameSSL{Type: sslTypeDV},
 			want:  false,
 		},
 		{
-			name: "minTLSVersion differs → drift",
+			name: "minTLSVersion differs -> drift",
 			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{
 				Settings: custom_hostnames.CustomHostnameListResponseSSLSettings{MinTLSVersion: custom_hostnames.CustomHostnameListResponseSSLSettingsMinTLSVersion(sslMinTLS10)},
 			},
@@ -443,7 +443,7 @@ func TestSslDrifted(t *testing.T) {
 			want: true,
 		},
 		{
-			name:  "CA not in spec, CF has CA → no drift (unmanaged field)",
+			name:  "CA not in spec, CF has CA -> no drift (unmanaged field)",
 			cfSSL: custom_hostnames.CustomHostnameListResponseSSL{CertificateAuthority: sslCAGoogle, Method: sslMethodHTTP},
 			spec:  &saasv1beta1.CustomHostnameSSL{Method: sslMethodHTTP},
 			want:  false,
@@ -931,7 +931,7 @@ func TestBuildDriftInfo(t *testing.T) {
 		t.Errorf("unmanaged.type = %q, want dv", unmanaged["type"])
 	}
 
-	// Test nil SNI → unmanaged
+	// Test nil SNI -> unmanaged
 	chNilSNI := &saasv1beta1.CustomHostname{
 		Spec: saasv1beta1.CustomHostnameSpec{
 			OriginServer: "origin.example.com",
@@ -985,13 +985,13 @@ func TestFastWritePredicateUpdate(t *testing.T) {
 		want   bool
 	}{
 		{
-			name:   "generation changed → let through",
+			name:   "generation changed -> let through",
 			oldGen: 1,
 			newGen: 2,
 			want:   true,
 		},
 		{
-			name:   "generation unchanged (status-only update) → block",
+			name:   "generation unchanged (status-only update) -> block",
 			oldGen: 1,
 			newGen: 1,
 			want:   false,

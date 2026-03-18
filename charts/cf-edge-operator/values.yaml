@@ -1,6 +1,6 @@
 image:
   repository: ghcr.io/mrozentsvayg/cf-edge-operator
-  tag: ""  # defaults to chart appVersion; use without v prefix (v0.3.4 tag → 0.3.4 image)
+  tag: ""  # defaults to chart appVersion; use without v prefix (v0.3.4 tag -> 0.3.4 image)
   pullPolicy: IfNotPresent
 
 # List of image pull secret names for pulling from private registries.

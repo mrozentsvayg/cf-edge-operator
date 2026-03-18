@@ -33,13 +33,13 @@ sequenceDiagram
     participant CF as Cloudflare API
     participant CHC as CustomHostname Controller (Worker)
 
-    Note over ZC: every --drift-interval (default 1m) · Zone/CustomHostname CR changes
+    Note over ZC: every --drift-interval (default 1m) / Zone/CustomHostname CR changes
     ZC->>CF: bulk GET custom_hostnames (~10 calls / 1000 hostnames)
     CF-->>ZC: hostname list with current state
     ZC->>ZC: diff desired (CRs) vs actual (CF)
     ZC->>CHC: enqueue drifted CRs via event channel
 
-    Note over CHC: per enqueue · spec change
+    Note over CHC: per enqueue / spec change
     CHC->>CF: findByHostname (1 API call)
     CF-->>CHC: current state or not found
     CHC->>CF: POST / PATCH / DELETE
@@ -56,7 +56,7 @@ sequenceDiagram
 - Zone reconcile failures are safe: no writes occurred, requeue the zone
 
 **CustomHostname as worker (targeted writer):**
-- Single CR → single API call: fast write latency (200-500ms) for individual changes
+- Single CR -> single API call: fast write latency (200-500ms) for individual changes
 - Failure isolation: Cloudflare 500 on hostname #42 does not affect the other 999
 - controller-runtime exponential backoff applies per CR natively
 - Finalizer ensures Cloudflare deletion on CR delete, even across operator restarts
@@ -110,15 +110,15 @@ Additionally, operator-wide SSL defaults (`--ssl-certificate-authority`, `--ssl-
 | Drift detection (1000 hostnames) | ~10 (paginated, 100/page) |
 | Single CR create/update | 1 List + 1 POST/PATCH |
 | Single CR delete | 1 DELETE |
-| Restart (1000 CRs, 5 zones) | 5 × ~10 = ~50 |
+| Restart (1000 CRs, 5 zones) | 5 x ~10 = ~50 |
 
 ## Credential Flow
 
 ```
 CustomHostname CR (app namespace)
-  └─ zoneRef → Zone CR (operator namespace)
-                 └─ credentialsRef → Secret (operator namespace)
-                                      └─ apiToken → Cloudflare API
+  └─ zoneRef -> Zone CR (operator namespace)
+                 └─ credentialsRef -> Secret (operator namespace)
+                                      └─ apiToken -> Cloudflare API
 ```
 
 App namespaces never hold Cloudflare credentials.
@@ -149,8 +149,8 @@ Note: when `managementPolicy` is `observe`, the operator always releases the fin
 
 **Migration from external-dns:** During the transition period, external-dns and cf-edge-operator may both be active for the same zone. External-dns can delete and recreate a hostname (new CF ID), leaving `status.id` stale. If a CR is deleted during this window:
 
-- `always`: tries to delete by stale ID → 404 → releases. The live hostname survives by accident.
-- `own-only`: looks up current CF state, sees ID mismatch → releases without any CF API call. Explicitly safe.
+- `always`: tries to delete by stale ID -> 404 -> releases. The live hostname survives by accident.
+- `own-only`: looks up current CF state, sees ID mismatch -> releases without any CF API call. Explicitly safe.
 
 **Recommended:** deploy with `--delete-policy=own-only` and `--management-policy=create` during migration. See [docs/migration.md](migration.md).
 
@@ -180,12 +180,12 @@ Example (spec drift):
 {"drift": {"drifted": {"origin": {"cf": "old.example.com", "spec": "new.example.com"}}, "matched": {"sni": ":request_host_header:", "ca": "google"}, "unmanaged": {"minTLS": "1.2", "method": "http", "type": "dv"}}}
 ```
 
-Status-only changes (external CF changes to unmanaged fields) log with `reason: statusSSL` and a `changed` map showing `{status, cf}` pairs:
+Status-only changes (external CF changes to unmanaged fields) use the message `custom hostname - enqueuing, status.ssl changed` with a `changed` map showing `{status, cf}` pairs:
 ```json
-{"reason": "statusSSL", "changed": {"minTLS": {"status": "", "cf": "1.2"}}}
+{"changed": {"minTLS": {"status": "", "cf": "1.2"}}}
 ```
 
-Parse with jq: `jq '.drift.drifted | keys'` or `jq '.changed | to_entries[] | "\(.key): \(.value.status) → \(.value.cf)"'`
+Parse with jq: `jq '.drift.drifted | keys'` or `jq '.changed | to_entries[] | "\(.key): \(.value.status) -> \(.value.cf)"'`
 
 ### Prometheus metrics
 

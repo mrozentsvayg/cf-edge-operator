@@ -74,6 +74,11 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 		stateCounts[crState(ch)]++
 		crHostnames[ch.Spec.Hostname] = true
 		cfCH, exists := cfHostnames[ch.Spec.Hostname]
+		// INFO/DEBUG asymmetry (by design):
+		// - Spec drift: INFO here (zone enqueue with drift details) + INFO in CH controller (outcome).
+		//   Both visible in production -- spec drift is an operator decision (correct or skip).
+		// - Status SSL change: INFO here (zone enqueue with changed fields) + DEBUG in CH controller
+		//   (refresh confirmation). The refresh is internal bookkeeping, not an operator decision.
 		if !exists {
 			// Hostname missing from CF: always enqueue, even if the CR previously had a
 			// HostnameConflict condition. This is the self-healing path: when the owning CR
@@ -82,11 +87,6 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 			log.Info("custom hostname - enqueuing to create (not found in Cloudflare)", "hostname", ch.Spec.Hostname)
 			r.sendDriftEvent(ctx, ch)
 			drifted++
-			// INFO/DEBUG asymmetry (by design):
-			// - Spec drift: INFO here (zone enqueue with drift details) + INFO in CH controller (outcome).
-			//   Both visible in production -- spec drift is an operator decision (correct or skip).
-			// - Status SSL change: INFO here (zone enqueue with changed fields) + DEBUG in CH controller
-			//   (refresh confirmation). The refresh is internal bookkeeping, not an operator decision.
 		} else if cfCH.CustomOriginServer != ch.Spec.OriginServer || sniDrifted(cfCH.CustomOriginSNI, ch) || sslDrifted(cfCH.SSL, ch.Spec.SSL) {
 			if isHostnameConflict(ch) {
 				log.V(1).Info("custom hostname - not enqueuing duplicate CR, already managed", "hostname", ch.Spec.Hostname)
@@ -146,11 +146,11 @@ func (r *ZoneReconciler) sendDriftEvent(ctx context.Context, ch *saasv1beta1.Cus
 	case r.CustomHostnameEvents <- ev:
 	default:
 		driftBufferOverflowTotal.WithLabelValues(cfResourceCustomHostname).Inc()
-		logf.FromContext(ctx).Info("drift buffer full, blocking", "hostname", ch.Spec.Hostname)
+		logf.FromContext(ctx).Info("custom hostname - drift buffer full, blocking", "hostname", ch.Spec.Hostname)
 		select {
 		case r.CustomHostnameEvents <- ev:
 		case <-ctx.Done():
-			logf.FromContext(ctx).Info("drift event dropped due to shutdown", "hostname", ch.Spec.Hostname)
+			logf.FromContext(ctx).Info("custom hostname - drift event dropped (shutdown)", "hostname", ch.Spec.Hostname)
 		}
 	}
 }
