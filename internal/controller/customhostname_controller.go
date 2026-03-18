@@ -76,7 +76,7 @@ const (
 const (
 	sslStatusActive = "active"
 	// Aliases for readability within the controller package (canonical order: CA, minTLS, method, type).
-	// Some are currently used only in tests — kept here (not in _test.go) to avoid
+	// Some are currently used only in tests -- kept here (not in _test.go) to avoid
 	// splitting aliases between production and test code, which would complicate promotion.
 	sslCALetsEncrypt = saasv1beta1.SSLCALetsEncrypt
 	sslCAGoogle      = saasv1beta1.SSLCAGoogle
@@ -137,7 +137,7 @@ func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, r.setError(ctx, &ch, "ZoneError", err.Error())
 	}
 
-	// Validate that the origin server belongs to the zone — Cloudflare for SaaS is zone-scoped.
+	// Validate that the origin server belongs to the zone -- Cloudflare for SaaS is zone-scoped.
 	// NOTE: Skipped when zi.Domain is empty (Zone not yet reconciled). CF API rejects
 	// invalid origins anyway; this is a best-effort early check.
 	if zi.Domain != "" && !strings.HasSuffix(ch.Spec.OriginServer, "."+zi.Domain) && ch.Spec.OriginServer != zi.Domain {
@@ -165,7 +165,7 @@ func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// Conflict detection: reject if another CR already owns this hostname in Cloudflare.
 	// O(1) via field index. Returns early without any CF API call; no requeue scheduled
 	// (the Zone controller skips drift-enqueue for conflict CRs, so this stays quiet until
-	// the conflict resolves — at which point the Zone controller re-enqueues via the
+	// the conflict resolves -- at which point the Zone controller re-enqueues via the
 	// "hostname missing from CF" path).
 	if conflicted, err := r.detectConflict(ctx, &ch); err != nil || conflicted {
 		return ctrl.Result{}, err
@@ -205,7 +205,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	// NOTE: Adoption continues in the same reconcile cycle (no early return/requeue)
 	// to atomically check drift and update SSL status in a single pass. The status
 	// is persisted once at the end, avoiding an extra API round-trip.
-	// Exists — adopt the CF ID into status. Only log and count on the first adoption
+	// Exists -- adopt the CF ID into status. Only log and count on the first adoption
 	// (status.ID is empty); subsequent reconciles skip when the ID is unchanged.
 	if ch.Status.ID != existing.ID {
 		if ch.Status.ID == "" {
@@ -226,7 +226,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 		ch.Status.ID = existing.ID
 	}
 
-	// Check drift — only correct it if management policy is "manage"
+	// Check drift -- only correct it if management policy is "manage"
 	edited := false
 	originDrift := existing.CustomOriginServer != ch.Spec.OriginServer || sniDrifted(existing.CustomOriginSNI, ch)
 	sslDrift := sslDrifted(existing.SSL, ch.Spec.SSL)
@@ -260,14 +260,14 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 					return ctrl.Result{}, r.setError(ctx, ch, "UpdateFailed", editErr.Error())
 				}
 				operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpUpdate).Inc()
-				// Use post-edit response for status — reflects the corrected CF state.
+				// Use post-edit response for status -- reflects the corrected CF state.
 				ch.Status.SSL = sslStatusFromEdit(editResp)
 				edited = true
 			}
 		}
 	}
 	// Set SSL status in memory; persisted by setCondition's r.Status().Update()
-	// inside requeueOrReady — single write covers SSL, conditions, and counters.
+	// inside requeueOrReady -- single write covers SSL, conditions, and counters.
 	// When an edit occurred, ch.Status.SSL already has the post-edit state (set above);
 	// otherwise, refresh from the pre-edit list response to catch external CF changes.
 	if !edited {
@@ -283,7 +283,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 // effectiveManagementPolicy returns the management policy to apply for this CR.
 // spec.managementPolicy takes precedence over the operator-wide --management-policy flag,
 // allowing per-CR override without restarting the operator.
-// NOTE: No runtime validation of crPolicy — kubebuilder Enum on the CRD rejects invalid
+// NOTE: No runtime validation of crPolicy -- kubebuilder Enum on the CRD rejects invalid
 // values at admission. An invalid value bypassing admission would fall through switch
 // statements and behave like "manage" (fail-open). Acceptable given admission enforcement.
 func effectiveManagementPolicy(crPolicy, operatorDefault string) string {
@@ -300,7 +300,7 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, zi *zoneInf
 		ZoneID:   cloudflare.F(zi.ID),
 		Hostname: cloudflare.F(ch.Spec.Hostname),
 	}
-	// Default to DV + HTTP if not specified — SSL is always required for custom hostnames.
+	// Default to DV + HTTP if not specified -- SSL is always required for custom hostnames.
 	sslSpec := ch.Spec.SSL
 	if sslSpec == nil {
 		sslSpec = &saasv1beta1.CustomHostnameSSL{Type: sslTypeDV, Method: sslMethodHTTP}
@@ -350,7 +350,7 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 	log := logf.FromContext(ctx)
 
 	if r.DryRun {
-		// Do NOT remove the finalizer — the CR stays in Terminating state while dry-run
+		// Do NOT remove the finalizer -- the CR stays in Terminating state while dry-run
 		// is active. When the operator restarts without --dry-run, deletion proceeds normally.
 		// Returning nil (no requeue) is intentional: the dry-run message fires once per
 		// deletion attempt and then stays quiet. The 30 s SSL-pending requeue cycle is
@@ -391,7 +391,7 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 			if err != nil {
 				log.Error(err, "custom hostname - pre-delete lookup failed (deletePolicy=own-only)", "hostname", ch.Spec.Hostname)
 				return ctrl.Result{}, err // Return raw error for controller-runtime backoff retry;
-				// don't setError — CR is being deleted, status updates are pointless and
+				// don't setError -- CR is being deleted, status updates are pointless and
 				// setError returns nil (no requeue), which would delay finalizer removal.
 			}
 			if !shouldDeleteInCF(ch.Status.ID, current) {
@@ -415,7 +415,7 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 		recordCFCall(cfResourceCustomHostname, cfOpDelete, deleteStart, &delErr)
 		if delErr != nil {
 			// 404 means the resource is already gone (e.g. deleted by another entity or stale ID).
-			// Treat as success — our specific resource no longer exists, remove finalizer.
+			// Treat as success -- our specific resource no longer exists, remove finalizer.
 			var cfErr *cloudflare.Error
 			if errors.As(delErr, &cfErr) && cfErr.StatusCode == 404 {
 				log.Info("custom hostname - could not be deleted, finalizer released (not found in Cloudflare)", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
@@ -426,7 +426,7 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 		} else {
 			log.Info("custom hostname - deleted, finalizer released", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
 			// NOTE: operationsTotal is only incremented on actual deletes, not 404s.
-			// A 404 means the CH was already gone — the operator didn't perform the delete.
+			// A 404 means the CH was already gone -- the operator didn't perform the delete.
 			// The 404 is still recorded in api_errors_by_code_total via recordCFCall above.
 			operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpDelete).Inc()
 		}
@@ -456,7 +456,7 @@ func shouldDeleteInCF(statusID string, current *custom_hostnames.CustomHostnameL
 }
 
 // NOTE: Early return from the pager on first match abandons remaining pages.
-// No resource leak — the pager is GC'd when Reconcile returns (~200-500ms).
+// No resource leak -- the pager is GC'd when Reconcile returns (~200-500ms).
 func (r *CustomHostnameReconciler) findByHostname(ctx context.Context, cf *cloudflare.Client, zoneID, hostname string) (*custom_hostnames.CustomHostnameListResponse, error) {
 	start := time.Now()
 	pager := cf.CustomHostnames.ListAutoPaging(ctx, custom_hostnames.CustomHostnameListParams{
@@ -482,7 +482,7 @@ func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneCR st
 		// Observe SSL provisioning duration on first transition to active.
 		// Guard against double-counting on operator restart: skip if Ready=True is already set.
 		// NOTE: If SSL is already active at creation time (pre-validated domains), the
-		// observed duration is near-zero. This is technically correct — not a bug.
+		// observed duration is near-zero. This is technically correct -- not a bug.
 		if ch.Status.SSLProvisioningStartedAt != nil {
 			alreadyReady := false
 			for _, cond := range ch.Status.Conditions {
@@ -519,7 +519,7 @@ func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneCR st
 
 // detectConflict checks whether another CR already owns this hostname in Cloudflare (i.e. has a
 // CF ID assigned). If so, it marks this CR with a HostnameConflict condition and returns true.
-// The caller should return immediately on (true, nil) — no requeue is scheduled.
+// The caller should return immediately on (true, nil) -- no requeue is scheduled.
 // Self-healing: when the owning CR is deleted, the Zone controller re-enqueues this CR via the
 // "hostname missing from CF" path, at which point detectConflict finds no peer with an ID and
 // returns false, allowing normal provisioning to proceed.
@@ -616,7 +616,7 @@ func (r *CustomHostnameReconciler) buildCloudflareClient(ctx context.Context, ch
 
 func sniDrifted(currentSNI string, ch *saasv1beta1.CustomHostname) bool {
 	if ch.Spec.OriginSNI == nil {
-		// Nil means "don't manage SNI" — external changes are not corrected.
+		// Nil means "don't manage SNI" -- external changes are not corrected.
 		// Used by both the CH controller and detectCustomHostnameDrift() in zone drift detection.
 		// NOTE: We intentionally do NOT log when CF's SNI differs from the
 		// hostname here. CF uses the sentinel ":request_host_header:" as its
@@ -628,7 +628,7 @@ func sniDrifted(currentSNI string, ch *saasv1beta1.CustomHostname) bool {
 }
 
 // NOTE: Uses reflect.DeepEqual rather than field-by-field comparison. The struct has
-// 14+ fields including slices — DeepEqual is concise and correct. Called once per
+// 14+ fields including slices -- DeepEqual is concise and correct. Called once per
 // reconcile (not a hot path), so performance is not a concern.
 func sslStatusEqual(a, b *saasv1beta1.CustomHostnameSSLStatus) bool {
 	if a == nil && b == nil {
@@ -640,7 +640,7 @@ func sslStatusEqual(a, b *saasv1beta1.CustomHostnameSSLStatus) bool {
 	return reflect.DeepEqual(a, b)
 }
 
-// SSL field order: CA, minTLS, method, type — maintained across all SSL functions and logs.
+// SSL field order: CA, minTLS, method, type -- maintained across all SSL functions and logs.
 
 func sslDrifted(cfSSL custom_hostnames.CustomHostnameListResponseSSL, spec *saasv1beta1.CustomHostnameSSL) bool {
 	if spec == nil {
@@ -677,7 +677,7 @@ func buildDriftInfo(existing *custom_hostnames.CustomHostnameListResponse, ch *s
 	matched := map[string]string{}
 	unmanaged := map[string]string{}
 
-	// Origin — always managed
+	// Origin -- always managed
 	if existing.CustomOriginServer != ch.Spec.OriginServer {
 		drifted["origin"] = driftPair{CF: existing.CustomOriginServer, Spec: ch.Spec.OriginServer}
 	} else {
@@ -695,7 +695,7 @@ func buildDriftInfo(existing *custom_hostnames.CustomHostnameListResponse, ch *s
 		unmanaged["sni"] = existing.CustomOriginSNI
 	}
 
-	// SSL fields — CA, minTLS, method, type
+	// SSL fields -- CA, minTLS, method, type
 	ssl := existing.SSL
 	spec := ch.Spec.SSL
 	// CA
@@ -777,7 +777,7 @@ func buildSSLEditParams(ssl *saasv1beta1.CustomHostnameSSL, cfSSL custom_hostnam
 		})
 	}
 
-	// method + type — CF requires both when either is sent.
+	// method + type -- CF requires both when either is sent.
 	method := ssl.Method
 	if method == "" {
 		method = string(cfSSL.Method)
@@ -836,7 +836,7 @@ func buildSSLParams(ssl *saasv1beta1.CustomHostnameSSL, defaults SSLDefaults) cu
 }
 
 // sslStatusFromNew maps the CF create response to status.ssl.
-// Mirror of sslStatusFromList / sslStatusFromEdit — if you change one, change the others.
+// Mirror of sslStatusFromList / sslStatusFromEdit -- if you change one, change the others.
 // Not deduplicated because the CF SDK uses separate generated types for
 // create, list, and edit responses with no shared interface.
 func sslStatusFromNew(resp *custom_hostnames.CustomHostnameNewResponse) *saasv1beta1.CustomHostnameSSLStatus {
@@ -877,7 +877,7 @@ func sslStatusFromNew(resp *custom_hostnames.CustomHostnameNewResponse) *saasv1b
 }
 
 // sslStatusFromList maps the CF list/get response to status.ssl.
-// Mirror of sslStatusFromNew / sslStatusFromEdit — if you change one, change the others.
+// Mirror of sslStatusFromNew / sslStatusFromEdit -- if you change one, change the others.
 func sslStatusFromList(resp *custom_hostnames.CustomHostnameListResponse) *saasv1beta1.CustomHostnameSSLStatus {
 	s := &saasv1beta1.CustomHostnameSSLStatus{
 		Status:               string(resp.SSL.Status),
@@ -916,7 +916,7 @@ func sslStatusFromList(resp *custom_hostnames.CustomHostnameListResponse) *saasv
 }
 
 // sslStatusFromEdit maps the CF edit response to status.ssl.
-// Mirror of sslStatusFromNew / sslStatusFromList — if you change one, change the others.
+// Mirror of sslStatusFromNew / sslStatusFromList -- if you change one, change the others.
 func sslStatusFromEdit(resp *custom_hostnames.CustomHostnameEditResponse) *saasv1beta1.CustomHostnameSSLStatus {
 	s := &saasv1beta1.CustomHostnameSSLStatus{
 		Status:               string(resp.SSL.Status),
@@ -970,7 +970,7 @@ func sslStatusFromEdit(resp *custom_hostnames.CustomHostnameEditResponse) *saasv
 // NOTE: this predicate is coupled to status.ID as the "seen before" signal.
 // If the state model changes (e.g. ID moved to a different field), update this predicate.
 func fastWritePredicate() predicate.Predicate {
-	// NOTE: GenericFunc is intentionally not set — defaults to "pass all."
+	// NOTE: GenericFunc is intentionally not set -- defaults to "pass all."
 	// Drift events from the zone controller arrive as GenericEvents and must
 	// always be processed (they carry CRs needing status refresh or drift correction).
 	return predicate.Funcs{
@@ -979,7 +979,7 @@ func fastWritePredicate() predicate.Predicate {
 			if !ok {
 				return true
 			}
-			// Always process CRs with a DeletionTimestamp — they need finalizer removal.
+			// Always process CRs with a DeletionTimestamp -- they need finalizer removal.
 			// Without this, a terminating CR with status.ID set would be silently skipped
 			// on operator restart, leaving the finalizer in place forever.
 			if !ch.DeletionTimestamp.IsZero() {

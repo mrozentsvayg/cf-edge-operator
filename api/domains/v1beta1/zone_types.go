@@ -23,7 +23,7 @@ import (
 // ZoneSpec defines the desired state of Zone
 type ZoneSpec struct {
 	// ID is the Cloudflare zone ID (32-character hex string).
-	// Immutable — changing it would redirect all associated CustomHostname CRs to a different zone.
+	// Immutable -- changing it would redirect all associated CustomHostname CRs to a different zone.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern="^[0-9a-f]{32}$"
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="zone ID is immutable"
@@ -49,7 +49,7 @@ type SecretRef struct {
 }
 
 // ZoneStatus defines the observed state of Zone.
-// NOTE: No top-level ObservedGeneration — it's set per-condition in setReady().
+// NOTE: No top-level ObservedGeneration -- it's set per-condition in setReady().
 type ZoneStatus struct {
 	// Name is the Cloudflare zone name (e.g. example.com), populated from the API
 	// +optional

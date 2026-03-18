@@ -195,7 +195,7 @@ func main() {
 		}
 	}
 	if dryRun {
-		setupLog.Info("DRY-RUN mode enabled — no Cloudflare write operations will be performed")
+		setupLog.Info("DRY-RUN mode enabled -- no Cloudflare write operations will be performed")
 	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
@@ -303,7 +303,7 @@ func main() {
 	}
 	// +kubebuilder:scaffold:builder
 
-	// NOTE: Probes are trivial pings — they don't check CF API reachability or
+	// NOTE: Probes are trivial pings -- they don't check CF API reachability or
 	// controller health. Per-zone health is surfaced via the zoneReady metric and
 	// Zone CR conditions. Failing the readiness probe would remove the pod from
 	// service, which is worse than a single zone's token expiring.

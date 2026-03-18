@@ -23,7 +23,7 @@ import (
 // CustomHostnameSpec defines the desired state of CustomHostname
 type CustomHostnameSpec struct {
 	// Hostname is the custom hostname to register with Cloudflare (e.g. customer.example.com).
-	// Immutable after creation — changing it would orphan the existing CF custom hostname.
+	// Immutable after creation -- changing it would orphan the existing CF custom hostname.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Format=hostname
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="hostname is immutable"
@@ -35,11 +35,11 @@ type CustomHostnameSpec struct {
 	OriginServer string `json:"originServer"`
 
 	// OriginSNI overrides the SNI sent to the origin during TLS handshake.
-	// If omitted, the operator does not manage Origin SNI — Cloudflare uses its
+	// If omitted, the operator does not manage Origin SNI -- Cloudflare uses its
 	// default (the origin server hostname) and external changes are not corrected.
 	// When set, the operator enforces the value on every reconcile.
 	// Set to ":request_host_header:" to forward the incoming Host header as SNI.
-	// Requires a Cloudflare account entitlement — contact your Cloudflare account team to enable.
+	// Requires a Cloudflare account entitlement -- contact your Cloudflare account team to enable.
 	// +kubebuilder:validation:MinLength=1
 	// +optional
 	OriginSNI *string `json:"originSNI,omitempty"`
@@ -54,10 +54,10 @@ type CustomHostnameSpec struct {
 	SSL *CustomHostnameSSL `json:"ssl,omitempty"`
 
 	// ManagementPolicy overrides the operator-wide --management-policy for this CR.
-	// "manage": full lifecycle — create, update (drift correction), and delete per deletePolicy.
+	// "manage": full lifecycle -- create, update (drift correction), and delete per deletePolicy.
 	// "create": provisions the hostname if missing, but never updates it (safe coexistence with
 	// other tools like external-dns that may also modify the hostname). Deletes per deletePolicy.
-	// "observe": read-only — tracks an externally-managed hostname without creating, updating,
+	// "observe": read-only -- tracks an externally-managed hostname without creating, updating,
 	// or deleting it. deletePolicy is ignored; the finalizer is always released on CR deletion.
 	// If not set, the operator-wide default applies.
 	// +kubebuilder:validation:Enum=manage;create;observe

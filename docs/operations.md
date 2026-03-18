@@ -9,15 +9,15 @@ All flags are set via Helm values, which are passed as container args in the Dep
 | Flag | Helm default | Helm value | Description |
 |------|-------------|-----------|-------------|
 | `--operator-namespace` | release namespace | `operatorNamespace` | Namespace where Zone CRs are managed |
-| `--management-policy` | `manage` | `managementPolicy` | `manage`, `create`, or `observe` — see [migration.md](migration.md) |
-| `--delete-policy` | `always` | `deletePolicy` | `always`, `own-only`, or `never` — see [migration.md](migration.md) |
+| `--management-policy` | `manage` | `managementPolicy` | `manage`, `create`, or `observe` -- see [migration.md](migration.md) |
+| `--delete-policy` | `always` | `deletePolicy` | `always`, `own-only`, or `never` -- see [migration.md](migration.md) |
 | `--dry-run` | `false` | `dryRun` | Log Cloudflare (CF) operations without executing them |
 | `--drift-interval` | `1m` | `driftInterval` | How often the zone controller bulk-lists CF hostnames |
 | `--drift-buffer` | `1024` | `driftBuffer` | Internal channel buffer for drift events |
 | `--leader-elect` | `true` | `leaderElect` | Required when running multiple replicas |
 | `--zap-devel` | `true` | `zapDevel` | Development logger: human-readable console format, DPanic panics. Set `false` for JSON output (recommended for production log aggregation). |
 | `--ssl-certificate-authority` | _(empty)_ | `sslCertificateAuthority` | Default CA for new CHs (`lets_encrypt`, `google`, `ssl_com`). Empty = CF default |
-| `--ssl-min-tls-version` | _(empty)_ | `sslMinTLSVersion` | Default min TLS version for new CHs (`1.0`–`1.3`). Empty = CF default |
+| `--ssl-min-tls-version` | _(empty)_ | `sslMinTLSVersion` | Default min TLS version for new CHs (`1.0`-`1.3`). Empty = CF default |
 | `--ssl-method` | _(empty)_ | `sslMethod` | Default DCV method for new CHs (`http`, `txt`, `email`). Empty = `http` |
 | `--ssl-type` | _(empty)_ | `sslType` | Default validation type for new CHs (`dv`). Empty = `dv` |
 
@@ -55,7 +55,7 @@ Controls how often each Zone CR triggers a bulk list of Cloudflare custom hostna
 
 **Cloudflare API rate limit:** 1200 requests/5min = 240/min. At `1m` with 5 zones of 1000 hostnames each (~10 list calls per zone per cycle = 50 calls/min), you are well within limits.
 
-The actual wall-clock gap between cycles is `drift-interval + reconcile_execution_time`. Execution time is dominated by Cloudflare API latency (~1–5s for a paginated list). At the default `1m`, expect ~62–65s between cycle starts.
+The actual wall-clock gap between cycles is `drift-interval + reconcile_execution_time`. Execution time is dominated by Cloudflare API latency (~1-5s for a paginated list). At the default `1m`, expect ~62-65s between cycle starts.
 
 **Recommendation:** Keep the default `1m` unless you have a specific SLA requirement for external drift detection. Only reduce below `1m` if you operate in an environment with frequent external CF changes and need sub-minute detection.
 
@@ -68,22 +68,22 @@ Size of the internal Go channel used by the zone controller to signal drifted Cu
 | Scenario | Recommended buffer |
 |----------|--------------------|
 | 1 zone, ≤100 CHs | 128 |
-| 1–3 zones, ≤500 CHs each | 1024 *(default)* |
+| 1-3 zones, ≤500 CHs each | 1024 *(default)* |
 | 5+ zones, 1000+ CHs each | 4096+ |
 
-In practice the buffer rarely fills — drifted CRs are consumed quickly by the CustomHostname controller (~200–500ms per CR). Only increase if you see zone reconcile cycles taking longer than expected at high drift volumes.
+In practice the buffer rarely fills -- drifted CRs are consumed quickly by the CustomHostname controller (~200-500ms per CR). Only increase if you see zone reconcile cycles taking longer than expected at high drift volumes.
 
 If the buffer is full, the zone controller blocks on send but respects context cancellation for graceful shutdown. Blocked events are dropped on shutdown and re-detected on the next drift cycle.
 
 ### Reconcile Error Backoff (fixed at 30s max)
 
-When a reconcile fails (e.g. Cloudflare API error, invalid credentials), controller-runtime applies exponential backoff before retrying. The operator caps this at **30 seconds** — after any number of failures, the maximum wait before the next retry is 30s.
+When a reconcile fails (e.g. Cloudflare API error, invalid credentials), controller-runtime applies exponential backoff before retrying. The operator caps this at **30 seconds** -- after any number of failures, the maximum wait before the next retry is 30s.
 
 This is intentionally not configurable:
 - Raising it recreates the original controller-runtime default of ~16 minutes, causing slow recovery after fixing a configuration error
 - Lowering it risks hammering the Cloudflare API on persistent errors
 
-The 30s cap means any CR recovers within ≤30s of the underlying issue being fixed — either via its own backoff retry, or via the zone controller's drift detection cycle (≤`--drift-interval`), whichever fires first.
+The 30s cap means any CR recovers within ≤30s of the underlying issue being fixed -- either via its own backoff retry, or via the zone controller's drift detection cycle (≤`--drift-interval`), whichever fires first.
 
 ### Memory and CPU Resources
 
@@ -94,14 +94,14 @@ The operator's memory footprint is dominated by the controller-runtime informer 
 | Scale | Approximate memory | CPU |
 |-------|--------------------|-----|
 | ≤100 CHs | 64Mi | minimal |
-| ~500 CHs | 80–100Mi | minimal |
-| ~1000 CHs | 100–128Mi *(default limit)* | minimal |
+| ~500 CHs | 80-100Mi | minimal |
+| ~1000 CHs | 100-128Mi *(default limit)* | minimal |
 | 5000+ CHs | 256Mi+ | low |
 
-The default `128Mi` limit is appropriate for most deployments. Increase if you observe OOMKilled events at scale. CPU usage is low — the operator is I/O-bound (Cloudflare API calls) rather than CPU-bound.
+The default `128Mi` limit is appropriate for most deployments. Increase if you observe OOMKilled events at scale. CPU usage is low -- the operator is I/O-bound (Cloudflare API calls) rather than CPU-bound.
 
 ```yaml
-# values.yaml — example for large deployments
+# values.yaml -- example for large deployments
 resources:
   limits:
     cpu: 500m
@@ -184,8 +184,8 @@ Before going live:
 
 - [ ] Zone CR `spec.id` matches the actual Cloudflare zone ID (verify in CF dashboard)
 - [ ] Secret referenced by `spec.credentialsRef` exists and contains a valid API token with `Zone: Read` and `SSL and Certificates: Edit` permissions
-- [ ] `--management-policy` set appropriately — use `create` during migration to prevent update loops (see [migration.md](migration.md))
-- [ ] `--delete-policy` set appropriately — use `own-only` or `never` during any migration window where another tool may manage the same zone (see [migration.md](migration.md))
+- [ ] `--management-policy` set appropriately -- use `create` during migration to prevent update loops (see [migration.md](migration.md))
+- [ ] `--delete-policy` set appropriately -- use `own-only` or `never` during any migration window where another tool may manage the same zone (see [migration.md](migration.md))
 - [ ] `replicaCount ≥ 2` and `leaderElect: true` for HA
 - [ ] `podDisruptionBudget.enabled: true` if availability during node drains is required
 - [ ] `serviceMonitor.enabled: true` and `prometheusRule.enabled: true` if using Prometheus Operator

@@ -47,7 +47,7 @@ var (
 		// 1m, 5m, 10m, 30m, 1h, 2h, 6h, 12h, 1d, 3d, 1w
 	}, []string{"zone_cr", "hostname", "method"})
 	// NOTE: The "hostname" label creates one histogram per custom hostname (14 series each
-	// with 11 buckets). This is intentional — per-hostname provisioning visibility is needed
+	// with 11 buckets). This is intentional -- per-hostname provisioning visibility is needed
 	// for debugging slow SSL issuance. The cardinality is bounded by the number of managed
 	// hostnames and each series is static after SSL becomes active (fires once per lifecycle).
 

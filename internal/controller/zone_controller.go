@@ -75,7 +75,7 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	var zone domainsv1beta1.Zone
 	if err := r.Get(ctx, req.NamespacedName, &zone); err != nil {
 		if client.IgnoreNotFound(err) == nil {
-			// Zone deleted — remove stale metric series.
+			// Zone deleted -- remove stale metric series.
 			zoneReady.DeleteLabelValues(req.Name)
 			customHostnames.DeletePartialMatch(prometheus.Labels{"zone_cr": req.Name})
 			zoneCustomHostnames.DeletePartialMatch(prometheus.Labels{"zone_cr": req.Name})
@@ -114,7 +114,7 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	// Per-resource drift detection. Each resource type is in its own file
 	// (zone_*_drift.go) and can fail independently without affecting others.
 	// NOTE: Error is logged and counted (driftDetectionErrorsTotal) but not
-	// returned — the zone requeues on DriftInterval regardless, so controller-runtime
+	// returned -- the zone requeues on DriftInterval regardless, so controller-runtime
 	// error tracking/backoff is unnecessary.
 	// When multiple detectors exist, parallelize with errgroup.Group to avoid
 	// sequential paginated API calls stretching the reconcile duration.

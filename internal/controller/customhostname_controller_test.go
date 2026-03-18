@@ -99,7 +99,7 @@ func TestDetectConflict(t *testing.T) {
 	})
 
 	t.Run("no conflict: peer has no CF ID yet", func(t *testing.T) {
-		// Both CRs are brand-new — neither has a CF ID. Let both through;
+		// Both CRs are brand-new -- neither has a CF ID. Let both through;
 		// CF will reject one, and the conflict is detected on the next reconcile.
 		a := &saasv1beta1.CustomHostname{
 			ObjectMeta: metav1.ObjectMeta{Name: "cr-a", Namespace: "default", UID: types.UID("uid-a")},
@@ -213,7 +213,7 @@ func TestHandleDeleteDryRun(t *testing.T) {
 		t.Errorf("expected no requeue in dry-run, got %+v", result)
 	}
 
-	// The finalizer must still be present — dry-run must not mutate K8s.
+	// The finalizer must still be present -- dry-run must not mutate K8s.
 	// If this fails it means dry-run removed the finalizer, which would
 	// silently orphan the CF hostname when the CR disappears from K8s.
 	var got saasv1beta1.CustomHostname
@@ -758,7 +758,7 @@ func TestBuildSSLParams(t *testing.T) {
 			wantType:   true,
 		},
 		{
-			name:       "empty CR fields, no defaults — method/type always set (CF requires them)",
+			name:       "empty CR fields, no defaults -- method/type always set (CF requires them)",
 			ssl:        saasv1beta1.CustomHostnameSSL{},
 			wantMethod: true,
 			wantType:   true,
@@ -829,7 +829,7 @@ func TestBuildSSLEditParams(t *testing.T) {
 			wantMinTLS: true,
 		},
 		{
-			name:       "spec empty — all fields from CF",
+			name:       "spec empty -- all fields from CF",
 			ssl:        saasv1beta1.CustomHostnameSSL{},
 			cf:         cfSSL(sslCAGoogle, sslMinTLS12, sslMethodHTTP, sslTypeDV),
 			wantCA:     true,
@@ -844,7 +844,7 @@ func TestBuildSSLEditParams(t *testing.T) {
 			wantMinTLS: true,
 		},
 		{
-			name: "both empty — method/type default to http/dv",
+			name: "both empty -- method/type default to http/dv",
 			ssl:  saasv1beta1.CustomHostnameSSL{},
 			cf:   cfSSL("", "", "", ""),
 		},
@@ -916,7 +916,7 @@ func TestBuildDriftInfo(t *testing.T) {
 		t.Errorf("matched.sni = %q, want :request_host_header:", matched["sni"])
 	}
 
-	// Unmanaged SSL fields (minTLS, method, type — not in spec)
+	// Unmanaged SSL fields (minTLS, method, type -- not in spec)
 	unmanaged, ok := di["unmanaged"].(map[string]string)
 	if !ok {
 		t.Fatal("unmanaged missing or wrong type")
