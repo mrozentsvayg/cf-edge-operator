@@ -17,7 +17,7 @@ leaderElect: true
 operatorNamespace: ""
 
 # Default management policy for CustomHostname CRs.
-# "manage": full lifecycle — create, update, delete (default).
+# "manage": full lifecycle -- create, update, delete (default).
 # "create": provision if missing, never update (safe coexistence with external-dns).
 # "observe": read-only tracking, no Cloudflare writes.
 # Per-CR spec.managementPolicy overrides this default.

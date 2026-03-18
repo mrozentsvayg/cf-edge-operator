@@ -23,10 +23,10 @@ The recommended approach is **incremental**: migrate one hostname at a time, wit
 | Policy | Create | Update (drift correction) | Delete |
 |--------|--------|---------------------------|--------|
 | `manage` *(default)* | Yes | Yes | Per `deletePolicy` |
-| `create` | Yes | No — logs drift but does not correct it | Per `deletePolicy` |
-| `observe` | No — waits for external creation | No | Releases finalizer unconditionally (ignores `deletePolicy`) |
+| `create` | Yes | No -- logs drift but does not correct it | Per `deletePolicy` |
+| `observe` | No -- waits for external creation | No | Releases finalizer unconditionally (ignores `deletePolicy`) |
 
-**`create`** is the recommended policy during coexistence with external-dns or other automation. The operator provisions new hostnames if missing, but never updates them — preventing change loops where both tools fight over origin/SNI settings.
+**`create`** is the recommended policy during coexistence with external-dns or other automation. The operator provisions new hostnames if missing, but never updates them -- preventing change loops where both tools fight over origin/SNI settings.
 
 **`observe`** is for tracking hostnames you explicitly don't want the operator to touch at all. Useful for monitoring hostnames managed entirely by another system.
 
@@ -34,11 +34,11 @@ The recommended approach is **incremental**: migrate one hostname at a time, wit
 
 ```yaml
 # values.yaml
-managementPolicy: "create"   # safe coexistence — no updates by default
+managementPolicy: "create"   # safe coexistence -- no updates by default
 deletePolicy: "never"         # never delete CF hostnames during coexistence
 ```
 
-`managementPolicy: "create"` ensures the operator never updates existing hostnames — preventing change loops with external-dns. `deletePolicy: "never"` ensures that if a CR is deleted during the transition, the operator releases the finalizer without any CF API call — the safest option during coexistence when hostnames are shared with external-dns. Individual CRs can override either setting via `spec.managementPolicy` and `spec.deletePolicy`.
+`managementPolicy: "create"` ensures the operator never updates existing hostnames -- preventing change loops with external-dns. `deletePolicy: "never"` ensures that if a CR is deleted during the transition, the operator releases the finalizer without any CF API call -- the safest option during coexistence when hostnames are shared with external-dns. Individual CRs can override either setting via `spec.managementPolicy` and `spec.deletePolicy`.
 
 ### Step 2: Create Zone CR
 
@@ -99,9 +99,9 @@ Once all hostnames are migrated and external-dns is no longer managing any hostn
 
 The recommended `deletePolicy` progression during migration:
 
-1. **`never`** (Step 1) — during coexistence with external-dns. No CF API calls on CR deletion, simplest and safest.
-2. **`own-only`** (Step 5) — after external-dns is removed per hostname. Allows safe deletes with ID verification.
-3. **`always`** (Step 6) — after full migration. Clean lifecycle management.
+1. **`never`** (Step 1) -- during coexistence with external-dns. No CF API calls on CR deletion, simplest and safest.
+2. **`own-only`** (Step 5) -- after external-dns is removed per hostname. Allows safe deletes with ID verification.
+3. **`always`** (Step 6) -- after full migration. Clean lifecycle management.
 
 ### Why this matters
 
@@ -115,7 +115,7 @@ If you then delete the CR (e.g., rolling back the migration):
 | `own-only` | Looks up current CF state, sees ID mismatch → releases the finalizer without any CF API call. Explicitly safe. |
 | `never` | Releases the finalizer without any CF API call, regardless of ID match. Safest during coexistence. |
 
-Note: when `managementPolicy: observe`, the operator always releases the finalizer without deleting — `deletePolicy` is ignored entirely.
+Note: when `managementPolicy: observe`, the operator always releases the finalizer without deleting -- `deletePolicy` is ignored entirely.
 
 ## Checking Migration Status
 
@@ -135,6 +135,6 @@ kubectl describe customhostname customer-acme -n my-app
 
 If you need to roll back to external-dns management:
 
-1. Remove the `CustomHostname` CR — with `never`, the operator releases the finalizer without any CF API call, leaving the CF hostname intact for external-dns.
+1. Remove the `CustomHostname` CR -- with `never`, the operator releases the finalizer without any CF API call, leaving the CF hostname intact for external-dns.
 2. Re-add the external-dns annotation to the relevant Kubernetes Service or Ingress.
 

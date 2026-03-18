@@ -61,7 +61,7 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 
 	// Enqueue CRs that have drifted from Cloudflare state, and build a set of
 	// known CR hostnames for orphan detection in the next pass.
-	// All CRs are evaluated regardless of managementPolicy — observe-mode CRs
+	// All CRs are evaluated regardless of managementPolicy -- observe-mode CRs
 	// need enqueue to refresh status from CF, create-mode CRs need it to detect
 	// missing hostnames. The CH controller handles policy-specific behavior.
 	crHostnames := make(map[string]bool, len(chList.Items))
@@ -84,7 +84,7 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 			drifted++
 			// INFO/DEBUG asymmetry (by design):
 			// - Spec drift: INFO here (zone enqueue with drift details) + INFO in CH controller (outcome).
-			//   Both visible in production — spec drift is an operator decision (correct or skip).
+			//   Both visible in production -- spec drift is an operator decision (correct or skip).
 			// - Status SSL change: INFO here (zone enqueue with changed fields) + DEBUG in CH controller
 			//   (refresh confirmation). The refresh is internal bookkeeping, not an operator decision.
 		} else if cfCH.CustomOriginServer != ch.Spec.OriginServer || sniDrifted(cfCH.CustomOriginSNI, ch) || sslDrifted(cfCH.SSL, ch.Spec.SSL) {
@@ -161,7 +161,7 @@ func (r *ZoneReconciler) listCloudflareHostnames(ctx context.Context, cf *cloudf
 	pager := cf.CustomHostnames.ListAutoPaging(ctx, custom_hostnames.CustomHostnameListParams{
 		ZoneID: cloudflare.F(zoneID),
 	})
-	// NOTE: Map keyed by hostname — if CF returns duplicates (edge case with pending
+	// NOTE: Map keyed by hostname -- if CF returns duplicates (edge case with pending
 	// deletions), the later entry wins. CF deduplicates hostnames in practice.
 	for pager.Next() {
 		ch := pager.Current()
@@ -172,7 +172,7 @@ func (r *ZoneReconciler) listCloudflareHostnames(ctx context.Context, cf *cloudf
 	return result, err
 }
 
-// NOTE: Empty zoneRef.namespace matches any Zone with the same name. This is intentional —
+// NOTE: Empty zoneRef.namespace matches any Zone with the same name. This is intentional --
 // Zone CRs live in the operator namespace, app CRs omit the namespace field. If same-named
 // Zones exist in different namespaces, the "wrong" zone controller lists its own CF hostnames
 // (different zone ID), doesn't find the CH, and enqueues a harmless no-op reconcile.
@@ -195,7 +195,7 @@ type statusPair struct {
 // between status.ssl and the CF response. Nil map means no changes.
 // Field order: CA, minTLS, method, type, sslStatus, id, issuer, serialNumber,
 // bundleMethod, wildcard, uploadedOn, expiresOn.
-// NOTE: Hosts, ValidationRecords, and ValidationErrors are intentionally excluded —
+// NOTE: Hosts, ValidationRecords, and ValidationErrors are intentionally excluded --
 // they change alongside Status during provisioning and are refreshed when the CR
 // is enqueued for any other reason.
 func sslStatusChangedFields(status *saasv1beta1.CustomHostnameSSLStatus, cfSSL custom_hostnames.CustomHostnameListResponseSSL) map[string]statusPair {

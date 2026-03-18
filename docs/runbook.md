@@ -200,11 +200,11 @@ The `status.ssl.validationRecords` field contains the DCV tokens Cloudflare requ
 
 **Resolve:**
 
-1. Check `status.ssl.status` — if it is `pending_validation`, Cloudflare is waiting for DCV.
+1. Check `status.ssl.status` -- if it is `pending_validation`, Cloudflare is waiting for DCV.
 2. Confirm the validation record is correctly placed and publicly resolvable.
 3. Once DCV is satisfied, Cloudflare activates the certificate and the CR transitions to `Ready=True` within the next zone drift detection cycle (`--drift-interval`, default 1m).
 
-If the SSL status is `pending_issuance` or `pending_deployment`, DCV has passed and Cloudflare is issuing/deploying the certificate — no action needed, just wait.
+If the SSL status is `pending_issuance` or `pending_deployment`, DCV has passed and Cloudflare is issuing/deploying the certificate -- no action needed, just wait.
 
 ---
 
@@ -250,7 +250,7 @@ curl -s localhost:8080/metrics | grep cf_edge_operator
 ERROR  Reconciler error  "error": "Operation cannot be fulfilled on customhostnames.saas.cf-edge.io \"<name>\": the object has been modified; please apply your changes to the latest version and try again"
 ```
 
-**Cause:** Two concurrent reconcile triggers (e.g. spec change + zone drift enqueue) tried to update the same CR simultaneously. The second write failed because the `resourceVersion` changed between read and write. This is standard Kubernetes optimistic concurrency — not a bug.
+**Cause:** Two concurrent reconcile triggers (e.g. spec change + zone drift enqueue) tried to update the same CR simultaneously. The second write failed because the `resourceVersion` changed between read and write. This is standard Kubernetes optimistic concurrency -- not a bug.
 
 **Expected behavior:** controller-runtime automatically requeues the failed reconcile and retries. The next attempt succeeds because it reads the latest `resourceVersion`. No manual intervention needed.
 
