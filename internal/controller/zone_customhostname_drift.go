@@ -79,23 +79,28 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 			// HostnameConflict condition. This is the self-healing path: when the owning CR
 			// is deleted and CF removes the hostname, the previously-conflicted CR can now
 			// provision it, clearing the conflict condition on its next successful reconcile.
-			log.Info("hostname missing from CF, enqueuing", "hostname", ch.Spec.Hostname)
+			log.Info("custom hostname - enqueuing to create (not found in Cloudflare)", "hostname", ch.Spec.Hostname)
 			r.sendDriftEvent(ctx, ch)
 			drifted++
+			// INFO/DEBUG asymmetry (by design):
+			// - Spec drift: INFO here (zone enqueue with drift details) + INFO in CH controller (outcome).
+			//   Both visible in production — spec drift is an operator decision (correct or skip).
+			// - Status SSL change: INFO here (zone enqueue with changed fields) + DEBUG in CH controller
+			//   (refresh confirmation). The refresh is internal bookkeeping, not an operator decision.
 		} else if cfCH.CustomOriginServer != ch.Spec.OriginServer || sniDrifted(cfCH.CustomOriginSNI, ch) || sslDrifted(cfCH.SSL, ch.Spec.SSL) {
 			if isHostnameConflict(ch) {
-				log.Info("skipping drift enqueue: hostname conflict", "hostname", ch.Spec.Hostname)
+				log.V(1).Info("custom hostname - not enqueuing duplicate CR, already managed", "hostname", ch.Spec.Hostname)
 			} else {
-				log.Info("drift detected, enqueuing CustomHostname", "hostname", ch.Spec.Hostname, "reason", "spec")
+				log.Info("custom hostname - enqueuing, drift detected", "hostname", ch.Spec.Hostname, "drift", buildDriftInfo(&cfCH, ch))
 				r.sendDriftEvent(ctx, ch)
 				drifted++
 			}
 		} else if changed := sslStatusChangedFields(ch.Status.SSL, cfCH.SSL); changed != nil {
-			log.Info("drift detected, enqueuing CustomHostname", "hostname", ch.Spec.Hostname, "reason", "statusSSL", "changed", changed)
+			log.Info("custom hostname - enqueuing, status.ssl changed", "hostname", ch.Spec.Hostname, "changed", changed)
 			r.sendDriftEvent(ctx, ch)
 			drifted++
 		} else if r.DryRun {
-			log.V(1).Info("dry-run: no changes needed", "hostname", ch.Spec.Hostname)
+			log.V(2).Info("custom hostname - no drift detected (dry-run)", "hostname", ch.Spec.Hostname)
 		}
 	}
 
@@ -104,15 +109,15 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 		customHostnames.WithLabelValues(zone.Name, state).Set(float64(count))
 	}
 
-	// Log orphans: custom hostnames in Cloudflare with no corresponding CR.
-	// Visible at --zap-log-level=1 (debug). Useful for auditing manual
+	// Log orphans: CF custom hostnames with no associated CR.
+	// Visible at V(2) (--zap-log-level=2). Useful for auditing manual
 	// Cloudflare changes or planning migration to CRs.
 	managedCount, orphanCount := 0, 0
 	for hostname, cfCH := range cfHostnames {
 		if crHostnames[hostname] {
 			managedCount++
 		} else {
-			log.V(1).Info("orphan: custom hostname in Cloudflare has no CR",
+			log.V(2).Info("custom hostname - not enqueuing, no associated CR found",
 				"hostname", hostname, "origin", cfCH.CustomOriginServer)
 			orphanCount++
 		}
@@ -125,9 +130,9 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 	driftBufferDepth.WithLabelValues(cfResourceCustomHostname).Set(float64(len(r.CustomHostnameEvents)))
 
 	if drifted > 0 {
-		log.Info("drift detection complete", "zoneID", zone.Spec.ID, "drifted", drifted, "total", len(cfHostnames))
+		log.Info("custom hostname - drift detection complete", "zoneID", zone.Spec.ID, "drifted", drifted, "total", len(cfHostnames))
 	} else {
-		log.V(1).Info("drift detection complete", "zoneID", zone.Spec.ID, "drifted", 0, "total", len(cfHostnames))
+		log.V(1).Info("custom hostname - drift detection complete", "zoneID", zone.Spec.ID, "drifted", 0, "total", len(cfHostnames))
 	}
 
 	return nil

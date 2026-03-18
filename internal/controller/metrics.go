@@ -60,7 +60,7 @@ var (
 	}, []string{"zone_cr", "state"})
 
 	// zoneCustomHostnames counts Cloudflare custom hostnames by zone CR and type.
-	// managed: hostname has a corresponding CR; orphan: hostname has no CR.
+	// managed: hostname has an associated CR; orphan: hostname has no associated CR.
 	// type=total is the CF quota usage for that zone.
 	zoneCustomHostnames = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "cf_edge_operator_zone_customhostnames",

@@ -133,7 +133,7 @@ func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	zi, err := r.buildCloudflareClient(ctx, &ch)
 	if err != nil {
-		log.Error(err, "failed to build Cloudflare client")
+		log.Error(err, "custom hostname - client initialization failed")
 		return ctrl.Result{}, r.setError(ctx, &ch, "ZoneError", err.Error())
 	}
 
@@ -158,7 +158,7 @@ func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		if err := r.Update(ctx, &ch); err != nil {
 			return ctrl.Result{}, err
 		}
-		log.V(1).Info("added finalizer", "hostname", ch.Spec.Hostname)
+		log.V(1).Info("custom hostname - finalizer added", "hostname", ch.Spec.Hostname)
 		return ctrl.Result{Requeue: true}, nil
 	}
 
@@ -185,7 +185,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	// single API call makes reconciliation idempotent across restarts.
 	existing, err := r.findByHostname(ctx, zi.Client, zi.ID, ch.Spec.Hostname)
 	if err != nil {
-		log.Error(err, "failed to look up custom hostname", "hostname", ch.Spec.Hostname)
+		log.Error(err, "custom hostname - lookup failed", "hostname", ch.Spec.Hostname)
 		return ctrl.Result{}, r.setError(ctx, ch, "LookupFailed", err.Error())
 	}
 
@@ -193,7 +193,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 		if mgmtPolicy == ManagementPolicyObserve {
 			// Observe mode: don't create, wait for external provisioning.
 			// The zone controller will re-enqueue when the hostname appears in CF.
-			log.Info("observe: hostname not found in Cloudflare, waiting for external creation",
+			log.Info("custom hostname - not creating (managementPolicy=observe)",
 				"hostname", ch.Spec.Hostname)
 			return ctrl.Result{}, r.setCondition(ctx, ch, metav1.ConditionFalse,
 				"WaitingForExternal", "Hostname not yet provisioned in Cloudflare")
@@ -209,13 +209,13 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	// (status.ID is empty); subsequent reconciles skip when the ID is unchanged.
 	if ch.Status.ID != existing.ID {
 		if ch.Status.ID == "" {
-			log.Info("adopted existing custom hostname",
+			log.Info("custom hostname - adopted",
 				"hostname", ch.Spec.Hostname,
 				"id", existing.ID,
 				"origin", existing.CustomOriginServer,
 				"sni", existing.CustomOriginSNI)
 		} else {
-			log.Info("hostname externally recreated, re-adopting with new ID",
+			log.Info("custom hostname - readopted (externally recreated)",
 				"hostname", ch.Spec.Hostname,
 				"previousID", ch.Status.ID,
 				"newID", existing.ID,
@@ -233,12 +233,11 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	if originDrift || sslDrift {
 		di := buildDriftInfo(existing, ch)
 		if mgmtPolicy != ManagementPolicyManage {
-			log.Info("spec differs from CF, not updating per managementPolicy",
+			log.Info(fmt.Sprintf("custom hostname - not updating, drift detected (managementPolicy=%s)", mgmtPolicy),
 				"hostname", ch.Spec.Hostname,
-				"policy", mgmtPolicy,
 				"drift", di)
 		} else {
-			log.Info("custom hostname drifted, updating",
+			log.Info("custom hostname - updating, drift detected",
 				"hostname", ch.Spec.Hostname,
 				"drift", di)
 			editParams := custom_hostnames.CustomHostnameEditParams{ZoneID: cloudflare.F(zi.ID)}
@@ -250,14 +249,14 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 				editParams.SSL = cloudflare.F(buildSSLEditParams(ch.Spec.SSL, existing.SSL))
 			}
 			if r.DryRun {
-				log.Info("dry-run: would update custom hostname", "hostname", ch.Spec.Hostname,
+				log.Info("custom hostname - not updating, drift detected (dry-run)", "hostname", ch.Spec.Hostname,
 					"drift", di)
 			} else {
 				editStart := time.Now()
 				editResp, editErr := zi.Client.CustomHostnames.Edit(ctx, existing.ID, editParams, opts...)
 				recordCFCall(cfResourceCustomHostname, cfOpUpdate, editStart, &editErr)
 				if editErr != nil {
-					log.Error(editErr, "failed to update custom hostname", "id", existing.ID)
+					log.Error(editErr, "custom hostname - update failed", "id", existing.ID)
 					return ctrl.Result{}, r.setError(ctx, ch, "UpdateFailed", editErr.Error())
 				}
 				operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpUpdate).Inc()
@@ -274,7 +273,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	if !edited {
 		newSSL := sslStatusFromList(existing)
 		if !sslStatusEqual(ch.Status.SSL, newSSL) {
-			log.V(1).Info("status.ssl refreshed (external change detected)", "hostname", ch.Spec.Hostname)
+			log.V(1).Info("custom hostname - status.ssl refreshed", "hostname", ch.Spec.Hostname, "ssl", newSSL)
 		}
 		ch.Status.SSL = newSSL
 	}
@@ -313,15 +312,15 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, zi *zoneInf
 	}
 
 	if r.DryRun {
-		log.Info("dry-run: would create custom hostname", "hostname", ch.Spec.Hostname, "origin", ch.Spec.OriginServer)
-		return ctrl.Result{}, r.setCondition(ctx, ch, metav1.ConditionFalse, "DryRun", "dry-run: would create custom hostname")
+		log.Info("custom hostname - not creating (dry-run)", "hostname", ch.Spec.Hostname, "origin", ch.Spec.OriginServer)
+		return ctrl.Result{}, r.setCondition(ctx, ch, metav1.ConditionFalse, "DryRun", "not creating (dry-run)")
 	}
 
 	createStart := time.Now()
 	resp, err := zi.Client.CustomHostnames.New(ctx, params, opts...)
 	recordCFCall(cfResourceCustomHostname, cfOpCreate, createStart, &err)
 	if err != nil {
-		log.Error(err, "failed to create custom hostname", "hostname", ch.Spec.Hostname)
+		log.Error(err, "custom hostname - create failed", "hostname", ch.Spec.Hostname)
 		return ctrl.Result{}, r.setError(ctx, ch, "CreateFailed", err.Error())
 	}
 
@@ -331,9 +330,9 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, zi *zoneInf
 	op := cfOpCreate
 	if isRecreation {
 		op = cfOpRecreate
-		log.Info("custom hostname recreated", "hostname", ch.Spec.Hostname, "id", resp.ID)
+		log.Info("custom hostname - recreated", "hostname", ch.Spec.Hostname, "id", resp.ID)
 	} else {
-		log.Info("custom hostname created", "hostname", ch.Spec.Hostname, "id", resp.ID)
+		log.Info("custom hostname - created", "hostname", ch.Spec.Hostname, "id", resp.ID)
 	}
 	operationsTotal.WithLabelValues(cfResourceCustomHostname, op).Inc()
 
@@ -356,12 +355,12 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 		// Returning nil (no requeue) is intentional: the dry-run message fires once per
 		// deletion attempt and then stays quiet. The 30 s SSL-pending requeue cycle is
 		// also dropped here, so no further reconciles are scheduled for this CR.
-		log.Info("dry-run: would delete custom hostname from Cloudflare", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
+		log.Info("custom hostname - not deleting (dry-run)", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
 		return ctrl.Result{}, nil
 	}
 
 	if controllerutil.ContainsFinalizer(ch, finalizerName) && ch.Status.ID == "" {
-		log.Info("releasing finalizer, no Cloudflare hostname tracked",
+		log.Info("custom hostname - could not be deleted, finalizer released (association with Cloudflare was never established)",
 			"hostname", ch.Spec.Hostname)
 		controllerutil.RemoveFinalizer(ch, finalizerName)
 		return ctrl.Result{}, r.Update(ctx, ch)
@@ -371,7 +370,7 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 		// Observe mode supersedes deletePolicy: never touch CF, release finalizer unconditionally.
 		mgmtPolicy := effectiveManagementPolicy(ch.Spec.ManagementPolicy, r.ManagementPolicy)
 		if mgmtPolicy == ManagementPolicyObserve {
-			log.Info("observe: releasing finalizer without deleting from Cloudflare",
+			log.Info("custom hostname - not deleted, finalizer released (managementPolicy=observe)",
 				"hostname", ch.Spec.Hostname, "id", ch.Status.ID)
 			controllerutil.RemoveFinalizer(ch, finalizerName)
 			return ctrl.Result{}, r.Update(ctx, ch)
@@ -382,7 +381,7 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 		// spec.deletePolicy takes precedence over the operator-wide --delete-policy flag.
 		policy := effectiveDeletePolicy(ch.Spec.DeletePolicy, r.DeletePolicy)
 		if policy == DeletePolicyNever {
-			log.Info("never: releasing finalizer without deleting from Cloudflare",
+			log.Info("custom hostname - not deleted, finalizer released (deletePolicy=never)",
 				"hostname", ch.Spec.Hostname, "id", ch.Status.ID)
 			controllerutil.RemoveFinalizer(ch, finalizerName)
 			return ctrl.Result{}, r.Update(ctx, ch)
@@ -390,13 +389,13 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 		if policy == DeletePolicyOwnOnly {
 			current, err := r.findByHostname(ctx, cf, zoneID, ch.Spec.Hostname)
 			if err != nil {
-				log.Error(err, "failed to look up hostname before delete", "hostname", ch.Spec.Hostname)
+				log.Error(err, "custom hostname - pre-delete lookup failed (deletePolicy=own-only)", "hostname", ch.Spec.Hostname)
 				return ctrl.Result{}, err // Return raw error for controller-runtime backoff retry;
 				// don't setError — CR is being deleted, status updates are pointless and
 				// setError returns nil (no requeue), which would delay finalizer removal.
 			}
 			if !shouldDeleteInCF(ch.Status.ID, current) {
-				log.Info("own-only: releasing finalizer without deleting",
+				log.Info("custom hostname - not deleted, finalizer released (deletePolicy=own-only)",
 					"hostname", ch.Spec.Hostname, "statusID", ch.Status.ID,
 					"currentID", func() string {
 						if current != nil {
@@ -419,13 +418,13 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 			// Treat as success — our specific resource no longer exists, remove finalizer.
 			var cfErr *cloudflare.Error
 			if errors.As(delErr, &cfErr) && cfErr.StatusCode == 404 {
-				log.Info("custom hostname already gone from Cloudflare, releasing finalizer", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
+				log.Info("custom hostname - could not be deleted, finalizer released (not found in Cloudflare)", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
 			} else {
-				log.Error(delErr, "failed to delete custom hostname", "id", ch.Status.ID)
+				log.Error(delErr, "custom hostname - delete failed", "id", ch.Status.ID)
 				return ctrl.Result{}, delErr
 			}
 		} else {
-			log.Info("custom hostname deleted from Cloudflare", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
+			log.Info("custom hostname - deleted, finalizer released", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
 			// NOTE: operationsTotal is only incremented on actual deletes, not 404s.
 			// A 404 means the CH was already gone — the operator didn't perform the delete.
 			// The 404 is still recorded in api_errors_by_code_total via recordCFCall above.
@@ -501,7 +500,7 @@ func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneCR st
 				}
 				duration := time.Since(ch.Status.SSLProvisioningStartedAt.Time)
 				sslProvisioningDuration.WithLabelValues(zoneCR, ch.Spec.Hostname, method).Observe(duration.Seconds())
-				log.Info("SSL provisioning complete", "hostname", ch.Spec.Hostname, "duration", duration.Round(time.Second), "method", method)
+				log.Info("custom hostname - SSL provisioned", "hostname", ch.Spec.Hostname, "duration", duration.Round(time.Second), "method", method)
 			}
 		}
 		return ctrl.Result{}, r.setCondition(ctx, ch, metav1.ConditionTrue, conditionReady, "Custom hostname is active")
@@ -540,7 +539,7 @@ func (r *CustomHostnameReconciler) detectConflict(ctx context.Context, ch *saasv
 			continue
 		}
 		if peer.Status.ID != "" {
-			log.Info("hostname conflict: already managed by another CR",
+			log.Info("custom hostname - not processing duplicate CR, already managed",
 				"hostname", ch.Spec.Hostname, "owner", peer.Namespace+"/"+peer.Name)
 			err := r.setConflict(ctx, ch,
 				fmt.Sprintf("hostname %q already managed by %s/%s", ch.Spec.Hostname, peer.Namespace, peer.Name))
