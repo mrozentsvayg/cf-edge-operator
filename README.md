@@ -169,7 +169,7 @@ Metrics are exposed on `:8080/metrics` (HTTP, via Helm chart). See [docs/archite
 - `cf_edge_operator_zone_ready{zone_cr}` — 1 if zone credentials are valid and CF API is reachable, 0 otherwise
 - `cf_edge_operator_operations_total{resource,operation}` — successful CF operations (adopt, create, recreate, update, delete)
 - `cf_edge_operator_customhostnames{zone_cr,state}` — CRs by zone and state (ready/pending/unhealthy/conflict)
-- `cf_edge_operator_zone_customhostnames{zone_cr,type}` — CF custom hostnames by type (managed/orphan/drifted/total)
+- `cf_edge_operator_zone_customhostnames{zone_cr,type}` — CF custom hostnames by type (managed/orphan/drifted/total); orphan = no associated CR
 - `cf_edge_operator_ssl_provisioning_duration_seconds{zone_cr,hostname,method}` — time from CF create to SSL active
 - `cf_edge_operator_api_errors_by_code_total{resource,operation,status_code}` — CF API errors by HTTP status code
 - `cf_edge_operator_api_duration_seconds{resource,operation}` — CF API latency histogram

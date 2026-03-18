@@ -194,7 +194,7 @@ Parse with jq: `jq '.drift.drifted | keys'` or `jq '.changed | to_entries[] | "\
 | `cf_edge_operator_zone_ready{zone_cr}` | gauge | 1 if Zone CR credentials are valid and CF API is reachable, 0 otherwise. Uses CR name (always available, even on failure). |
 | `cf_edge_operator_operations_total{resource,operation}` | counter | Successful CF operations; `resource`: customhostname; `operation`: adopt, create, recreate, update, delete |
 | `cf_edge_operator_customhostnames{zone_cr,state}` | gauge | CRs by zone CR and state (ready/pending/unhealthy/conflict). Sum = total CRs in zone |
-| `cf_edge_operator_zone_customhostnames{zone_cr,type}` | gauge | CF custom hostnames by zone CR and type (managed/orphan/drifted/total). `total` = CF quota usage for the zone |
+| `cf_edge_operator_zone_customhostnames{zone_cr,type}` | gauge | CF custom hostnames by zone CR and type (managed/orphan/drifted/total). `orphan` = no associated CR. `total` = CF quota usage for the zone |
 | `cf_edge_operator_api_duration_seconds{resource,operation}` | histogram | CF API call latency; `resource`: customhostname, zone; `operation`: get, list, create, update, delete |
 | `cf_edge_operator_api_errors_by_code_total{resource,operation,status_code}` | counter | CF API errors by resource, operation, and HTTP status code (`unknown` for non-HTTP errors) |
 | `cf_edge_operator_ssl_provisioning_duration_seconds{zone_cr,hostname,method}` | histogram | Time from CF create to `ssl.status == active`. Buckets span 1m–1w. |

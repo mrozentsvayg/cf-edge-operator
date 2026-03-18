@@ -23,6 +23,23 @@ All flags are set via Helm values, which are passed as container args in the Dep
 
 ---
 
+## Log Levels
+
+The operator uses structured logging with four verbosity levels:
+
+| Level | Flag | What's logged |
+|-------|------|---------------|
+| ERROR | _(always visible)_ | API failures: lookup, create, update, delete errors |
+| INFO | _(default)_ | Operational events: creates, deletes, drift corrections, policy skips, SSL provisioned, drift detection summaries (when drifted > 0) |
+| V(1) / DEBUG | `--zap-log-level=1` | Confirmations and heartbeats: finalizer added, status.ssl refreshed, drift detection complete (when drifted = 0), duplicate CR skip during drift detection |
+| V(2) | `--zap-log-level=2` | Per-item verbose: orphan CF hostnames (no associated CR), dry-run per-CR "no drift detected" |
+
+In development mode (`--zap-devel=true`, the default), all levels are visible. In production mode (`--zap-devel=false`), set `--zap-log-level` to control verbosity.
+
+Custom hostname log messages use the format: `custom hostname - <action>, <context> (<reason>)`.
+
+---
+
 ## Performance Tuning
 
 ### Drift Detection Interval (`--drift-interval`)
