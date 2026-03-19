@@ -733,16 +733,16 @@ func TestBuildSSLParams(t *testing.T) {
 		name       string
 		ssl        saasv1beta1.CustomHostnameSSL
 		defaults   SSLDefaults
-		wantCA     bool
-		wantMinTLS bool
-		wantMethod bool
-		wantType   bool
+		wantCA     string
+		wantMinTLS string
+		wantMethod string
+		wantType   string
 	}{
 		{
 			name:       "CR fields set, no defaults",
 			ssl:        saasv1beta1.CustomHostnameSSL{Method: sslMethodHTTP, Type: sslTypeDV},
-			wantMethod: true,
-			wantType:   true,
+			wantMethod: sslMethodHTTP,
+			wantType:   sslTypeDV,
 		},
 		{
 			name: "all CR fields set",
@@ -752,54 +752,61 @@ func TestBuildSSLParams(t *testing.T) {
 				Method:               sslMethodTXT,
 				Type:                 sslTypeDV,
 			},
-			wantCA:     true,
-			wantMinTLS: true,
-			wantMethod: true,
-			wantType:   true,
+			wantCA:     sslCAGoogle,
+			wantMinTLS: sslMinTLS12,
+			wantMethod: sslMethodTXT,
+			wantType:   sslTypeDV,
 		},
 		{
 			name:       "empty CR fields, no defaults -- method/type always set (CF requires them)",
 			ssl:        saasv1beta1.CustomHostnameSSL{},
-			wantMethod: true,
-			wantType:   true,
+			wantMethod: sslMethodHTTP,
+			wantType:   sslTypeDV,
 		},
 		{
 			name:       "empty CR fields, defaults applied",
 			ssl:        saasv1beta1.CustomHostnameSSL{},
 			defaults:   SSLDefaults{CertificateAuthority: sslCAGoogle, MinTLSVersion: sslMinTLS12, Method: sslMethodTXT, Type: sslTypeDV},
-			wantCA:     true,
-			wantMinTLS: true,
-			wantMethod: true,
-			wantType:   true,
+			wantCA:     sslCAGoogle,
+			wantMinTLS: sslMinTLS12,
+			wantMethod: sslMethodTXT,
+			wantType:   sslTypeDV,
 		},
 		{
 			name:       "CR fields override defaults",
 			ssl:        saasv1beta1.CustomHostnameSSL{CertificateAuthority: sslCALetsEncrypt, MinTLSVersion: sslMinTLS13, Method: sslMethodHTTP},
 			defaults:   SSLDefaults{CertificateAuthority: sslCAGoogle, MinTLSVersion: sslMinTLS12, Method: sslMethodTXT, Type: sslTypeDV},
-			wantCA:     true,
-			wantMinTLS: true,
-			wantMethod: true,
-			wantType:   true,
+			wantCA:     sslCALetsEncrypt,
+			wantMinTLS: sslMinTLS13,
+			wantMethod: sslMethodHTTP,
+			wantType:   sslTypeDV,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := buildSSLParams(&tt.ssl, tt.defaults)
-			hasCA := got.CertificateAuthority.Present
-			hasMinTLS := got.Settings.Present
-			hasMethod := got.Method.Present
-			hasType := got.Type.Present
-			if hasCA != tt.wantCA {
-				t.Errorf("CertificateAuthority.Present = %v, want %v", hasCA, tt.wantCA)
+			if tt.wantCA != "" {
+				if gotCA := string(got.CertificateAuthority.Value); gotCA != tt.wantCA {
+					t.Errorf("CA = %q, want %q", gotCA, tt.wantCA)
+				}
+			} else if got.CertificateAuthority.Present {
+				t.Error("CA.Present = true, want false")
 			}
-			if hasMinTLS != tt.wantMinTLS {
-				t.Errorf("Settings.Present = %v, want %v", hasMinTLS, tt.wantMinTLS)
+			if tt.wantMinTLS != "" {
+				if !got.Settings.Present {
+					t.Fatal("Settings.Present = false, want true")
+				}
+				if gotMinTLS := string(got.Settings.Value.MinTLSVersion.Value); gotMinTLS != tt.wantMinTLS {
+					t.Errorf("MinTLS = %q, want %q", gotMinTLS, tt.wantMinTLS)
+				}
+			} else if got.Settings.Present {
+				t.Error("Settings.Present = true, want false")
 			}
-			if hasMethod != tt.wantMethod {
-				t.Errorf("Method.Present = %v, want %v", hasMethod, tt.wantMethod)
+			if gotMethod := string(got.Method.Value); gotMethod != tt.wantMethod {
+				t.Errorf("Method = %q, want %q", gotMethod, tt.wantMethod)
 			}
-			if hasType != tt.wantType {
-				t.Errorf("Type.Present = %v, want %v", hasType, tt.wantType)
+			if gotType := string(got.Type.Value); gotType != tt.wantType {
+				t.Errorf("Type = %q, want %q", gotType, tt.wantType)
 			}
 		})
 	}
@@ -818,52 +825,69 @@ func TestBuildSSLEditParams(t *testing.T) {
 		name       string
 		ssl        saasv1beta1.CustomHostnameSSL
 		cf         custom_hostnames.CustomHostnameListResponseSSL
-		wantCA     bool
-		wantMinTLS bool
+		wantCA     string
+		wantMinTLS string
+		wantMethod string
+		wantType   string
 	}{
 		{
 			name:       "all fields from spec",
 			ssl:        saasv1beta1.CustomHostnameSSL{CertificateAuthority: sslCAGoogle, MinTLSVersion: sslMinTLS12, Method: sslMethodHTTP, Type: sslTypeDV},
 			cf:         cfSSL("", "", "", ""),
-			wantCA:     true,
-			wantMinTLS: true,
+			wantCA:     sslCAGoogle,
+			wantMinTLS: sslMinTLS12,
+			wantMethod: sslMethodHTTP,
+			wantType:   sslTypeDV,
 		},
 		{
 			name:       "spec empty -- all fields from CF",
 			ssl:        saasv1beta1.CustomHostnameSSL{},
 			cf:         cfSSL(sslCAGoogle, sslMinTLS12, sslMethodHTTP, sslTypeDV),
-			wantCA:     true,
-			wantMinTLS: true,
+			wantCA:     sslCAGoogle,
+			wantMinTLS: sslMinTLS12,
+			wantMethod: sslMethodHTTP,
+			wantType:   sslTypeDV,
 		},
 		{
-			name:   "spec overrides CF",
-			ssl:    saasv1beta1.CustomHostnameSSL{CertificateAuthority: sslCAGoogle, Method: sslMethodTXT},
-			cf:     cfSSL(sslCALetsEncrypt, sslMinTLS12, sslMethodHTTP, sslTypeDV),
-			wantCA: true,
-			// minTLS comes from CF
-			wantMinTLS: true,
+			name:       "spec overrides CF",
+			ssl:        saasv1beta1.CustomHostnameSSL{CertificateAuthority: sslCAGoogle, Method: sslMethodTXT},
+			cf:         cfSSL(sslCALetsEncrypt, sslMinTLS12, sslMethodHTTP, sslTypeDV),
+			wantCA:     sslCAGoogle,
+			wantMinTLS: sslMinTLS12,
+			wantMethod: sslMethodTXT,
+			wantType:   sslTypeDV,
 		},
 		{
-			name: "both empty -- method/type default to http/dv",
-			ssl:  saasv1beta1.CustomHostnameSSL{},
-			cf:   cfSSL("", "", "", ""),
+			name:       "both empty -- method/type default to http/dv",
+			ssl:        saasv1beta1.CustomHostnameSSL{},
+			cf:         cfSSL("", "", "", ""),
+			wantMethod: sslMethodHTTP,
+			wantType:   sslTypeDV,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := buildSSLEditParams(&tt.ssl, tt.cf)
-			if p.CertificateAuthority.Present != tt.wantCA {
-				t.Errorf("CA.Present = %v, want %v", p.CertificateAuthority.Present, tt.wantCA)
+			if got := string(p.CertificateAuthority.Value); tt.wantCA != "" && got != tt.wantCA {
+				t.Errorf("CA = %q, want %q", got, tt.wantCA)
+			} else if tt.wantCA == "" && p.CertificateAuthority.Present {
+				t.Errorf("CA.Present = true, want false (both empty)")
 			}
-			if p.Settings.Present != tt.wantMinTLS {
-				t.Errorf("Settings.Present = %v, want %v", p.Settings.Present, tt.wantMinTLS)
+			if tt.wantMinTLS != "" {
+				if !p.Settings.Present {
+					t.Fatal("Settings.Present = false, want true")
+				}
+				if got := string(p.Settings.Value.MinTLSVersion.Value); got != tt.wantMinTLS {
+					t.Errorf("MinTLS = %q, want %q", got, tt.wantMinTLS)
+				}
+			} else if p.Settings.Present {
+				t.Errorf("Settings.Present = true, want false (both empty)")
 			}
-			// method and type are always sent
-			if !p.Method.Present {
-				t.Error("Method.Present = false, want true (always sent)")
+			if got := string(p.Method.Value); got != tt.wantMethod {
+				t.Errorf("Method = %q, want %q", got, tt.wantMethod)
 			}
-			if !p.Type.Present {
-				t.Error("Type.Present = false, want true (always sent)")
+			if got := string(p.Type.Value); got != tt.wantType {
+				t.Errorf("Type = %q, want %q", got, tt.wantType)
 			}
 		})
 	}

@@ -131,6 +131,45 @@ func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Handle deletion -- non-CF paths first (no client needed), then CF paths.
+	if !ch.DeletionTimestamp.IsZero() {
+		if r.DryRun {
+			// Do NOT remove the finalizer -- the CR stays in Terminating state while dry-run
+			// is active. When the operator restarts without --dry-run, deletion proceeds normally.
+			log.Info("custom hostname - not deleting (dry-run)", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
+			return ctrl.Result{}, nil
+		}
+		if controllerutil.ContainsFinalizer(&ch, finalizerName) && ch.Status.ID == "" {
+			log.Info("custom hostname - could not be deleted, finalizer released (association with Cloudflare was never established)",
+				"hostname", ch.Spec.Hostname)
+			controllerutil.RemoveFinalizer(&ch, finalizerName)
+			return ctrl.Result{}, r.Update(ctx, &ch)
+		}
+		if controllerutil.ContainsFinalizer(&ch, finalizerName) {
+			mgmtPolicy := effectiveManagementPolicy(ch.Spec.ManagementPolicy, r.ManagementPolicy)
+			if mgmtPolicy == ManagementPolicyObserve {
+				log.Info("custom hostname - not deleted, finalizer released (managementPolicy=observe)",
+					"hostname", ch.Spec.Hostname, "id", ch.Status.ID)
+				controllerutil.RemoveFinalizer(&ch, finalizerName)
+				return ctrl.Result{}, r.Update(ctx, &ch)
+			}
+			policy := effectiveDeletePolicy(ch.Spec.DeletePolicy, r.DeletePolicy)
+			if policy == DeletePolicyNever {
+				log.Info("custom hostname - not deleted, finalizer released (deletePolicy=never)",
+					"hostname", ch.Spec.Hostname, "id", ch.Status.ID)
+				controllerutil.RemoveFinalizer(&ch, finalizerName)
+				return ctrl.Result{}, r.Update(ctx, &ch)
+			}
+		}
+		// CF-dependent delete paths: own-only lookup + always/own-only delete.
+		zi, err := r.buildCloudflareClient(ctx, &ch)
+		if err != nil {
+			log.Error(err, "custom hostname - client initialization failed")
+			return ctrl.Result{}, err // bare error for retry -- don't setError during deletion
+		}
+		return r.handleDelete(ctx, zi.Client, zi.ID, &ch)
+	}
+
 	zi, err := r.buildCloudflareClient(ctx, &ch)
 	if err != nil {
 		log.Error(err, "custom hostname - client initialization failed")
@@ -143,11 +182,6 @@ func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if zi.Domain != "" && !strings.HasSuffix(ch.Spec.OriginServer, "."+zi.Domain) && ch.Spec.OriginServer != zi.Domain {
 		return ctrl.Result{}, r.setError(ctx, &ch, "OriginNotInZone",
 			fmt.Sprintf("originServer %q must belong to zone %q", ch.Spec.OriginServer, zi.Domain))
-	}
-
-	// Handle deletion
-	if !ch.DeletionTimestamp.IsZero() {
-		return r.handleDelete(ctx, zi.Client, zi.ID, &ch)
 	}
 
 	// NOTE: Requeue after finalizer add to get a fresh object with the finalizer persisted.
@@ -195,6 +229,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 			// The zone controller will re-enqueue when the hostname appears in CF.
 			log.Info("custom hostname - not creating (managementPolicy=observe)",
 				"hostname", ch.Spec.Hostname)
+			ch.Status.ConsecutiveErrors = 0 // Clear errors from prior policy (e.g., switched from manage to observe)
 			return ctrl.Result{}, r.setCondition(ctx, ch, metav1.ConditionFalse,
 				"WaitingForExternal", "Hostname not yet provisioned in Cloudflare")
 		}
@@ -236,6 +271,10 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 			log.Info(fmt.Sprintf("custom hostname - not updating, drift detected (managementPolicy=%s)", mgmtPolicy),
 				"hostname", ch.Spec.Hostname,
 				"drift", di)
+		} else if r.DryRun {
+			log.Info("custom hostname - not updating, drift detected (dry-run)",
+				"hostname", ch.Spec.Hostname,
+				"drift", di)
 		} else {
 			log.Info("custom hostname - updating, drift detected",
 				"hostname", ch.Spec.Hostname,
@@ -248,22 +287,17 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 			if ch.Spec.SSL != nil {
 				editParams.SSL = cloudflare.F(buildSSLEditParams(ch.Spec.SSL, existing.SSL))
 			}
-			if r.DryRun {
-				log.Info("custom hostname - not updating, drift detected (dry-run)", "hostname", ch.Spec.Hostname,
-					"drift", di)
-			} else {
-				editStart := time.Now()
-				editResp, editErr := zi.Client.CustomHostnames.Edit(ctx, existing.ID, editParams, opts...)
-				recordCFCall(cfResourceCustomHostname, cfOpUpdate, editStart, &editErr)
-				if editErr != nil {
-					log.Error(editErr, "custom hostname - update failed", "id", existing.ID)
-					return ctrl.Result{}, r.setError(ctx, ch, "UpdateFailed", editErr.Error())
-				}
-				operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpUpdate).Inc()
-				// Use post-edit response for status -- reflects the corrected CF state.
-				ch.Status.SSL = sslStatusFromEdit(editResp)
-				edited = true
+			editStart := time.Now()
+			editResp, editErr := zi.Client.CustomHostnames.Edit(ctx, existing.ID, editParams, opts...)
+			recordCFCall(cfResourceCustomHostname, cfOpUpdate, editStart, &editErr)
+			if editErr != nil {
+				log.Error(editErr, "custom hostname - update failed", "id", existing.ID)
+				return ctrl.Result{}, r.setError(ctx, ch, "UpdateFailed", editErr.Error())
 			}
+			operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpUpdate).Inc()
+			// Use post-edit response for status -- reflects the corrected CF state.
+			ch.Status.SSL = sslStatusFromEdit(editResp)
+			edited = true
 		}
 	}
 	// Set SSL status in memory; persisted by setCondition's r.Status().Update()
@@ -300,10 +334,11 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, zi *zoneInf
 		ZoneID:   cloudflare.F(zi.ID),
 		Hostname: cloudflare.F(ch.Spec.Hostname),
 	}
-	// Default to DV + HTTP if not specified -- SSL is always required for custom hostnames.
+	// SSL is always required for custom hostnames. Empty spec lets buildSSLParams
+	// apply the operator defaults (--ssl-*), falling back to http/dv if unset.
 	sslSpec := ch.Spec.SSL
 	if sslSpec == nil {
-		sslSpec = &saasv1beta1.CustomHostnameSSL{Type: sslTypeDV, Method: sslMethodHTTP}
+		sslSpec = &saasv1beta1.CustomHostnameSSL{}
 	}
 	params.SSL = cloudflare.F(buildSSLParams(sslSpec, r.SSLDefaults))
 	opts := []option.RequestOption{option.WithJSONSet("custom_origin_server", ch.Spec.OriginServer)}
@@ -346,46 +381,21 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, zi *zoneInf
 	return r.requeueOrReady(ctx, zi.CR, ch)
 }
 
+// handleDelete performs CF API operations for CR deletion (own-only lookup, delete).
+// Non-CF delete paths (dry-run, no ID, observe, never) are handled in Reconcile
+// before buildCloudflareClient, so they work even when Zone/Secret is missing.
 func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudflare.Client, zoneID string, ch *saasv1beta1.CustomHostname) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
+	// Defense-in-depth: dry-run is checked in Reconcile, but guard here too
+	// to prevent CF writes if handleDelete is ever called directly.
 	if r.DryRun {
-		// Do NOT remove the finalizer -- the CR stays in Terminating state while dry-run
-		// is active. When the operator restarts without --dry-run, deletion proceeds normally.
-		// Returning nil (no requeue) is intentional: the dry-run message fires once per
-		// deletion attempt and then stays quiet. The 30 s SSL-pending requeue cycle is
-		// also dropped here, so no further reconciles are scheduled for this CR.
 		log.Info("custom hostname - not deleting (dry-run)", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
 		return ctrl.Result{}, nil
 	}
 
-	if controllerutil.ContainsFinalizer(ch, finalizerName) && ch.Status.ID == "" {
-		log.Info("custom hostname - could not be deleted, finalizer released (association with Cloudflare was never established)",
-			"hostname", ch.Spec.Hostname)
-		controllerutil.RemoveFinalizer(ch, finalizerName)
-		return ctrl.Result{}, r.Update(ctx, ch)
-	}
-
 	if controllerutil.ContainsFinalizer(ch, finalizerName) {
-		// Observe mode supersedes deletePolicy: never touch CF, release finalizer unconditionally.
-		mgmtPolicy := effectiveManagementPolicy(ch.Spec.ManagementPolicy, r.ManagementPolicy)
-		if mgmtPolicy == ManagementPolicyObserve {
-			log.Info("custom hostname - not deleted, finalizer released (managementPolicy=observe)",
-				"hostname", ch.Spec.Hostname, "id", ch.Status.ID)
-			controllerutil.RemoveFinalizer(ch, finalizerName)
-			return ctrl.Result{}, r.Update(ctx, ch)
-		}
-
-		// For own-only policy: look up current CF state before deleting.
-		// If another entity now owns this hostname (different ID), release the finalizer without deleting.
-		// spec.deletePolicy takes precedence over the operator-wide --delete-policy flag.
 		policy := effectiveDeletePolicy(ch.Spec.DeletePolicy, r.DeletePolicy)
-		if policy == DeletePolicyNever {
-			log.Info("custom hostname - not deleted, finalizer released (deletePolicy=never)",
-				"hostname", ch.Spec.Hostname, "id", ch.Status.ID)
-			controllerutil.RemoveFinalizer(ch, finalizerName)
-			return ctrl.Result{}, r.Update(ctx, ch)
-		}
 		if policy == DeletePolicyOwnOnly {
 			current, err := r.findByHostname(ctx, cf, zoneID, ch.Spec.Hostname)
 			if err != nil {
