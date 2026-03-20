@@ -89,7 +89,10 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err != nil {
 		log.Error(err, "failed to fetch API token")
 		zoneReady.WithLabelValues(zone.Name).Set(0)
-		return ctrl.Result{}, r.setReady(ctx, &zone, metav1.ConditionFalse, "SecretError", err.Error())
+		// setReady is best-effort for observability; return the original error
+		// so controller-runtime retries with backoff (capped at 30s).
+		_ = r.setReady(ctx, &zone, metav1.ConditionFalse, "SecretError", err.Error())
+		return ctrl.Result{}, err
 	}
 
 	cf := cloudflare.NewClient(option.WithAPIToken(apiToken))
@@ -103,7 +106,8 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err != nil {
 		log.Error(err, "failed to fetch zone from Cloudflare", "zoneID", zone.Spec.ID)
 		zoneReady.WithLabelValues(zone.Name).Set(0)
-		return ctrl.Result{}, r.setReady(ctx, &zone, metav1.ConditionFalse, "CloudflareError", err.Error())
+		_ = r.setReady(ctx, &zone, metav1.ConditionFalse, "CloudflareError", err.Error())
+		return ctrl.Result{}, err
 	}
 	zoneReady.WithLabelValues(zone.Name).Set(1)
 	zone.Status.Name = zoneDetails.Name
