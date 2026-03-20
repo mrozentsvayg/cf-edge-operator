@@ -61,6 +61,9 @@ spec:
         - --ssl-type={{ .Values.sslType }}
         {{- end }}
         - --zap-devel={{ .Values.zapDevel }}
+        {{- if .Values.zapLogLevel }}
+        - --zap-log-level={{ .Values.zapLogLevel }}
+        {{- end }}
         ports:
         - name: metrics
           containerPort: 8080

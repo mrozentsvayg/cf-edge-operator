@@ -16,6 +16,7 @@ All flags are set via Helm values, which are passed as container args in the Dep
 | `--drift-buffer` | `1024` | `driftBuffer` | Internal channel buffer for drift events |
 | `--leader-elect` | `true` | `leaderElect` | Required when running multiple replicas |
 | `--zap-devel` | `true` | `zapDevel` | Development logger: human-readable console format, DPanic panics. Set `false` for JSON output (recommended for production log aggregation). |
+| `--zap-log-level` | _(auto)_ | `zapLogLevel` | Log verbosity: `0` = INFO, `1` = DEBUG, `2` = verbose. Only applies when `zapDevel` is false; when true, all levels are visible. |
 | `--ssl-certificate-authority` | _(empty)_ | `sslCertificateAuthority` | Default CA for new CHs (`lets_encrypt`, `google`, `ssl_com`). Empty = CF default |
 | `--ssl-min-tls-version` | _(empty)_ | `sslMinTLSVersion` | Default min TLS version for new CHs (`1.0`-`1.3`). Empty = CF default |
 | `--ssl-method` | _(empty)_ | `sslMethod` | Default DCV method for new CHs (`http`, `txt`, `email`). Empty = `http` |
