@@ -61,6 +61,8 @@ type ZoneReconciler struct {
 	// DriftInterval controls how often the zone controller bulk-lists Cloudflare
 	// resources to detect external drift. Set via --drift-interval (default: 1m).
 	DriftInterval time.Duration
+	// CFBaseURL overrides the Cloudflare API base URL (for integration tests).
+	CFBaseURL string
 }
 
 // +kubebuilder:rbac:groups=domains.cf-edge.io,resources=zones,verbs=get;list;watch
@@ -95,7 +97,11 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, err
 	}
 
-	cf := cloudflare.NewClient(option.WithAPIToken(apiToken))
+	cfOpts := []option.RequestOption{option.WithAPIToken(apiToken)}
+	if r.CFBaseURL != "" {
+		cfOpts = append(cfOpts, option.WithBaseURL(r.CFBaseURL))
+	}
+	cf := cloudflare.NewClient(cfOpts...)
 
 	// Validate credentials and populate zone name
 	zoneGetStart := time.Now()
