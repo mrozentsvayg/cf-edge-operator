@@ -106,6 +106,8 @@ type CustomHostnameReconciler struct {
 	DryRun bool
 	// SSLDefaults are operator-wide defaults applied on create when the CR field is empty.
 	SSLDefaults SSLDefaults
+	// CFBaseURL overrides the Cloudflare API base URL (for integration tests).
+	CFBaseURL string
 }
 
 // SSLDefaults holds operator-wide default SSL settings for new custom hostnames.
@@ -616,8 +618,12 @@ func (r *CustomHostnameReconciler) buildCloudflareClient(ctx context.Context, ch
 	if !ok {
 		return nil, fmt.Errorf("key %q not found in secret %q", key, zone.Spec.CredentialsRef.Name)
 	}
+	opts := []option.RequestOption{option.WithAPIToken(string(token))}
+	if r.CFBaseURL != "" {
+		opts = append(opts, option.WithBaseURL(r.CFBaseURL))
+	}
 	return &zoneInfo{
-		Client: cloudflare.NewClient(option.WithAPIToken(string(token))),
+		Client: cloudflare.NewClient(opts...),
 		ID:     zone.Spec.ID,
 		CR:     zone.Name,
 		Domain: zone.Status.Name,
