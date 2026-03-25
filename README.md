@@ -177,3 +177,17 @@ Metrics are exposed on `:8080/metrics` (HTTP, via Helm chart). See [docs/archite
 - `cf_edge_operator_drift_buffer_overflow_total{resource}` -- times the drift buffer was full (zone controller blocked)
 - `cf_edge_operator_drift_detection_errors_total{resource}` -- drift detection failures
 
+## Development
+
+```bash
+# Unit tests
+go test -v ./internal/controller/...
+
+# Lint
+make lint
+
+# Regenerate CRDs after API type changes
+make generate manifests
+```
+
+Tests include unit tests for pure functions and integration tests using envtest (real K8s API server) + httptest (mock Cloudflare API). See [docs/architecture.md](docs/architecture.md) for details.

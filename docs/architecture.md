@@ -233,5 +233,5 @@ No existing CH code is modified. Each resource type's drift detection, metrics, 
 
 ## Future Work
 
-- **CI integration tests** -- end-to-end tests against a dedicated CF zone with real API credentials.
+- **Integration tests** -- `integration_test.go` uses envtest (real K8s API) + httptest (mock CF API) to test full controller flows: lifecycle, Zone recovery, terminating CRs, SSL defaults cascade, drift correction, and conflict detection. End-to-end tests against a real CF zone are a separate future item.
 - **Additional CF resource types** -- Web Application Firewall (WAF) rules, routing, and other Cloudflare primitives via dedicated API groups (e.g. `security.cf-edge.io`, `routing.cf-edge.io`). See [Adding a New Resource Type](#adding-a-new-resource-type) for the implementation guide.
