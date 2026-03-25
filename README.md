@@ -139,6 +139,7 @@ kubectl get customhostnames -A
 | `sslMethod` | _(empty)_ | Default DCV method for new CHs. Empty = `http` |
 | `sslType` | _(empty)_ | Default validation type for new CHs. Empty = `dv` |
 | `zapDevel` | `true` | Development mode logger (console output). Set `false` for production JSON logs |
+| `zapLogLevel` | _(empty)_ | Log verbosity: `0` = INFO, `1` = DEBUG, `2` = TRACE. See [operations.md](docs/operations.md#log-levels) |
 | `podDisruptionBudget.enabled` | `false` | Create a PodDisruptionBudget (recommended when `replicaCount > 1`) |
 | `podDisruptionBudget.minAvailable` | `1` | Minimum available replicas during voluntary disruptions |
 | `serviceMonitor.enabled` | `false` | Create a ServiceMonitor for Prometheus Operator |

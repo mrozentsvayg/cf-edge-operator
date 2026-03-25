@@ -54,9 +54,10 @@ sslType: ""
 # Set to false for production JSON logs suitable for log aggregation.
 zapDevel: true
 
-# Log verbosity level. Only applies when zapDevel is false (production mode).
-# 0 = INFO only, 1 = DEBUG (confirmations, heartbeats), 2 = verbose (per-item orphans, dry-run details).
-# When zapDevel is true, all levels are visible regardless of this setting.
+# Log verbosity level.
+# 0 = INFO only, 1 = DEBUG/debug (confirmations, heartbeats), 2 = TRACE/trace (per-item orphans, dry-run details).
+# In development mode (zapDevel=true), V(1)/DEBUG is visible by default; V(2)/TRACE requires --zap-log-level=2.
+# In production mode (zapDevel=false), only INFO is visible by default.
 zapLogLevel: ""
 
 resources:

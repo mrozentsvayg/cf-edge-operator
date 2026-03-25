@@ -26,6 +26,7 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -53,6 +54,16 @@ func init() {
 	utilruntime.Must(domainsv1beta1.AddToScheme(scheme))
 	utilruntime.Must(saasv1beta1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
+}
+
+// levelEncoder names V(2) as "trace" instead of zap's default "Level(-2)".
+// Standard levels (info, debug, warn, error) fall through to the default encoder.
+func levelEncoder(l zapcore.Level, enc zapcore.PrimitiveArrayEncoder) {
+	if l == zapcore.Level(-2) {
+		enc.AppendString("trace")
+		return
+	}
+	zapcore.LowercaseLevelEncoder(l, enc)
 }
 
 // nolint:gocyclo
@@ -123,6 +134,11 @@ func main() {
 	// Flip to false for production JSON output. Overridable via --zap-devel.
 	opts := zap.Options{
 		Development: true,
+		EncoderConfigOptions: []zap.EncoderConfigOption{
+			func(cfg *zapcore.EncoderConfig) {
+				cfg.EncodeLevel = levelEncoder
+			},
+		},
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
