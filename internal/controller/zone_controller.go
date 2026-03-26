@@ -116,6 +116,9 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, err
 	}
 	zoneReady.WithLabelValues(zone.Name).Set(1)
+	if !meta.IsStatusConditionTrue(zone.Status.Conditions, "Ready") {
+		log.Info("zone - ready", "zone", zoneDetails.Name, "zoneID", zone.Spec.ID)
+	}
 	zone.Status.Name = zoneDetails.Name
 	if err := r.setReady(ctx, &zone, metav1.ConditionTrue, "ZoneReady", "Zone credentials validated"); err != nil {
 		return ctrl.Result{}, err
