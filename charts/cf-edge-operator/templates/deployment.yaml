@@ -42,10 +42,10 @@ spec:
         - --delete-policy={{ .Values.deletePolicy }}
         - --drift-interval={{ .Values.driftInterval }}
         - --drift-buffer={{ .Values.driftBuffer }}
-        {{- if .Values.dryRun }}
+        {{- if ne (lower (toString .Values.dryRun)) "false" }}
         - --dry-run
         {{- end }}
-        {{- if .Values.leaderElect }}
+        {{- if ne (lower (toString .Values.leaderElect)) "false" }}
         - --leader-elect
         {{- end }}
         {{- if .Values.sslCertificateAuthority }}
