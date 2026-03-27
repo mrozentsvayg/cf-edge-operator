@@ -37,5 +37,48 @@ jobs:
             --set prometheusRule.runbookUrl=https://example.com/runbooks \
             > /dev/null
 
+      - name: Verify rendered flags match values
+        run: |
+          # Boolean flags: string and boolean values (ApplicationSet passes strings)
+          helm template test charts/cf-edge-operator/ --set-string dryRun=false | grep -q "\-\-dry-run" \
+            && { echo "FAIL: --dry-run present with string false"; exit 1; }
+          helm template test charts/cf-edge-operator/ --set-string dryRun=true | grep -q "\-\-dry-run" \
+            || { echo "FAIL: --dry-run absent with string true"; exit 1; }
+          helm template test charts/cf-edge-operator/ --set dryRun=false | grep -q "\-\-dry-run" \
+            && { echo "FAIL: --dry-run present with bool false"; exit 1; }
+          helm template test charts/cf-edge-operator/ --set dryRun=true | grep -q "\-\-dry-run" \
+            || { echo "FAIL: --dry-run absent with bool true"; exit 1; }
+          helm template test charts/cf-edge-operator/ --set-string leaderElect=false | grep -q "\-\-leader-elect$" \
+            && { echo "FAIL: --leader-elect present with string false"; exit 1; }
+          helm template test charts/cf-edge-operator/ --set-string leaderElect=true | grep -q "\-\-leader-elect$" \
+            || { echo "FAIL: --leader-elect absent with string true"; exit 1; }
+
+          # Operator flags render with correct values
+          out=$(helm template test charts/cf-edge-operator/ \
+            --set managementPolicy=create \
+            --set deletePolicy=never \
+            --set driftInterval=30s \
+            --set sslCertificateAuthority=lets_encrypt \
+            --set sslMinTLSVersion=1.2 \
+            --set zapDevel=false \
+            --set zapLogLevel=2)
+          echo "$out" | grep -q "\-\-management-policy=create"              || { echo "FAIL: managementPolicy"; exit 1; }
+          echo "$out" | grep -q "\-\-delete-policy=never"                   || { echo "FAIL: deletePolicy"; exit 1; }
+          echo "$out" | grep -q "\-\-drift-interval=30s"                    || { echo "FAIL: driftInterval"; exit 1; }
+          echo "$out" | grep -q "\-\-ssl-certificate-authority=lets_encrypt" || { echo "FAIL: sslCertificateAuthority"; exit 1; }
+          echo "$out" | grep -q "\-\-ssl-min-tls-version=1.2"               || { echo "FAIL: sslMinTLSVersion"; exit 1; }
+          echo "$out" | grep -q "\-\-zap-devel=false"                       || { echo "FAIL: zapDevel"; exit 1; }
+          echo "$out" | grep -q "\-\-zap-log-level=2"                       || { echo "FAIL: zapLogLevel"; exit 1; }
+
+          # Optional flags absent when empty (defaults)
+          out=$(helm template test charts/cf-edge-operator/)
+          echo "$out" | grep -q "\-\-ssl-certificate-authority" && { echo "FAIL: sslCA should be absent by default"; exit 1; }
+          echo "$out" | grep -q "\-\-ssl-min-tls-version"       && { echo "FAIL: sslMinTLS should be absent by default"; exit 1; }
+          echo "$out" | grep -q "\-\-ssl-method"                && { echo "FAIL: sslMethod should be absent by default"; exit 1; }
+          echo "$out" | grep -q "\-\-ssl-type"                  && { echo "FAIL: sslType should be absent by default"; exit 1; }
+          echo "$out" | grep -q "\-\-zap-log-level"             && { echo "FAIL: zapLogLevel should be absent by default"; exit 1; }
+
+          echo "All flag rendering tests passed"
+
       - name: Verify chart CRDs match generated CRDs
         run: diff -q config/crd/bases/ charts/cf-edge-operator/crds/
