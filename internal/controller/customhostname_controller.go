@@ -135,12 +135,6 @@ func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Handle deletion -- non-CF paths first (no client needed), then CF paths.
 	if !ch.DeletionTimestamp.IsZero() {
-		if r.DryRun {
-			// Do NOT remove the finalizer -- the CR stays in Terminating state while dry-run
-			// is active. When the operator restarts without --dry-run, deletion proceeds normally.
-			log.Info("custom hostname - not deleting (dry-run)", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
-			return ctrl.Result{}, nil
-		}
 		if controllerutil.ContainsFinalizer(&ch, finalizerName) && ch.Status.ID == "" {
 			log.Info("custom hostname - could not be deleted, finalizer released (association with Cloudflare was never established)",
 				"hostname", ch.Spec.Hostname)
@@ -384,16 +378,20 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, zi *zoneInf
 }
 
 // handleDelete performs CF API operations for CR deletion (own-only lookup, delete).
-// Non-CF delete paths (dry-run, no ID, observe, never) are handled in Reconcile
-// before buildCloudflareClient, so they work even when Zone/Secret is missing.
+// Non-CF delete paths (no ID, observe, never) are handled in Reconcile before
+// buildCloudflareClient, so they work even when Zone/Secret is missing.
+// Dry-run is handled here: skip CF writes but release the finalizer.
 func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudflare.Client, zoneID string, ch *saasv1beta1.CustomHostname) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	// Defense-in-depth: dry-run is checked in Reconcile, but guard here too
-	// to prevent CF writes if handleDelete is ever called directly.
+	// Dry-run: skip CF API calls but release the finalizer so the CR can be
+	// garbage collected. The CF hostname stays as an orphan (visible in drift
+	// detection). Blocking finalizer removal in dry-run would prevent ArgoCD
+	// from pruning CRs, causing stuck syncs.
 	if r.DryRun {
-		log.Info("custom hostname - not deleting (dry-run)", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
-		return ctrl.Result{}, nil
+		log.Info("custom hostname - not deleted, finalizer released (dry-run)", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
+		controllerutil.RemoveFinalizer(ch, finalizerName)
+		return ctrl.Result{}, r.Update(ctx, ch)
 	}
 
 	if controllerutil.ContainsFinalizer(ch, finalizerName) {

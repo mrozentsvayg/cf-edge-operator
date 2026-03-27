@@ -19,7 +19,6 @@ package controller
 import (
 	"context"
 	"reflect"
-	"slices"
 	"testing"
 	"time"
 
@@ -213,15 +212,15 @@ func TestHandleDeleteDryRun(t *testing.T) {
 		t.Errorf("expected no requeue in dry-run, got %+v", result)
 	}
 
-	// The finalizer must still be present -- dry-run must not mutate K8s.
-	// If this fails it means dry-run removed the finalizer, which would
-	// silently orphan the CF hostname when the CR disappears from K8s.
+	// Dry-run skips CF API calls but releases the finalizer so the CR can be
+	// garbage collected. The CF hostname stays as an orphan, visible in drift
+	// detection. Blocking finalizer removal would prevent ArgoCD from pruning CRs.
+	// The fake client deletes the object immediately when the finalizer is removed
+	// (DeletionTimestamp was set), so we verify deletion happened.
 	var got saasv1beta1.CustomHostname
-	if err := c.Get(ctx, client.ObjectKeyFromObject(ch), &got); err != nil {
-		t.Fatalf("Get failed: %v", err)
-	}
-	if !slices.Contains(got.Finalizers, finalizerName) {
-		t.Error("dry-run: finalizer was removed; CR would disappear from K8s while CF hostname stays (orphan bug)")
+	err = c.Get(ctx, client.ObjectKeyFromObject(ch), &got)
+	if err == nil {
+		t.Error("dry-run: CR still exists after finalizer removal; expected garbage collection")
 	}
 }
 
