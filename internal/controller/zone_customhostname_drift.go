@@ -158,8 +158,10 @@ func (r *ZoneReconciler) sendDriftEvent(ctx context.Context, ch *saasv1beta1.Cus
 func (r *ZoneReconciler) listCloudflareHostnames(ctx context.Context, cf *cloudflare.Client, zoneID string) (map[string]custom_hostnames.CustomHostnameListResponse, error) {
 	start := time.Now()
 	result := make(map[string]custom_hostnames.CustomHostnameListResponse)
+	// CF API default is 20 per page; max is 50.
 	pager := cf.CustomHostnames.ListAutoPaging(ctx, custom_hostnames.CustomHostnameListParams{
-		ZoneID: cloudflare.F(zoneID),
+		ZoneID:  cloudflare.F(zoneID),
+		PerPage: cloudflare.F(50.0),
 	})
 	// NOTE: Map keyed by hostname -- if CF returns duplicates (edge case with pending
 	// deletions), the later entry wins. CF deduplicates hostnames in practice.
