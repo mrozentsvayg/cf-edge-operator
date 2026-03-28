@@ -151,18 +151,25 @@ If the duplicate was created intentionally (e.g., migration between namespaces),
 ```bash
 # Check operator logs for recent API errors
 kubectl logs -n <operator-namespace> -l app.kubernetes.io/name=cf-edge-operator \
-  | grep -i "cloudflare\|api error\|status.*5[0-9][0-9]"
+  | grep -i "cloudflare\|api error\|status.*5[0-9][0-9]\|deadline exceeded\|list failed"
 
 # Check Cloudflare status page
 open https://www.cloudflarestatus.com
 
-# PromQL to see which operations are failing
+# PromQL to see which operations are failing and why
 # rate(cf_edge_operator_api_errors_by_code_total[5m])
+#
+# Break down by error type:
+#   status_code="timeout"   -- request exceeded --cf-api-timeout (default 3s)
+#   status_code="canceled"  -- request canceled (pod shutdown, leader election loss)
+#   status_code=~"5.."      -- Cloudflare server errors (500, 502, 503, etc.)
+#   status_code="unknown"   -- non-HTTP errors (DNS resolution, connection refused)
 ```
 
 **Resolve:**
 
 - **CF service degradation:** Wait for Cloudflare to recover. The operator will resume automatically.
+- **Timeouts (`status_code="timeout"`):** CF API is responding slowly. Check CF status page. If persistent, increase `--cf-api-timeout` (default 3s). For bulk-list timeouts, the log includes `itemsFetched` showing how many hostnames were fetched before the timeout (e.g., `itemsFetched: 100` = two full pages completed, third page timed out).
 - **Invalid API token:** A token that was valid may have been rotated or had permissions changed. Update the token in the Zone CR's secret.
 - **Zone ID misconfiguration:** A Zone CR with an invalid or deleted zone ID will produce sustained errors. Correct `spec.id` in the Zone CR.
 
@@ -238,6 +245,8 @@ curl -s localhost:8080/metrics | grep cf_edge_operator
 #   cf_edge_operator_drift_detection_errors_total
 # CF API error rate by status code:
 #   rate(cf_edge_operator_api_errors_by_code_total[5m])
+# CF API timeouts specifically:
+#   rate(cf_edge_operator_api_errors_by_code_total{status_code="timeout"}[5m])
 ```
 
 ---

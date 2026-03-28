@@ -80,6 +80,8 @@ func main() {
 	var dryRun bool
 	var driftInterval time.Duration
 	var driftBuffer int
+	var cfAPITimeout time.Duration
+	var cfAPIMaxRetries int
 	var sslCertificateAuthority, sslMinTLSVersion, sslMethod, sslType string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -116,6 +118,12 @@ func main() {
 	flag.IntVar(&driftBuffer, "drift-buffer", 1024,
 		"Buffer size of the internal channel used to enqueue drifted CustomHostname CRs. "+
 			"Increase if operating with many zones and very frequent drift cycles.")
+	flag.DurationVar(&cfAPITimeout, "cf-api-timeout", 3*time.Second,
+		"Per-request timeout for Cloudflare API calls. A hung call will be cancelled after this duration.")
+	flag.IntVar(&cfAPIMaxRetries, "cf-api-max-retries", 0,
+		"Maximum number of retries for failed Cloudflare API calls (0 = no retries). "+
+			"Retries are handled at a higher level: the drift cycle retries every --drift-interval, "+
+			"and individual reconciles are requeued by controller-runtime with backoff.")
 	flag.StringVar(&sslCertificateAuthority, "ssl-certificate-authority", "",
 		"Default certificate authority for new custom hostnames (lets_encrypt, google, ssl_com). "+
 			"Applied on create when the CR's spec.ssl.certificateAuthority is empty. If empty, Cloudflare uses its own default.")
@@ -152,6 +160,8 @@ func main() {
 		"dryRun", dryRun,
 		"driftInterval", driftInterval,
 		"driftBuffer", driftBuffer,
+		"cfAPITimeout", cfAPITimeout,
+		"cfAPIMaxRetries", cfAPIMaxRetries,
 		"leaderElect", enableLeaderElection,
 		"sslCertificateAuthority", sslCertificateAuthority,
 		"sslMinTLSVersion", sslMinTLSVersion,
@@ -176,6 +186,14 @@ func main() {
 	}
 	if driftBuffer <= 0 {
 		setupLog.Error(nil, "invalid --drift-buffer: must be positive", "value", driftBuffer)
+		os.Exit(1)
+	}
+	if cfAPITimeout <= 0 {
+		setupLog.Error(nil, "invalid --cf-api-timeout: must be positive", "value", cfAPITimeout)
+		os.Exit(1)
+	}
+	if cfAPIMaxRetries < 0 {
+		setupLog.Error(nil, "invalid --cf-api-max-retries: must be non-negative", "value", cfAPIMaxRetries)
 		os.Exit(1)
 	}
 	if sslCertificateAuthority != "" {
@@ -303,6 +321,8 @@ func main() {
 			Method:               sslMethod,
 			Type:                 sslType,
 		},
+		CFAPITimeout:    cfAPITimeout,
+		CFAPIMaxRetries: cfAPIMaxRetries,
 	}).SetupWithManager(mgr, driftEvents); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "CustomHostname")
 		os.Exit(1)
@@ -313,6 +333,8 @@ func main() {
 		CustomHostnameEvents: driftEvents,
 		DryRun:               dryRun,
 		DriftInterval:        driftInterval,
+		CFAPITimeout:         cfAPITimeout,
+		CFAPIMaxRetries:      cfAPIMaxRetries,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Zone")
 		os.Exit(1)

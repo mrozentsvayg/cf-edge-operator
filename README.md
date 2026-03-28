@@ -134,6 +134,8 @@ kubectl get customhostnames -A
 | `dryRun` | `false` | Log CF operations without executing them |
 | `driftInterval` | `1m` | How often the zone controller bulk-lists CF to detect drift |
 | `driftBuffer` | `1024` | Internal channel buffer for drift events |
+| `cfAPITimeout` | `3s` | Per-request timeout for CF API calls |
+| `cfAPIMaxRetries` | `0` | SDK-level retries for failed CF API calls (0 = no retries) |
 | `sslCertificateAuthority` | _(empty)_ | Default CA for new CHs. Empty = CF default |
 | `sslMinTLSVersion` | _(empty)_ | Default min TLS version for new CHs. Empty = CF default |
 | `sslMethod` | _(empty)_ | Default DCV method for new CHs. Empty = `http` |

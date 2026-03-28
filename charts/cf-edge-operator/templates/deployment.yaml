@@ -42,6 +42,8 @@ spec:
         - --delete-policy={{ .Values.deletePolicy }}
         - --drift-interval={{ .Values.driftInterval }}
         - --drift-buffer={{ .Values.driftBuffer }}
+        - --cf-api-timeout={{ .Values.cfAPITimeout }}
+        - --cf-api-max-retries={{ .Values.cfAPIMaxRetries }}
         {{- if ne (lower (toString .Values.dryRun)) "false" }}
         - --dry-run
         {{- end }}

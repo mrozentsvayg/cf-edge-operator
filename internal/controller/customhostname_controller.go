@@ -106,6 +106,12 @@ type CustomHostnameReconciler struct {
 	DryRun bool
 	// SSLDefaults are operator-wide defaults applied on create when the CR field is empty.
 	SSLDefaults SSLDefaults
+	// CFAPITimeout is the per-request timeout for Cloudflare API calls.
+	// Set via --cf-api-timeout (default: 3s).
+	CFAPITimeout time.Duration
+	// CFAPIMaxRetries is the maximum number of SDK-level retries for CF API calls.
+	// Set via --cf-api-max-retries (default: 0).
+	CFAPIMaxRetries int
 	// CFBaseURL overrides the Cloudflare API base URL (for integration tests).
 	CFBaseURL string
 }
@@ -616,7 +622,13 @@ func (r *CustomHostnameReconciler) buildCloudflareClient(ctx context.Context, ch
 	if !ok {
 		return nil, fmt.Errorf("key %q not found in secret %q", key, zone.Spec.CredentialsRef.Name)
 	}
-	opts := []option.RequestOption{option.WithAPIToken(string(token))}
+	opts := []option.RequestOption{
+		option.WithAPIToken(string(token)),
+		option.WithMaxRetries(r.CFAPIMaxRetries),
+	}
+	if r.CFAPITimeout > 0 {
+		opts = append(opts, option.WithRequestTimeout(r.CFAPITimeout))
+	}
 	if r.CFBaseURL != "" {
 		opts = append(opts, option.WithBaseURL(r.CFBaseURL))
 	}
