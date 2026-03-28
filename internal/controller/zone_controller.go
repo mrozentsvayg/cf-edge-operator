@@ -61,6 +61,12 @@ type ZoneReconciler struct {
 	// DriftInterval controls how often the zone controller bulk-lists Cloudflare
 	// resources to detect external drift. Set via --drift-interval (default: 1m).
 	DriftInterval time.Duration
+	// CFAPITimeout is the per-request timeout for Cloudflare API calls.
+	// Set via --cf-api-timeout (default: 3s).
+	CFAPITimeout time.Duration
+	// CFAPIMaxRetries is the maximum number of SDK-level retries for CF API calls.
+	// Set via --cf-api-max-retries (default: 0).
+	CFAPIMaxRetries int
 	// CFBaseURL overrides the Cloudflare API base URL (for integration tests).
 	CFBaseURL string
 }
@@ -89,7 +95,7 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	// Fetch and validate API token
 	apiToken, err := r.fetchAPIToken(ctx, &zone)
 	if err != nil {
-		log.Error(err, "failed to fetch API token")
+		log.Error(err, "zone - API token fetch failed")
 		zoneReady.WithLabelValues(zone.Name).Set(0)
 		// setReady is best-effort for observability; return the original error
 		// so controller-runtime retries with backoff (capped at 30s).
@@ -97,7 +103,13 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, err
 	}
 
-	cfOpts := []option.RequestOption{option.WithAPIToken(apiToken)}
+	cfOpts := []option.RequestOption{
+		option.WithAPIToken(apiToken),
+		option.WithMaxRetries(r.CFAPIMaxRetries),
+	}
+	if r.CFAPITimeout > 0 {
+		cfOpts = append(cfOpts, option.WithRequestTimeout(r.CFAPITimeout))
+	}
 	if r.CFBaseURL != "" {
 		cfOpts = append(cfOpts, option.WithBaseURL(r.CFBaseURL))
 	}
@@ -110,7 +122,7 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	})
 	recordCFCall(cfResourceZone, cfOpGet, zoneGetStart, &err)
 	if err != nil {
-		log.Error(err, "failed to fetch zone from Cloudflare", "zoneID", zone.Spec.ID)
+		log.Error(err, "zone - Cloudflare lookup failed", "zoneID", zone.Spec.ID)
 		zoneReady.WithLabelValues(zone.Name).Set(0)
 		_ = r.setReady(ctx, &zone, metav1.ConditionFalse, "CloudflareError", err.Error())
 		return ctrl.Result{}, err
@@ -132,7 +144,7 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	// When multiple detectors exist, parallelize with errgroup.Group to avoid
 	// sequential paginated API calls stretching the reconcile duration.
 	if err := r.detectCustomHostnameDrift(ctx, cf, &zone); err != nil {
-		log.Error(err, "drift detection failed", "zoneID", zone.Spec.ID)
+		log.V(1).Info("custom hostname - drift detection failed", "zoneID", zone.Spec.ID, "reason", err)
 		driftDetectionErrorsTotal.WithLabelValues(cfResourceCustomHostname).Inc()
 	}
 

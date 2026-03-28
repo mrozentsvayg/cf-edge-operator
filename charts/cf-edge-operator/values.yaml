@@ -43,6 +43,15 @@ driftInterval: "1m"
 # running many zones with large numbers of custom hostnames.
 driftBuffer: 1024
 
+# Per-request timeout for Cloudflare API calls. A hung call will be cancelled
+# after this duration. Uses Go duration format (e.g. "30s", "1m").
+cfAPITimeout: "3s"
+
+# Maximum SDK-level retries for failed Cloudflare API calls. Retries are handled
+# at a higher level: the drift cycle retries every driftInterval, and individual
+# reconciles are requeued by controller-runtime with backoff.
+cfAPIMaxRetries: 0
+
 # Default SSL settings for new custom hostnames. Applied on create when the
 # CR's spec.ssl field is empty. CA/minTLS: empty = CF default. Method: empty = http. Type: empty = dv.
 sslCertificateAuthority: ""

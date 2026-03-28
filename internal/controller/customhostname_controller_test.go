@@ -18,12 +18,19 @@ package controller
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/cloudflare/cloudflare-go/v6"
 	"github.com/cloudflare/cloudflare-go/v6/custom_hostnames"
+	"github.com/cloudflare/cloudflare-go/v6/option"
+	"github.com/cloudflare/cloudflare-go/v6/zones"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -995,6 +1002,107 @@ func TestSslStatusFromList(t *testing.T) {
 	}
 	if s.MinTLSVersion != minTLS {
 		t.Errorf("MinTLSVersion = %q, want %q", s.MinTLSVersion, minTLS)
+	}
+}
+
+func TestCFAPITimeout(t *testing.T) {
+	// Start a mock server that hangs for 5s on every request.
+	// Uses request context so the sleep cancels when the client disconnects,
+	// preventing httptest.Server.Close() from blocking 5s.
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(5 * time.Second):
+		case <-r.Context().Done():
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer slow.Close()
+
+	// Create client with 200ms timeout, 0 retries
+	cf := cloudflare.NewClient(
+		option.WithAPIToken("test-token"),
+		option.WithRequestTimeout(200*time.Millisecond),
+		option.WithMaxRetries(0),
+		option.WithBaseURL(slow.URL),
+	)
+
+	start := time.Now()
+	_, err := cf.Zones.Get(context.Background(), zones.ZoneGetParams{
+		ZoneID: cloudflare.F("fake-zone-id"),
+	})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected DeadlineExceeded, got: %v", err)
+	}
+	if elapsed > 1*time.Second {
+		t.Errorf("call took %v, expected <1s with 200ms timeout", elapsed)
+	}
+}
+
+func TestRecordCFCallTimeout(t *testing.T) {
+	// Reset metrics to avoid interference from other tests
+	cfAPIErrorsByCode.Reset()
+	cfAPICallDuration.Reset()
+
+	// Timeout error should record status_code="timeout"
+	timeoutErr := context.DeadlineExceeded
+	recordCFCall(cfResourceCustomHostname, cfOpGet, time.Now(), &timeoutErr)
+
+	m, err := cfAPIErrorsByCode.GetMetricWithLabelValues(cfResourceCustomHostname, cfOpGet, "timeout")
+	if err != nil {
+		t.Fatalf("failed to get metric: %v", err)
+	}
+	if got := testutil.ToFloat64(m); got != 1 {
+		t.Errorf("timeout counter = %v, want 1", got)
+	}
+
+	// Wrapped timeout error should also record status_code="timeout" (SDK wraps errors)
+	wrappedTimeout := fmt.Errorf("request failed: %w", context.DeadlineExceeded)
+	recordCFCall(cfResourceCustomHostname, cfOpGet, time.Now(), &wrappedTimeout)
+
+	if got := testutil.ToFloat64(m); got != 2 {
+		t.Errorf("timeout counter after wrapped error = %v, want 2", got)
+	}
+
+	// Non-timeout, non-CF error should record status_code="unknown"
+	unknownErr := fmt.Errorf("connection reset")
+	recordCFCall(cfResourceCustomHostname, cfOpCreate, time.Now(), &unknownErr)
+
+	m2, err := cfAPIErrorsByCode.GetMetricWithLabelValues(cfResourceCustomHostname, cfOpCreate, "unknown")
+	if err != nil {
+		t.Fatalf("failed to get metric: %v", err)
+	}
+	if got := testutil.ToFloat64(m2); got != 1 {
+		t.Errorf("unknown counter = %v, want 1", got)
+	}
+
+	// Canceled error should record status_code="canceled"
+	canceledErr := fmt.Errorf("operation stopped: %w", context.Canceled)
+	recordCFCall(cfResourceCustomHostname, cfOpDelete, time.Now(), &canceledErr)
+
+	mCanceled, err := cfAPIErrorsByCode.GetMetricWithLabelValues(cfResourceCustomHostname, cfOpDelete, "canceled")
+	if err != nil {
+		t.Fatalf("failed to get canceled metric: %v", err)
+	}
+	if got := testutil.ToFloat64(mCanceled); got != 1 {
+		t.Errorf("canceled counter = %v, want 1", got)
+	}
+
+	// No error should not increment any error counter
+	cfAPIErrorsByCode.Reset()
+	recordCFCall(cfResourceCustomHostname, cfOpList, time.Now(), nil)
+
+	m3, err := cfAPIErrorsByCode.GetMetricWithLabelValues(cfResourceCustomHostname, cfOpList, "timeout")
+	if err != nil {
+		t.Fatalf("failed to get metric: %v", err)
+	}
+	if got := testutil.ToFloat64(m3); got != 0 {
+		t.Errorf("nil error should not increment timeout counter, got %v", got)
 	}
 }
 

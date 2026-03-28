@@ -43,16 +43,20 @@ import (
 func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *cloudflare.Client, zone *domainsv1beta1.Zone) error {
 	log := logf.FromContext(ctx)
 
+	// Partial results from a failed paginated list are intentionally discarded.
+	// Using them would undercount total CHs, falsely flag missing hostnames for
+	// creation, and produce incorrect orphan/drifted metrics. The next drift
+	// cycle retries from scratch.
 	cfHostnames, err := r.listCloudflareHostnames(ctx, cf, zone.Spec.ID)
 	if err != nil {
-		log.Error(err, "failed to list Cloudflare custom hostnames", "zoneID", zone.Spec.ID)
 		return err
 	}
 
 	// List CustomHostname CRs referencing this zone (indexed by spec.zoneRef.name)
 	var chList saasv1beta1.CustomHostnameList
 	if err := r.List(ctx, &chList, client.MatchingFields{zoneRefField: zone.Name}); err != nil {
-		return fmt.Errorf("failed to list CustomHostname CRs: %w", err)
+		log.Error(err, "custom hostname - CR list failed", "zone", zone.Name)
+		return err
 	}
 
 	// Count CR states for this zone. States are mutually exclusive: conflict > ready > unhealthy > pending.
@@ -156,6 +160,7 @@ func (r *ZoneReconciler) sendDriftEvent(ctx context.Context, ch *saasv1beta1.Cus
 }
 
 func (r *ZoneReconciler) listCloudflareHostnames(ctx context.Context, cf *cloudflare.Client, zoneID string) (map[string]custom_hostnames.CustomHostnameListResponse, error) {
+	log := logf.FromContext(ctx)
 	start := time.Now()
 	result := make(map[string]custom_hostnames.CustomHostnameListResponse)
 	// CF API default is 20 per page; max is 50.
@@ -165,12 +170,17 @@ func (r *ZoneReconciler) listCloudflareHostnames(ctx context.Context, cf *cloudf
 	})
 	// NOTE: Map keyed by hostname -- if CF returns duplicates (edge case with pending
 	// deletions), the later entry wins. CF deduplicates hostnames in practice.
+	var itemCount int
 	for pager.Next() {
 		ch := pager.Current()
 		result[ch.Hostname] = ch
+		itemCount++
 	}
 	err := pager.Err()
 	recordCFCall(cfResourceCustomHostname, cfOpList, start, &err)
+	if err != nil {
+		log.Error(err, "custom hostname - list failed", "itemsFetched", itemCount, "zoneID", zoneID)
+	}
 	return result, err
 }
 

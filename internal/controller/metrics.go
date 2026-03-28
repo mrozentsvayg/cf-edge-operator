@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"time"
@@ -144,9 +145,15 @@ func recordCFCall(resource, operation string, start time.Time, err *error) {
 	cfAPICallDuration.WithLabelValues(resource, operation).Observe(time.Since(start).Seconds())
 	if err != nil && *err != nil {
 		statusCode := "unknown"
-		var cfErr *cloudflare.Error
-		if errors.As(*err, &cfErr) {
-			statusCode = strconv.Itoa(cfErr.StatusCode)
+		if errors.Is(*err, context.DeadlineExceeded) {
+			statusCode = "timeout"
+		} else if errors.Is(*err, context.Canceled) {
+			statusCode = "canceled"
+		} else {
+			var cfErr *cloudflare.Error
+			if errors.As(*err, &cfErr) {
+				statusCode = strconv.Itoa(cfErr.StatusCode)
+			}
 		}
 		cfAPIErrorsByCode.WithLabelValues(resource, operation, statusCode).Inc()
 	}

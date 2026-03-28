@@ -14,6 +14,8 @@ All flags are set via Helm values, which are passed as container args in the Dep
 | `--dry-run` | `false` | `dryRun` | Log Cloudflare (CF) operations without executing them |
 | `--drift-interval` | `1m` | `driftInterval` | How often the zone controller bulk-lists CF hostnames |
 | `--drift-buffer` | `1024` | `driftBuffer` | Internal channel buffer for drift events |
+| `--cf-api-timeout` | `3s` | `cfAPITimeout` | Per-request timeout for CF API calls. A hung call is cancelled after this duration |
+| `--cf-api-max-retries` | `0` | `cfAPIMaxRetries` | SDK-level retries for failed CF API calls. Retries are handled at a higher level (drift cycle, controller-runtime backoff) |
 | `--leader-elect` | `true` | `leaderElect` | Required when running multiple replicas |
 | `--zap-devel` | `true` | `zapDevel` | Development logger: human-readable console format, DPanic panics. Set `false` for JSON output (recommended for production log aggregation). |
 | `--zap-log-level` | _(auto)_ | `zapLogLevel` | Log verbosity: `0` = INFO, `1` = DEBUG, `2` = TRACE. In dev mode, V(1) is visible by default; V(2) requires `--zap-log-level=2`. In production mode, only INFO is visible by default. |
@@ -21,6 +23,15 @@ All flags are set via Helm values, which are passed as container args in the Dep
 | `--ssl-min-tls-version` | _(empty)_ | `sslMinTLSVersion` | Default min TLS version for new CHs (`1.0`-`1.3`). Empty = CF default |
 | `--ssl-method` | _(empty)_ | `sslMethod` | Default DCV method for new CHs (`http`, `txt`, `email`). Empty = `http` |
 | `--ssl-type` | _(empty)_ | `sslType` | Default validation type for new CHs (`dv`). Empty = `dv` |
+
+### CF API timeout and retry budget
+
+Each CF API call is bounded by `--cf-api-timeout` (default 3s) with no SDK-level retries (`--cf-api-max-retries=0`). Higher-level retry mechanisms provide recovery:
+
+- **Zone drift cycle:** retries the entire bulk-list every `--drift-interval` (default 1m).
+- **CH reconciles:** controller-runtime requeues failed reconciles with exponential backoff (capped at 30s).
+
+**Caution when increasing `--cf-api-max-retries`:** the SDK uses exponential backoff (base 2s, max 30s) between retries. The worst-case duration for a single paginated bulk-list is `pages x ((1 + retries) x timeout + retry backoff delays)`. With 172 CHs at 50/page (4 pages), the defaults give a worst case of `4 x 3s = 12s`. Setting retries to 2 adds backoff delays (~2s + ~4s per page), increasing worst case to approximately `4 x (3 x 3s + 6s) = 60s` -- which far exceeds a 30s drift interval, meaning the next drift cycle starts before the previous one finishes. Keep the total budget well under `--drift-interval`.
 
 ---
 
@@ -30,14 +41,14 @@ The operator uses structured logging with four verbosity levels:
 
 | Level | Flag | What's logged |
 |-------|------|---------------|
-| ERROR | _(always visible)_ | API failures: lookup, create, update, delete errors |
+| ERROR | _(always visible)_ | API failures: lookup, create, update, delete, list errors; zone-level failures (token fetch, CF zone lookup) |
 | INFO | _(default)_ | Operational events: creates, deletes, drift corrections, policy skips, SSL provisioned, drift detection summaries (when drifted > 0) |
-| V(1) / DEBUG | `--zap-log-level=1` | Confirmations and heartbeats: finalizer added, status.ssl refreshed, drift detection complete (when drifted = 0), duplicate CR skip during drift detection |
+| V(1) / DEBUG | `--zap-log-level=1` | Confirmations and heartbeats: finalizer added, status.ssl refreshed, drift detection complete (when drifted = 0), drift detection failed (summary), duplicate CR skip during drift detection |
 | V(2) / TRACE | `--zap-log-level=2` | Per-item verbose: orphan CF hostnames (no associated CR), dry-run per-CR "no drift detected" |
 
 In development mode (`--zap-devel=true`, the default), V(1)/DEBUG is visible by default; V(2)/TRACE requires `--zap-log-level=2`. In production mode (`--zap-devel=false`), only INFO is visible by default; set `--zap-log-level` to increase verbosity.
 
-Custom hostname log messages use the format: `custom hostname - <action>, <context> (<reason>)`.
+Log messages use the format: `<resource> - <action>, <context> (<reason>)`. Resource prefixes: `custom hostname` for CH operations, `zone` for zone-level infrastructure.
 
 ---
 
