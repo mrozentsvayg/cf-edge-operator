@@ -16,7 +16,7 @@ All flags are set via Helm values, which are passed as container args in the Dep
 | `--drift-buffer` | `1024` | `driftBuffer` | Internal channel buffer for drift events |
 | `--cf-api-timeout` | `3s` | `cfAPITimeout` | Per-request timeout for CF API calls. A hung call is cancelled after this duration |
 | `--cf-api-max-retries` | `0` | `cfAPIMaxRetries` | SDK-level retries for failed CF API calls. Retries are handled at a higher level (drift cycle, controller-runtime backoff) |
-| `--leader-elect` | `true` | `leaderElect` | Required when running multiple replicas |
+| `--leader-elect` | `true` | `leaderElect` | Required when running multiple replicas. Binary default is `false`; Helm default is `true` (safe for production) |
 | `--zap-devel` | `true` | `zapDevel` | Development logger: human-readable console format, DPanic panics. Set `false` for JSON output (recommended for production log aggregation). |
 | `--zap-log-level` | _(auto)_ | `zapLogLevel` | Log verbosity: `0` = INFO, `1` = DEBUG, `2` = TRACE. In dev mode, V(1) is visible by default; V(2) requires `--zap-log-level=2`. In production mode, only INFO is visible by default. |
 | `--ssl-certificate-authority` | _(empty)_ | `sslCertificateAuthority` | Default CA for new CHs (`lets_encrypt`, `google`, `ssl_com`). Empty = CF default |
