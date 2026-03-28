@@ -171,29 +171,19 @@ func (r *ZoneReconciler) listCloudflareHostnames(ctx context.Context, cf *cloudf
 	// NOTE: Map keyed by hostname -- if CF returns duplicates (edge case with pending
 	// deletions), the later entry wins. CF deduplicates hostnames in practice.
 	var itemCount int
-	pageStart := time.Now()
-	pageNum := 1
 	for pager.Next() {
 		ch := pager.Current()
 		result[ch.Hostname] = ch
 		itemCount++
-		// TODO(debug): temporary per-page timing -- remove after investigating timeout overshoot
-		if itemCount%50 == 0 {
-			log.V(1).Info("custom hostname - page fetched",
-				"page", pageNum, "elapsed", time.Since(pageStart).Seconds(),
-				"totalElapsed", time.Since(start).Seconds(), "zoneID", zoneID)
-			pageNum++
-			pageStart = time.Now()
-		}
 	}
 	err := pager.Err()
 	totalElapsed := time.Since(start).Seconds()
 	recordCFCall(cfResourceCustomHostname, cfOpList, start, &err)
-	// TODO(debug): temporary -- log every list call with timing breakdown
-	log.V(1).Info("custom hostname - list complete",
-		"itemsFetched", itemCount, "pages", pageNum,
-		"lastPageElapsed", time.Since(pageStart).Seconds(),
-		"totalElapsed", totalElapsed, "error", err, "zoneID", zoneID)
+	// Total elapsed spans all HTTP calls: N data pages + 1 end-of-list marker.
+	// Individual calls are bounded by WithRequestTimeout, but the total can
+	// exceed it (e.g., 5 calls x 3s timeout = 15s worst case for 172 CHs).
+	log.V(2).Info("custom hostname - list complete",
+		"itemsFetched", itemCount, "totalElapsed", totalElapsed, "zoneID", zoneID)
 	if err != nil {
 		log.Error(err, "custom hostname - list failed", "itemsFetched", itemCount, "zoneID", zoneID)
 	}

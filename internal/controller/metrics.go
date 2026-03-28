@@ -78,10 +78,13 @@ var (
 
 	// cfAPICallDuration observes Cloudflare API call latency by resource and operation.
 	// resource: "customhostname" or "zone". operation: get, list, create, update, delete.
+	// For "list", the duration spans all paginated HTTP calls (N data pages + 1 end marker),
+	// so observations can exceed the per-request WithRequestTimeout. Buckets cover both
+	// single-call operations (<5s) and multi-page list totals (up to 20s).
 	cfAPICallDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "cf_edge_operator_api_duration_seconds",
 		Help:    "Cloudflare API call duration in seconds, by resource and operation.",
-		Buckets: []float64{.05, .1, .25, .5, 1, 2.5, 5, 10},
+		Buckets: []float64{.05, .1, .25, .5, 1, 2.5, 5, 7.5, 10, 15, 20},
 	}, []string{"resource", "operation"})
 
 	// cfAPIErrorsByCode counts Cloudflare API errors by resource, operation, and HTTP status code.
