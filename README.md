@@ -124,6 +124,8 @@ kubectl get customhostnames -A
 |-------|---------|-------------|
 | `image.repository` | `ghcr.io/mrozentsvayg/cf-edge-operator` | Image repository |
 | `image.tag` | chart appVersion | Image tag |
+| `image.pullPolicy` | `IfNotPresent` | Image pull policy |
+| `imagePullSecrets` | `[]` | Pull secret names for private registries |
 | `operatorNamespace` | release namespace | Namespace where Zone CRs live |
 | `managementPolicy` | `manage` | `manage`, `create`, or `observe`. See [docs/architecture.md](docs/architecture.md#management-policy). |
 | `deletePolicy` | `always` | `always`, `own-only`, or `never`. See [docs/architecture.md](docs/architecture.md#delete-policy). |

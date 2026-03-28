@@ -167,6 +167,8 @@ func main() {
 		"sslMinTLSVersion", sslMinTLSVersion,
 		"sslMethod", sslMethod,
 		"sslType", sslType,
+		"zapDevel", opts.Development,
+		"zapLogLevel", opts.Level,
 	)
 	switch managementPolicy {
 	case controller.ManagementPolicyManage, controller.ManagementPolicyCreate, controller.ManagementPolicyObserve:
