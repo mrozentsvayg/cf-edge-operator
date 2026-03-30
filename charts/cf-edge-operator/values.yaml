@@ -47,10 +47,18 @@ driftBuffer: 1024
 # after this duration. Uses Go duration format (e.g. "30s", "1m").
 cfAPITimeout: "3s"
 
-# Maximum SDK-level retries for failed Cloudflare API calls. Retries are handled
-# at a higher level: the drift cycle retries every driftInterval, and individual
-# reconciles are requeued by controller-runtime with backoff.
-cfAPIMaxRetries: 0
+# Maximum retries for single CF API calls (immediate, no backoff).
+# Does not apply to paginated bulk list (see cfAPIBulkMaxRetries).
+# Skips retry on 429 (rate limit).
+cfAPIMaxRetries: 1
+
+# Per-page timeout for paginated CF API calls (bulk drift list).
+# Longer than cfAPITimeout because each page returns up to 50 hostnames.
+cfAPIBulkTimeout: "5s"
+
+# Maximum per-page retries for paginated CF API calls (SDK-level, ~2s backoff).
+# Only the failed page is retried, not the whole list.
+cfAPIBulkMaxRetries: 0
 
 # Default SSL settings for new custom hostnames. Applied on create when the
 # CR's spec.ssl field is empty. CA/minTLS: empty = CF default. Method: empty = http. Type: empty = dv.

@@ -106,11 +106,11 @@ type CustomHostnameReconciler struct {
 	DryRun bool
 	// SSLDefaults are operator-wide defaults applied on create when the CR field is empty.
 	SSLDefaults SSLDefaults
-	// CFAPITimeout is the per-request timeout for Cloudflare API calls.
+	// CFAPITimeout is the per-request timeout for single Cloudflare API calls.
 	// Set via --cf-api-timeout (default: 3s).
 	CFAPITimeout time.Duration
-	// CFAPIMaxRetries is the maximum number of SDK-level retries for CF API calls.
-	// Set via --cf-api-max-retries (default: 0).
+	// CFAPIMaxRetries is the maximum number of retries for single CF API calls.
+	// Set via --cf-api-max-retries (default: 1). Uses our retry loop (immediate, no backoff).
 	CFAPIMaxRetries int
 	// CFBaseURL overrides the Cloudflare API base URL (for integration tests).
 	CFBaseURL string
@@ -219,9 +219,15 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	// NOTE: Always resolve current CF state by hostname, even if status.ID exists.
 	// The etcd status could be stale (operator crash, manual CF deletion). This
 	// single API call makes reconciliation idempotent across restarts.
-	existing, err := r.findByHostname(ctx, zi.Client, zi.ID, ch.Spec.Hostname)
+	// findByHostname calls recordCFCall internally, satisfying cfRetry's per-attempt metrics contract.
+	var existing *custom_hostnames.CustomHostnameListResponse
+	attempts, err := cfRetry(ctx, cfResourceCustomHostname, cfOpGet, r.CFAPIMaxRetries, func() error {
+		var callErr error
+		existing, callErr = r.findByHostname(ctx, zi.Client, zi.ID, ch.Spec.Hostname)
+		return callErr
+	})
 	if err != nil {
-		log.Error(err, "custom hostname - lookup failed", "hostname", ch.Spec.Hostname)
+		log.Error(err, "custom hostname - lookup failed", "hostname", ch.Spec.Hostname, "attempts", attempts)
 		return ctrl.Result{}, r.setError(ctx, ch, "LookupFailed", err.Error())
 	}
 
@@ -289,11 +295,16 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 			if ch.Spec.SSL != nil {
 				editParams.SSL = cloudflare.F(buildSSLEditParams(ch.Spec.SSL, existing.SSL))
 			}
-			editStart := time.Now()
-			editResp, editErr := zi.Client.CustomHostnames.Edit(ctx, existing.ID, editParams, opts...)
-			recordCFCall(cfResourceCustomHostname, cfOpUpdate, editStart, &editErr)
+			var editResp *custom_hostnames.CustomHostnameEditResponse
+			attempts, editErr := cfRetry(ctx, cfResourceCustomHostname, cfOpUpdate, r.CFAPIMaxRetries, func() error {
+				editStart := time.Now()
+				var callErr error
+				editResp, callErr = zi.Client.CustomHostnames.Edit(ctx, existing.ID, editParams, opts...)
+				recordCFCall(cfResourceCustomHostname, cfOpUpdate, editStart, &callErr)
+				return callErr
+			})
 			if editErr != nil {
-				log.Error(editErr, "custom hostname - update failed", "id", existing.ID)
+				log.Error(editErr, "custom hostname - update failed", "id", existing.ID, "attempts", attempts)
 				return ctrl.Result{}, r.setError(ctx, ch, "UpdateFailed", editErr.Error())
 			}
 			operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpUpdate).Inc()
@@ -353,11 +364,16 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, zi *zoneInf
 		return ctrl.Result{}, r.setCondition(ctx, ch, metav1.ConditionFalse, "DryRun", "not creating (dry-run)")
 	}
 
-	createStart := time.Now()
-	resp, err := zi.Client.CustomHostnames.New(ctx, params, opts...)
-	recordCFCall(cfResourceCustomHostname, cfOpCreate, createStart, &err)
+	var resp *custom_hostnames.CustomHostnameNewResponse
+	attempts, err := cfRetry(ctx, cfResourceCustomHostname, cfOpCreate, r.CFAPIMaxRetries, func() error {
+		createStart := time.Now()
+		var callErr error
+		resp, callErr = zi.Client.CustomHostnames.New(ctx, params, opts...)
+		recordCFCall(cfResourceCustomHostname, cfOpCreate, createStart, &callErr)
+		return callErr
+	})
 	if err != nil {
-		log.Error(err, "custom hostname - create failed", "hostname", ch.Spec.Hostname)
+		log.Error(err, "custom hostname - create failed", "hostname", ch.Spec.Hostname, "attempts", attempts)
 		return ctrl.Result{}, r.setError(ctx, ch, "CreateFailed", err.Error())
 	}
 
@@ -403,9 +419,15 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 	if controllerutil.ContainsFinalizer(ch, finalizerName) {
 		policy := effectiveDeletePolicy(ch.Spec.DeletePolicy, r.DeletePolicy)
 		if policy == DeletePolicyOwnOnly {
-			current, err := r.findByHostname(ctx, cf, zoneID, ch.Spec.Hostname)
+			// findByHostname calls recordCFCall internally, satisfying cfRetry's per-attempt metrics contract.
+			var current *custom_hostnames.CustomHostnameListResponse
+			attempts, err := cfRetry(ctx, cfResourceCustomHostname, cfOpGet, r.CFAPIMaxRetries, func() error {
+				var callErr error
+				current, callErr = r.findByHostname(ctx, cf, zoneID, ch.Spec.Hostname)
+				return callErr
+			})
 			if err != nil {
-				log.Error(err, "custom hostname - pre-delete lookup failed (deletePolicy=own-only)", "hostname", ch.Spec.Hostname)
+				log.Error(err, "custom hostname - pre-delete lookup failed (deletePolicy=own-only)", "hostname", ch.Spec.Hostname, "attempts", attempts)
 				return ctrl.Result{}, err // Return raw error for controller-runtime backoff retry;
 				// don't setError -- CR is being deleted, status updates are pointless and
 				// setError returns nil (no requeue), which would delay finalizer removal.
@@ -424,11 +446,14 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 			}
 		}
 
-		deleteStart := time.Now()
-		_, delErr := cf.CustomHostnames.Delete(ctx, ch.Status.ID, custom_hostnames.CustomHostnameDeleteParams{
-			ZoneID: cloudflare.F(zoneID),
+		attempts, delErr := cfRetry(ctx, cfResourceCustomHostname, cfOpDelete, r.CFAPIMaxRetries, func() error {
+			deleteStart := time.Now()
+			_, callErr := cf.CustomHostnames.Delete(ctx, ch.Status.ID, custom_hostnames.CustomHostnameDeleteParams{
+				ZoneID: cloudflare.F(zoneID),
+			})
+			recordCFCall(cfResourceCustomHostname, cfOpDelete, deleteStart, &callErr)
+			return callErr
 		})
-		recordCFCall(cfResourceCustomHostname, cfOpDelete, deleteStart, &delErr)
 		if delErr != nil {
 			// 404 means the resource is already gone (e.g. deleted by another entity or stale ID).
 			// Treat as success -- our specific resource no longer exists, remove finalizer.
@@ -436,7 +461,7 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 			if errors.As(delErr, &cfErr) && cfErr.StatusCode == 404 {
 				log.Info("custom hostname - could not be deleted, finalizer released (not found in Cloudflare)", "hostname", ch.Spec.Hostname, "id", ch.Status.ID)
 			} else {
-				log.Error(delErr, "custom hostname - delete failed", "id", ch.Status.ID)
+				log.Error(delErr, "custom hostname - delete failed", "id", ch.Status.ID, "attempts", attempts)
 				return ctrl.Result{}, delErr
 			}
 		} else {
@@ -479,10 +504,11 @@ func (r *CustomHostnameReconciler) findByHostname(ctx context.Context, cf *cloud
 		ZoneID:   cloudflare.F(zoneID),
 		Hostname: cloudflare.F(hostname),
 	})
+	var noErr error
 	for pager.Next() {
 		ch := pager.Current()
 		if ch.Hostname == hostname {
-			recordCFCall(cfResourceCustomHostname, cfOpGet, start, nil)
+			recordCFCall(cfResourceCustomHostname, cfOpGet, start, &noErr)
 			return &ch, nil
 		}
 	}
@@ -624,7 +650,7 @@ func (r *CustomHostnameReconciler) buildCloudflareClient(ctx context.Context, ch
 	}
 	opts := []option.RequestOption{
 		option.WithAPIToken(string(token)),
-		option.WithMaxRetries(r.CFAPIMaxRetries),
+		option.WithMaxRetries(0), // SDK retries disabled; we handle retries via cfRetry.
 	}
 	if r.CFAPITimeout > 0 {
 		opts = append(opts, option.WithRequestTimeout(r.CFAPITimeout))

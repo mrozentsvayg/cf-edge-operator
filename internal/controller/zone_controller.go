@@ -61,12 +61,18 @@ type ZoneReconciler struct {
 	// DriftInterval controls how often the zone controller bulk-lists Cloudflare
 	// resources to detect external drift. Set via --drift-interval (default: 1m).
 	DriftInterval time.Duration
-	// CFAPITimeout is the per-request timeout for Cloudflare API calls.
+	// CFAPITimeout is the per-request timeout for single Cloudflare API calls.
 	// Set via --cf-api-timeout (default: 3s).
 	CFAPITimeout time.Duration
-	// CFAPIMaxRetries is the maximum number of SDK-level retries for CF API calls.
-	// Set via --cf-api-max-retries (default: 0).
+	// CFAPIMaxRetries is the maximum number of retries for single CF API calls.
+	// Set via --cf-api-max-retries (default: 1). Uses our retry loop (immediate, no backoff).
 	CFAPIMaxRetries int
+	// CFAPIBulkTimeout is the per-page timeout for paginated CF API calls (bulk drift list).
+	// Set via --cf-api-bulk-timeout (default: 5s).
+	CFAPIBulkTimeout time.Duration
+	// CFAPIBulkMaxRetries is the maximum number of per-page retries for paginated CF API calls.
+	// Set via --cf-api-bulk-max-retries (default: 0). Uses SDK retry (per-page, ~2s backoff).
+	CFAPIBulkMaxRetries int
 	// CFBaseURL overrides the Cloudflare API base URL (for integration tests).
 	CFBaseURL string
 }
@@ -105,7 +111,7 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	cfOpts := []option.RequestOption{
 		option.WithAPIToken(apiToken),
-		option.WithMaxRetries(r.CFAPIMaxRetries),
+		option.WithMaxRetries(0), // SDK retries disabled; we handle retries via cfRetry.
 	}
 	if r.CFAPITimeout > 0 {
 		cfOpts = append(cfOpts, option.WithRequestTimeout(r.CFAPITimeout))
@@ -116,13 +122,18 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	cf := cloudflare.NewClient(cfOpts...)
 
 	// Validate credentials and populate zone name
-	zoneGetStart := time.Now()
-	zoneDetails, err := cf.Zones.Get(ctx, zones.ZoneGetParams{
-		ZoneID: cloudflare.F(zone.Spec.ID),
+	var zoneDetails *zones.Zone
+	attempts, err := cfRetry(ctx, cfResourceZone, cfOpGet, r.CFAPIMaxRetries, func() error {
+		zoneGetStart := time.Now()
+		var callErr error
+		zoneDetails, callErr = cf.Zones.Get(ctx, zones.ZoneGetParams{
+			ZoneID: cloudflare.F(zone.Spec.ID),
+		})
+		recordCFCall(cfResourceZone, cfOpGet, zoneGetStart, &callErr)
+		return callErr
 	})
-	recordCFCall(cfResourceZone, cfOpGet, zoneGetStart, &err)
 	if err != nil {
-		log.Error(err, "zone - Cloudflare lookup failed", "zoneID", zone.Spec.ID)
+		log.Error(err, "zone - Cloudflare lookup failed", "zoneID", zone.Spec.ID, "attempts", attempts)
 		zoneReady.WithLabelValues(zone.Name).Set(0)
 		_ = r.setReady(ctx, &zone, metav1.ConditionFalse, "CloudflareError", err.Error())
 		return ctrl.Result{}, err

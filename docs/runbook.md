@@ -169,7 +169,7 @@ open https://www.cloudflarestatus.com
 **Resolve:**
 
 - **CF service degradation:** Wait for Cloudflare to recover. The operator will resume automatically.
-- **Timeouts (`status_code="timeout"`):** CF API is responding slowly. Check CF status page. If persistent, increase `--cf-api-timeout` (default 3s). For bulk-list timeouts, the log includes `itemsFetched` showing how many hostnames were fetched before the timeout (e.g., `itemsFetched: 100` = two full pages completed, third page timed out).
+- **Timeouts (`status_code="timeout"`):** CF API is responding slowly. Single calls (zone lookup, CH get/create/update/delete) retry immediately (default 1 retry). Check `cf_edge_operator_api_retries_total` -- non-zero means retries are absorbing transient slowdowns. If timeouts persist after retries, increase `--cf-api-timeout` (default 3s) or `--cf-api-bulk-timeout` (default 5s). For bulk-list timeouts, the log includes `itemsFetched` showing how many hostnames were fetched before the timeout (e.g., `itemsFetched: 100` = two full pages completed, third page timed out).
 - **Invalid API token:** A token that was valid may have been rotated or had permissions changed. Update the token in the Zone CR's secret.
 - **Zone ID misconfiguration:** A Zone CR with an invalid or deleted zone ID will produce sustained errors. Correct `spec.id` in the Zone CR.
 

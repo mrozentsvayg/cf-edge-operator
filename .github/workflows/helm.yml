@@ -60,6 +60,8 @@ jobs:
             --set driftInterval=30s \
             --set cfAPITimeout=5s \
             --set cfAPIMaxRetries=2 \
+            --set cfAPIBulkTimeout=10s \
+            --set cfAPIBulkMaxRetries=1 \
             --set sslCertificateAuthority=lets_encrypt \
             --set sslMinTLSVersion=1.2 \
             --set zapDevel=false \
@@ -69,6 +71,8 @@ jobs:
           echo "$out" | grep -q "\-\-drift-interval=30s"                    || { echo "FAIL: driftInterval"; exit 1; }
           echo "$out" | grep -q "\-\-cf-api-timeout=5s"                     || { echo "FAIL: cfAPITimeout"; exit 1; }
           echo "$out" | grep -q "\-\-cf-api-max-retries=2"                  || { echo "FAIL: cfAPIMaxRetries"; exit 1; }
+          echo "$out" | grep -q "\-\-cf-api-bulk-timeout=10s"               || { echo "FAIL: cfAPIBulkTimeout"; exit 1; }
+          echo "$out" | grep -q "\-\-cf-api-bulk-max-retries=1"             || { echo "FAIL: cfAPIBulkMaxRetries"; exit 1; }
           echo "$out" | grep -q "\-\-ssl-certificate-authority=lets_encrypt" || { echo "FAIL: sslCertificateAuthority"; exit 1; }
           echo "$out" | grep -q "\-\-ssl-min-tls-version=1.2"               || { echo "FAIL: sslMinTLSVersion"; exit 1; }
           echo "$out" | grep -q "\-\-zap-devel=false"                       || { echo "FAIL: zapDevel"; exit 1; }

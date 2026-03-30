@@ -136,8 +136,10 @@ kubectl get customhostnames -A
 | `dryRun` | `false` | Log CF operations without executing them |
 | `driftInterval` | `1m` | How often the zone controller bulk-lists CF to detect drift |
 | `driftBuffer` | `1024` | Internal channel buffer for drift events |
-| `cfAPITimeout` | `3s` | Per-request timeout for CF API calls |
-| `cfAPIMaxRetries` | `0` | SDK-level retries for failed CF API calls (0 = no retries) |
+| `cfAPITimeout` | `3s` | Per-request timeout for single CF API calls |
+| `cfAPIMaxRetries` | `1` | Retries for single CF API calls (immediate, no backoff) |
+| `cfAPIBulkTimeout` | `5s` | Per-page timeout for paginated bulk drift list |
+| `cfAPIBulkMaxRetries` | `0` | Per-page retries for bulk drift list (SDK-level, ~2s backoff) |
 | `sslCertificateAuthority` | _(empty)_ | Default CA for new CHs. Empty = CF default |
 | `sslMinTLSVersion` | _(empty)_ | Default min TLS version for new CHs. Empty = CF default |
 | `sslMethod` | _(empty)_ | Default DCV method for new CHs. Empty = `http` |
@@ -177,6 +179,7 @@ Metrics are exposed on `:8080/metrics` (HTTP, via Helm chart). See [docs/archite
 - `cf_edge_operator_zone_customhostnames{zone_cr,type}` -- CF custom hostnames by type (managed/orphan/drifted/total); orphan = no associated CR
 - `cf_edge_operator_ssl_provisioning_duration_seconds{zone_cr,hostname,method}` -- time from CF create to SSL active
 - `cf_edge_operator_api_errors_by_code_total{resource,operation,status_code}` -- CF API errors by HTTP status code
+- `cf_edge_operator_api_retries_total{resource,operation}` -- retry attempts for single CF API calls
 - `cf_edge_operator_api_duration_seconds{resource,operation}` -- CF API latency histogram
 - `cf_edge_operator_drift_buffer_depth{resource}` -- current items in the drift event channel
 - `cf_edge_operator_drift_buffer_overflow_total{resource}` -- times the drift buffer was full (zone controller blocked)

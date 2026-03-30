@@ -107,10 +107,12 @@ Additionally, operator-wide SSL defaults (`--ssl-certificate-authority`, `--ssl-
 
 | Operation | API calls |
 |-----------|-----------|
-| Drift detection (1000 hostnames) | ~10 (paginated, 100/page) |
+| Drift detection (1000 hostnames) | ~21 (paginated, 50/page + 1 end marker) |
 | Single CR create/update | 1 List + 1 POST/PATCH |
 | Single CR delete | 1 DELETE |
-| Restart (1000 CRs, 5 zones) | 5 x ~10 = ~50 |
+| Restart (1000 CRs, 5 zones) | 5 x ~21 = ~105 |
+
+See [operations.md](operations.md#cf-api-timeout-and-retry-budget) for timeout/retry budget per drift cycle.
 
 ## Credential Flow
 
@@ -197,6 +199,7 @@ Parse with jq: `jq '.drift.drifted | keys'` or `jq '.changed | to_entries[] | "\
 | `cf_edge_operator_zone_customhostnames{zone_cr,type}` | gauge | CF custom hostnames by zone CR and type (managed/orphan/drifted/total). `orphan` = no associated CR. `total` = CF quota usage for the zone |
 | `cf_edge_operator_api_duration_seconds{resource,operation}` | histogram | CF API call latency; `resource`: customhostname, zone; `operation`: get, list, create, update, delete. For `list`, duration spans all paginated HTTP calls (can exceed per-request timeout) |
 | `cf_edge_operator_api_errors_by_code_total{resource,operation,status_code}` | counter | CF API errors by resource, operation, and HTTP status code. `timeout` for request timeouts, `canceled` for context cancellation (shutdown), `unknown` for other non-HTTP errors |
+| `cf_edge_operator_api_retries_total{resource,operation}` | counter | Retry attempts for single (non-paginated) CF API calls. Non-zero means first attempts are failing |
 | `cf_edge_operator_ssl_provisioning_duration_seconds{zone_cr,hostname,method}` | histogram | Time from CF create to `ssl.status == active`. Buckets span 1m-1w. |
 | `cf_edge_operator_drift_buffer_depth{resource}` | gauge | Current items in the drift event channel by resource type. Approaching `--drift-buffer` capacity means the worker controller is not draining fast enough. |
 | `cf_edge_operator_drift_buffer_overflow_total{resource}` | counter | Times the drift buffer was full by resource type, causing the zone controller to block. Non-zero indicates capacity issue. |
