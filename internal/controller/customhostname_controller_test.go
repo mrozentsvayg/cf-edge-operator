@@ -1044,6 +1044,117 @@ func TestCFAPITimeout(t *testing.T) {
 	}
 }
 
+func TestCfRetry(t *testing.T) {
+	cfAPIRetriesTotal.Reset()
+
+	t.Run("succeeds on first attempt", func(t *testing.T) {
+		calls := 0
+		attempts, err := cfRetry(context.Background(), cfResourceZone, cfOpGet, 2, func() error {
+			calls++
+			return nil
+		})
+		if err != nil {
+			t.Errorf("expected nil error, got %v", err)
+		}
+		if attempts != 1 {
+			t.Errorf("attempts = %d, want 1", attempts)
+		}
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1", calls)
+		}
+	})
+
+	t.Run("succeeds on retry", func(t *testing.T) {
+		cfAPIRetriesTotal.Reset()
+		calls := 0
+		attempts, err := cfRetry(context.Background(), cfResourceZone, cfOpGet, 1, func() error {
+			calls++
+			if calls == 1 {
+				return fmt.Errorf("transient error")
+			}
+			return nil
+		})
+		if err != nil {
+			t.Errorf("expected nil error, got %v", err)
+		}
+		if attempts != 2 {
+			t.Errorf("attempts = %d, want 2", attempts)
+		}
+		m, _ := cfAPIRetriesTotal.GetMetricWithLabelValues(cfResourceZone, cfOpGet)
+		if got := testutil.ToFloat64(m); got != 1 {
+			t.Errorf("retry counter = %v, want 1", got)
+		}
+	})
+
+	t.Run("fails after all retries", func(t *testing.T) {
+		calls := 0
+		attempts, err := cfRetry(context.Background(), cfResourceZone, cfOpGet, 2, func() error {
+			calls++
+			return fmt.Errorf("persistent error")
+		})
+		if err == nil {
+			t.Error("expected error, got nil")
+		}
+		if attempts != 3 {
+			t.Errorf("attempts = %d, want 3", attempts)
+		}
+		if calls != 3 {
+			t.Errorf("calls = %d, want 3", calls)
+		}
+	})
+
+	t.Run("skips retry on 429", func(t *testing.T) {
+		calls := 0
+		err429 := &cloudflare.Error{StatusCode: 429}
+		attempts, err := cfRetry(context.Background(), cfResourceCustomHostname, cfOpCreate, 2, func() error {
+			calls++
+			return err429
+		})
+		if err == nil {
+			t.Error("expected error, got nil")
+		}
+		if attempts != 1 {
+			t.Errorf("attempts = %d, want 1 (should not retry 429)", attempts)
+		}
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1", calls)
+		}
+	})
+
+	t.Run("skips retry on cancelled context", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		calls := 0
+		attempts, err := cfRetry(ctx, cfResourceZone, cfOpGet, 2, func() error {
+			calls++
+			cancel() // cancel after first attempt
+			return fmt.Errorf("error")
+		})
+		if err == nil {
+			t.Error("expected error, got nil")
+		}
+		if attempts != 1 {
+			t.Errorf("attempts = %d, want 1 (should not retry after cancel)", attempts)
+		}
+	})
+
+	t.Run("zero retries means one attempt", func(t *testing.T) {
+		calls := 0
+		attempts, err := cfRetry(context.Background(), cfResourceZone, cfOpGet, 0, func() error {
+			calls++
+			return fmt.Errorf("error")
+		})
+		if err == nil {
+			t.Error("expected error, got nil")
+		}
+		if attempts != 1 {
+			t.Errorf("attempts = %d, want 1", attempts)
+		}
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1", calls)
+		}
+	})
+}
+
 func TestRecordCFCallTimeout(t *testing.T) {
 	// Reset metrics to avoid interference from other tests
 	cfAPIErrorsByCode.Reset()

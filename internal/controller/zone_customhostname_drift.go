@@ -28,6 +28,7 @@ import (
 
 	"github.com/cloudflare/cloudflare-go/v6"
 	"github.com/cloudflare/cloudflare-go/v6/custom_hostnames"
+	"github.com/cloudflare/cloudflare-go/v6/option"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -164,10 +165,18 @@ func (r *ZoneReconciler) listCloudflareHostnames(ctx context.Context, cf *cloudf
 	start := time.Now()
 	result := make(map[string]custom_hostnames.CustomHostnameListResponse)
 	// CF API default is 20 per page; max is 50.
+	// Per-page timeout and retries are configured separately from single calls:
+	// SDK handles per-page retries (only the failed page is retried, not the whole list).
+	bulkOpts := []option.RequestOption{
+		option.WithMaxRetries(r.CFAPIBulkMaxRetries),
+	}
+	if r.CFAPIBulkTimeout > 0 {
+		bulkOpts = append(bulkOpts, option.WithRequestTimeout(r.CFAPIBulkTimeout))
+	}
 	pager := cf.CustomHostnames.ListAutoPaging(ctx, custom_hostnames.CustomHostnameListParams{
 		ZoneID:  cloudflare.F(zoneID),
 		PerPage: cloudflare.F(50.0),
-	})
+	}, bulkOpts...)
 	// NOTE: Map keyed by hostname -- if CF returns duplicates (edge case with pending
 	// deletions), the later entry wins. CF deduplicates hostnames in practice.
 	var itemCount int
@@ -181,7 +190,7 @@ func (r *ZoneReconciler) listCloudflareHostnames(ctx context.Context, cf *cloudf
 	recordCFCall(cfResourceCustomHostname, cfOpList, start, &err)
 	// Total elapsed spans all HTTP calls: N data pages + 1 end-of-list marker.
 	// Individual calls are bounded by WithRequestTimeout, but the total can
-	// exceed it (e.g., 5 calls x 3s timeout = 15s worst case for 172 CHs).
+	// exceed it (e.g., with 50/page: pages x bulk timeout per page).
 	log.V(2).Info("custom hostname - list complete",
 		"itemsFetched", itemCount, "totalElapsed", totalElapsed, "zoneID", zoneID)
 	if err != nil {
@@ -223,45 +232,50 @@ func sslStatusChangedFields(status *saasv1beta1.CustomHostnameSSLStatus, cfSSL c
 		}
 		return nil
 	}
-	changed := map[string]statusPair{}
+	// Lazy-init: avoid allocating a map on every call (once per CH per cycle in steady state,
+	// most with no changes). len/range/return nil all work on nil maps.
+	var changed map[string]statusPair
+	set := func(key string, sp statusPair) {
+		if changed == nil {
+			changed = map[string]statusPair{}
+		}
+		changed[key] = sp
+	}
 	if status.CertificateAuthority != string(cfSSL.CertificateAuthority) {
-		changed["ca"] = statusPair{Status: status.CertificateAuthority, CF: string(cfSSL.CertificateAuthority)}
+		set("ca", statusPair{Status: status.CertificateAuthority, CF: string(cfSSL.CertificateAuthority)})
 	}
 	if status.MinTLSVersion != string(cfSSL.Settings.MinTLSVersion) {
-		changed["minTLS"] = statusPair{Status: status.MinTLSVersion, CF: string(cfSSL.Settings.MinTLSVersion)}
+		set("minTLS", statusPair{Status: status.MinTLSVersion, CF: string(cfSSL.Settings.MinTLSVersion)})
 	}
 	if status.Method != string(cfSSL.Method) {
-		changed["method"] = statusPair{Status: status.Method, CF: string(cfSSL.Method)}
+		set("method", statusPair{Status: status.Method, CF: string(cfSSL.Method)})
 	}
 	if status.Type != string(cfSSL.Type) {
-		changed["type"] = statusPair{Status: status.Type, CF: string(cfSSL.Type)}
+		set("type", statusPair{Status: status.Type, CF: string(cfSSL.Type)})
 	}
 	if status.Status != string(cfSSL.Status) {
-		changed["sslStatus"] = statusPair{Status: status.Status, CF: string(cfSSL.Status)}
+		set("sslStatus", statusPair{Status: status.Status, CF: string(cfSSL.Status)})
 	}
 	if status.ID != cfSSL.ID {
-		changed["id"] = statusPair{Status: status.ID, CF: cfSSL.ID}
+		set("id", statusPair{Status: status.ID, CF: cfSSL.ID})
 	}
 	if status.Issuer != cfSSL.Issuer {
-		changed["issuer"] = statusPair{Status: status.Issuer, CF: cfSSL.Issuer}
+		set("issuer", statusPair{Status: status.Issuer, CF: cfSSL.Issuer})
 	}
 	if status.SerialNumber != cfSSL.SerialNumber {
-		changed["serialNumber"] = statusPair{Status: status.SerialNumber, CF: cfSSL.SerialNumber}
+		set("serialNumber", statusPair{Status: status.SerialNumber, CF: cfSSL.SerialNumber})
 	}
 	if status.BundleMethod != string(cfSSL.BundleMethod) {
-		changed["bundleMethod"] = statusPair{Status: status.BundleMethod, CF: string(cfSSL.BundleMethod)}
+		set("bundleMethod", statusPair{Status: status.BundleMethod, CF: string(cfSSL.BundleMethod)})
 	}
 	if status.Wildcard != cfSSL.Wildcard {
-		changed["wildcard"] = statusPair{Status: fmt.Sprintf("%v", status.Wildcard), CF: fmt.Sprintf("%v", cfSSL.Wildcard)}
+		set("wildcard", statusPair{Status: fmt.Sprintf("%v", status.Wildcard), CF: fmt.Sprintf("%v", cfSSL.Wildcard)})
 	}
 	if !timePtrEqual(status.UploadedOn, cfSSL.UploadedOn) {
-		changed["uploadedOn"] = statusPair{Status: timePtrString(status.UploadedOn), CF: timeString(cfSSL.UploadedOn)}
+		set("uploadedOn", statusPair{Status: timePtrString(status.UploadedOn), CF: timeString(cfSSL.UploadedOn)})
 	}
 	if !timePtrEqual(status.ExpiresOn, cfSSL.ExpiresOn) {
-		changed["expiresOn"] = statusPair{Status: timePtrString(status.ExpiresOn), CF: timeString(cfSSL.ExpiresOn)}
-	}
-	if len(changed) == 0 {
-		return nil
+		set("expiresOn", statusPair{Status: timePtrString(status.ExpiresOn), CF: timeString(cfSSL.ExpiresOn)})
 	}
 	return changed
 }

@@ -14,8 +14,10 @@ All flags are set via Helm values, which are passed as container args in the Dep
 | `--dry-run` | `false` | `dryRun` | Log Cloudflare (CF) operations without executing them |
 | `--drift-interval` | `1m` | `driftInterval` | How often the zone controller bulk-lists CF hostnames |
 | `--drift-buffer` | `1024` | `driftBuffer` | Internal channel buffer for drift events |
-| `--cf-api-timeout` | `3s` | `cfAPITimeout` | Per-request timeout for CF API calls. A hung call is cancelled after this duration |
-| `--cf-api-max-retries` | `0` | `cfAPIMaxRetries` | SDK-level retries for failed CF API calls. Retries are handled at a higher level (drift cycle, controller-runtime backoff) |
+| `--cf-api-timeout` | `3s` | `cfAPITimeout` | Per-request timeout for single CF API calls (zone lookup, CH get/create/update/delete) |
+| `--cf-api-max-retries` | `1` | `cfAPIMaxRetries` | Retries for single CF API calls (immediate, no backoff). Skips retry on 429 |
+| `--cf-api-bulk-timeout` | `5s` | `cfAPIBulkTimeout` | Per-page timeout for paginated CF API calls (bulk drift list) |
+| `--cf-api-bulk-max-retries` | `0` | `cfAPIBulkMaxRetries` | Per-page retries for paginated CF API calls (SDK-level, ~2s backoff). Only the failed page is retried |
 | `--leader-elect` | `true` | `leaderElect` | Required when running multiple replicas. Binary default is `false`; Helm default is `true` (safe for production) |
 | `--zap-devel` | `true` | `zapDevel` | Development logger: human-readable console format, DPanic panics. Set `false` for JSON output (recommended for production log aggregation). |
 | `--zap-log-level` | _(auto)_ | `zapLogLevel` | Log verbosity: `0` = INFO, `1` = DEBUG, `2` = TRACE. In dev mode, V(1) is visible by default; V(2) requires `--zap-log-level=2`. In production mode, only INFO is visible by default. |
@@ -26,12 +28,15 @@ All flags are set via Helm values, which are passed as container args in the Dep
 
 ### CF API timeout and retry budget
 
-Each CF API call is bounded by `--cf-api-timeout` (default 3s) with no SDK-level retries (`--cf-api-max-retries=0`). Higher-level retry mechanisms provide recovery:
+Single CF API calls and paginated bulk list have separate timeout and retry settings.
 
-- **Zone drift cycle:** retries the entire bulk-list every `--drift-interval` (default 1m).
-- **CH reconciles:** controller-runtime requeues failed reconciles with exponential backoff (capped at 30s).
+**Single calls** (`--cf-api-timeout`, `--cf-api-max-retries`): zone lookup, CH get/create/update/delete. Uses the operator's own retry loop with immediate retry (no backoff). Skips retry on 429 (rate limit). Default: 3s timeout, 1 retry. Worst case: 2 x 3s = 6s.
 
-**Caution when increasing `--cf-api-max-retries`:** the SDK uses exponential backoff (base 2s, max 30s) between retries. The worst-case duration for a single paginated bulk-list is `pages x ((1 + retries) x timeout + retry backoff delays)`. With 172 CHs at 50/page (4 pages), the defaults give a worst case of `4 x 3s = 12s`. Setting retries to 2 adds backoff delays (~2s + ~4s per page), increasing worst case to approximately `4 x (3 x 3s + 6s) = 60s` -- which far exceeds a 30s drift interval, meaning the next drift cycle starts before the previous one finishes. Keep the total budget well under `--drift-interval`.
+**Bulk drift list** (`--cf-api-bulk-timeout`, `--cf-api-bulk-max-retries`): paginated CH list during drift detection. Uses SDK-level per-page retries (~2s backoff). Only the failed page is retried, not the whole list. Default: 5s timeout, 0 retries. Worst case with 172 CHs at 50/page (5 HTTP calls): 5 x 5s = 25s.
+
+**Total worst case per drift cycle:** single call worst case + bulk list worst case. With defaults: 6s + 25s = 31s (just over the 30s drift interval, extreme case).
+
+**Caution when increasing `--cf-api-bulk-max-retries`:** the SDK uses exponential backoff (base 2s, max 30s) between retries. Setting bulk retries to 1 adds ~2s per failed page. Setting to 2 adds ~6s (2s + 4s) per failed page. Keep the total budget well under `--drift-interval`.
 
 ---
 

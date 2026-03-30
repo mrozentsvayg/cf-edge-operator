@@ -116,6 +116,14 @@ var (
 		Name: "cf_edge_operator_drift_detection_errors_total",
 		Help: "Number of drift detection failures, by resource type.",
 	}, []string{"resource"})
+
+	// cfAPIRetriesTotal counts retry attempts for single (non-paginated) CF API calls.
+	// Incremented per retry attempt (attempt > 0). Non-zero means first attempts are
+	// failing and retries are absorbing transient CF API slowdowns.
+	cfAPIRetriesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "cf_edge_operator_api_retries_total",
+		Help: "Number of retry attempts for Cloudflare API calls, by resource and operation.",
+	}, []string{"resource", "operation"})
 )
 
 func init() {
@@ -127,6 +135,7 @@ func init() {
 		zoneReady,
 		cfAPICallDuration,
 		cfAPIErrorsByCode,
+		cfAPIRetriesTotal,
 		driftBufferDepth,
 		driftBufferOverflowTotal,
 		driftDetectionErrorsTotal,
@@ -139,6 +148,11 @@ func init() {
 	for _, op := range []string{cfOpAdopt, cfOpCreate, cfOpRecreate, cfOpUpdate, cfOpDelete} {
 		operationsTotal.WithLabelValues(cfResourceCustomHostname, op)
 	}
+	// Pre-initialize retry counters for single-call operations.
+	for _, op := range []string{cfOpGet, cfOpCreate, cfOpUpdate, cfOpDelete} {
+		cfAPIRetriesTotal.WithLabelValues(cfResourceCustomHostname, op)
+	}
+	cfAPIRetriesTotal.WithLabelValues(cfResourceZone, cfOpGet)
 }
 
 // recordCFCall records duration and any error for a Cloudflare API call.
@@ -160,4 +174,32 @@ func recordCFCall(resource, operation string, start time.Time, err *error) {
 		}
 		cfAPIErrorsByCode.WithLabelValues(resource, operation, statusCode).Inc()
 	}
+}
+
+// cfRetry retries a single (non-paginated) CF API call with immediate retry (no backoff).
+// The callback fn should call recordCFCall internally so each attempt records metrics.
+// Returns the final error and the number of attempts made (1 = no retry, 2 = one retry, etc.).
+// Skips retry on 429 (rate limit) and context cancellation.
+func cfRetry(ctx context.Context, resource, operation string, maxRetries int, fn func() error) (int, error) {
+	var err error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			// Check context before retrying -- don't waste an attempt on a cancelled context.
+			if ctx.Err() != nil {
+				return attempt, err
+			}
+			cfAPIRetriesTotal.WithLabelValues(resource, operation).Inc()
+		}
+		err = fn()
+		if err == nil {
+			return attempt + 1, nil
+		}
+		// Don't retry 429 (rate limit) -- immediate retry will likely get another 429.
+		// Let controller-runtime backoff handle it.
+		var cfErr *cloudflare.Error
+		if errors.As(err, &cfErr) && cfErr.StatusCode == 429 {
+			return attempt + 1, err
+		}
+	}
+	return maxRetries + 1, err
 }

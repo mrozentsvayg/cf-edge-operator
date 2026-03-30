@@ -82,6 +82,8 @@ func main() {
 	var driftBuffer int
 	var cfAPITimeout time.Duration
 	var cfAPIMaxRetries int
+	var cfAPIBulkTimeout time.Duration
+	var cfAPIBulkMaxRetries int
 	var sslCertificateAuthority, sslMinTLSVersion, sslMethod, sslType string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -119,11 +121,17 @@ func main() {
 		"Buffer size of the internal channel used to enqueue drifted CustomHostname CRs. "+
 			"Increase if operating with many zones and very frequent drift cycles.")
 	flag.DurationVar(&cfAPITimeout, "cf-api-timeout", 3*time.Second,
-		"Per-request timeout for Cloudflare API calls. A hung call will be cancelled after this duration.")
-	flag.IntVar(&cfAPIMaxRetries, "cf-api-max-retries", 0,
-		"Maximum number of retries for failed Cloudflare API calls (0 = no retries). "+
-			"Retries are handled at a higher level: the drift cycle retries every --drift-interval, "+
-			"and individual reconciles are requeued by controller-runtime with backoff.")
+		"Per-request timeout for single Cloudflare API calls (zone lookup, CH get/create/update/delete).")
+	flag.IntVar(&cfAPIMaxRetries, "cf-api-max-retries", 1,
+		"Maximum number of retries for single CF API calls (immediate, no backoff). "+
+			"Does not apply to paginated bulk list (see --cf-api-bulk-max-retries). "+
+			"Skips retry on 429 (rate limit).")
+	flag.DurationVar(&cfAPIBulkTimeout, "cf-api-bulk-timeout", 5*time.Second,
+		"Per-page timeout for paginated CF API calls (bulk drift list). "+
+			"Longer than --cf-api-timeout because each page returns up to 50 hostnames.")
+	flag.IntVar(&cfAPIBulkMaxRetries, "cf-api-bulk-max-retries", 0,
+		"Maximum number of per-page retries for paginated CF API calls (SDK-level, ~2s backoff). "+
+			"Only the failed page is retried, not the whole list.")
 	flag.StringVar(&sslCertificateAuthority, "ssl-certificate-authority", "",
 		"Default certificate authority for new custom hostnames (lets_encrypt, google, ssl_com). "+
 			"Applied on create when the CR's spec.ssl.certificateAuthority is empty. If empty, Cloudflare uses its own default.")
@@ -162,6 +170,8 @@ func main() {
 		"driftBuffer", driftBuffer,
 		"cfAPITimeout", cfAPITimeout,
 		"cfAPIMaxRetries", cfAPIMaxRetries,
+		"cfAPIBulkTimeout", cfAPIBulkTimeout,
+		"cfAPIBulkMaxRetries", cfAPIBulkMaxRetries,
 		"leaderElect", enableLeaderElection,
 		"sslCertificateAuthority", sslCertificateAuthority,
 		"sslMinTLSVersion", sslMinTLSVersion,
@@ -196,6 +206,14 @@ func main() {
 	}
 	if cfAPIMaxRetries < 0 {
 		setupLog.Error(nil, "invalid --cf-api-max-retries: must be non-negative", "value", cfAPIMaxRetries)
+		os.Exit(1)
+	}
+	if cfAPIBulkTimeout <= 0 {
+		setupLog.Error(nil, "invalid --cf-api-bulk-timeout: must be positive", "value", cfAPIBulkTimeout)
+		os.Exit(1)
+	}
+	if cfAPIBulkMaxRetries < 0 {
+		setupLog.Error(nil, "invalid --cf-api-bulk-max-retries: must be non-negative", "value", cfAPIBulkMaxRetries)
 		os.Exit(1)
 	}
 	if sslCertificateAuthority != "" {
@@ -337,6 +355,8 @@ func main() {
 		DriftInterval:        driftInterval,
 		CFAPITimeout:         cfAPITimeout,
 		CFAPIMaxRetries:      cfAPIMaxRetries,
+		CFAPIBulkTimeout:     cfAPIBulkTimeout,
+		CFAPIBulkMaxRetries:  cfAPIBulkMaxRetries,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Zone")
 		os.Exit(1)

@@ -44,6 +44,8 @@ spec:
         - --drift-buffer={{ .Values.driftBuffer }}
         - --cf-api-timeout={{ .Values.cfAPITimeout }}
         - --cf-api-max-retries={{ .Values.cfAPIMaxRetries }}
+        - --cf-api-bulk-timeout={{ .Values.cfAPIBulkTimeout }}
+        - --cf-api-bulk-max-retries={{ .Values.cfAPIBulkMaxRetries }}
         {{- if ne (lower (toString .Values.dryRun)) "false" }}
         - --dry-run
         {{- end }}
