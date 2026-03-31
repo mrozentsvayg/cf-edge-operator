@@ -159,6 +159,10 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		driftDetectionErrorsTotal.WithLabelValues(cfResourceCustomHostname).Inc()
 	}
 
+	// Clean up expired SSL provisioning gauge entries. Runs every drift cycle (~30s)
+	// to bound the cardinality of the per-hostname gauge.
+	cleanExpiredSSLProvisioning()
+
 	return ctrl.Result{RequeueAfter: r.DriftInterval}, nil
 }
 
