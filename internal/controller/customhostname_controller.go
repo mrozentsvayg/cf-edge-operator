@@ -541,7 +541,7 @@ func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneCR st
 					method = ch.Spec.SSL.Method
 				}
 				duration := time.Since(ch.Status.SSLProvisioningStartedAt.Time)
-				sslProvisioningDuration.WithLabelValues(zoneCR, ch.Spec.Hostname, method).Observe(duration.Seconds())
+				sslProvisioningDuration.WithLabelValues(zoneCR, ch.Spec.Hostname, method).Set(duration.Seconds())
 				log.Info("custom hostname - SSL provisioned", "hostname", ch.Spec.Hostname, "duration", duration.Round(time.Second), "method", method)
 			}
 		}
