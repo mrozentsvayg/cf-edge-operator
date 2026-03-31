@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/cloudflare/cloudflare-go/v6"
@@ -198,4 +199,63 @@ func cfRetry(ctx context.Context, resource, operation string, maxRetries int, fn
 		}
 	}
 	return maxRetries + 1, err
+}
+
+// sslProvisioningTTL is how long the SSL provisioning gauge stays in /metrics after
+// being set. Long enough for GMP to scrape it (60s interval), short enough to avoid
+// unbounded cardinality growth from the per-hostname label.
+const sslProvisioningTTL = 3 * time.Minute
+
+// sslProvisioningEntry tracks an SSL provisioning gauge value with an expiration time.
+type sslProvisioningEntry struct {
+	zoneCR    string
+	hostname  string
+	method    string
+	expiresAt time.Time
+}
+
+// sslProvisioningCache tracks active SSL provisioning gauge entries for TTL-based cleanup.
+// The CH controller sets entries via setSSLProvisioningDuration; the zone controller
+// cleans expired entries via cleanExpiredSSLProvisioning on each drift cycle.
+//
+// Protected by mutex rather than sync.Map: type safety, consistent iteration,
+// and simpler reasoning. Contention is negligible (written on SSL provisioning,
+// read every 30s during drift cleanup).
+var (
+	sslProvisioningMu    sync.Mutex
+	sslProvisioningCache = map[string]sslProvisioningEntry{}
+)
+
+// setSSLProvisioningDuration sets the SSL provisioning gauge and registers it for
+// TTL-based cleanup. Called by the CH controller when ssl.status transitions to active.
+func setSSLProvisioningDuration(zoneCR, hostname, method string, duration time.Duration) {
+	sslProvisioningDuration.WithLabelValues(zoneCR, hostname, method).Set(duration.Seconds())
+	key := zoneCR + "/" + hostname
+	sslProvisioningMu.Lock()
+	// If re-provisioning changed the DCV method, delete the old gauge series
+	// to avoid a stale series with the previous method label.
+	if prev, ok := sslProvisioningCache[key]; ok && prev.method != method {
+		sslProvisioningDuration.DeleteLabelValues(prev.zoneCR, prev.hostname, prev.method)
+	}
+	sslProvisioningCache[key] = sslProvisioningEntry{
+		zoneCR:    zoneCR,
+		hostname:  hostname,
+		method:    method,
+		expiresAt: time.Now().Add(sslProvisioningTTL),
+	}
+	sslProvisioningMu.Unlock()
+}
+
+// cleanExpiredSSLProvisioning removes expired SSL provisioning gauge entries.
+// Called by the zone controller at the end of each drift cycle.
+func cleanExpiredSSLProvisioning() {
+	now := time.Now()
+	sslProvisioningMu.Lock()
+	defer sslProvisioningMu.Unlock()
+	for key, entry := range sslProvisioningCache {
+		if now.After(entry.expiresAt) {
+			sslProvisioningDuration.DeleteLabelValues(entry.zoneCR, entry.hostname, entry.method)
+			delete(sslProvisioningCache, key)
+		}
+	}
 }
