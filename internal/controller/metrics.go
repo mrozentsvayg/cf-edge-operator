@@ -37,20 +37,16 @@ var (
 		Help: "Total number of successful Cloudflare operations by resource and type.",
 	}, []string{"resource", "operation"})
 
-	// sslProvisioningDuration observes the time from CF hostname creation to ssl.status == active.
+	// sslProvisioningDuration records the time from CF hostname creation to ssl.status == active.
 	// Labels: zone_cr (Zone CR name), hostname (the custom hostname), method (DCV method).
-	// Observed once per provisioning cycle; reset on recreation so it reflects the latest cycle.
-	// Buckets cover the bimodal distribution: quick completers (minutes) and slow ones (days/weeks).
-	sslProvisioningDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "cf_edge_operator_ssl_provisioning_duration_seconds",
-		Help:    "Time from Cloudflare hostname creation to ssl.status becoming active, by zone CR, hostname, and DCV method.",
-		Buckets: []float64{60, 300, 600, 1800, 3600, 7200, 21600, 43200, 86400, 259200, 604800},
-		// 1m, 5m, 10m, 30m, 1h, 2h, 6h, 12h, 1d, 3d, 1w
+	// Set once per provisioning cycle; reset on recreation so it reflects the latest cycle.
+	// Gauge instead of histogram: SSL provisioning is a rare event (zero to few per week),
+	// making histogram rate/increase queries ineffective with GMP's cumulative counter semantics.
+	// The hostname label gives per-hostname visibility (1 series each vs 14 with histogram).
+	sslProvisioningDuration = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "cf_edge_operator_ssl_provisioning_duration_seconds",
+		Help: "Time from Cloudflare hostname creation to ssl.status becoming active, by zone CR, hostname, and DCV method.",
 	}, []string{"zone_cr", "hostname", "method"})
-	// NOTE: The "hostname" label creates one histogram per custom hostname (14 series each
-	// with 11 buckets). This is intentional -- per-hostname provisioning visibility is needed
-	// for debugging slow SSL issuance. The cardinality is bounded by the number of managed
-	// hostnames and each series is static after SSL becomes active (fires once per lifecycle).
 
 	// customHostnames counts CustomHostname CRs by zone and state.
 	// States are mutually exclusive: conflict > ready > unhealthy > pending.
