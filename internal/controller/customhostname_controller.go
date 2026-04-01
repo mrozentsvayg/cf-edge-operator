@@ -525,6 +525,9 @@ func (r *CustomHostnameReconciler) requeueOrReady(ctx context.Context, zoneCR st
 		// Guard against double-counting on operator restart: skip if Ready=True is already set.
 		// NOTE: If SSL is already active at creation time (pre-validated domains), the
 		// observed duration is near-zero. This is technically correct -- not a bug.
+		// SSLProvisioningStartedAt is nil for adopted CHs (not created by the operator).
+		// Provisioning duration is only measured for operator-created CHs. Adopted CHs
+		// that transition to active are tracked via the customhostnames{state} gauge instead.
 		if ch.Status.SSLProvisioningStartedAt != nil {
 			alreadyReady := false
 			for _, cond := range ch.Status.Conditions {
