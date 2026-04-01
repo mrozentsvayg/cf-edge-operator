@@ -45,7 +45,7 @@ driftBuffer: 1024
 
 # Per-request timeout for Cloudflare API calls. A hung call will be cancelled
 # after this duration. Uses Go duration format (e.g. "30s", "1m").
-cfAPITimeout: "3s"
+cfAPITimeout: "5s"
 
 # Maximum retries for single CF API calls (immediate, no backoff).
 # Does not apply to paginated bulk list (see cfAPIBulkMaxRetries).
@@ -53,7 +53,6 @@ cfAPITimeout: "3s"
 cfAPIMaxRetries: 1
 
 # Per-page timeout for paginated CF API calls (bulk drift list).
-# Longer than cfAPITimeout because each page returns up to 50 hostnames.
 cfAPIBulkTimeout: "5s"
 
 # Maximum per-page retries for paginated CF API calls (SDK-level, ~2s backoff).
