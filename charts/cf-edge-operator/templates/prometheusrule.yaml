@@ -14,22 +14,22 @@ spec:
   - name: cf-edge-operator
     rules:
 
-    # Fires when a Zone CR cannot reach the Cloudflare API or its credentials secret
-    # is missing/invalid. Drift detection and CustomHostname reconciliation are suspended for that zone.
-    - alert: CfEdgeOperatorZoneNotReady
-      expr: cf_edge_operator_zone_ready == 0
-      for: 5m
+    # Fires when a Zone CR has never been initialized (zone GET to resolve zone name
+    # has never succeeded). This only happens on fresh zones or after credentialsRef changes.
+    - alert: CfEdgeOperatorZoneNotInitialized
+      expr: cf_edge_operator_zone_initialized == 0
+      for: 10m
       labels:
         severity: critical
       annotations:
         summary: >-
-          Zone {{`{{ $labels.zone_cr }}`}} is not ready
+          Zone {{`{{ $labels.zone_cr }}`}} is not initialized
         description: >-
-          The Zone CR {{`{{ $labels.zone_cr }}`}} has been unable to reach the Cloudflare API
-          or resolve its credentials secret for 5 minutes. Drift detection and CustomHostname
-          reconciliation are suspended for this zone.
+          The Zone CR {{`{{ $labels.zone_cr }}`}} has not been initialized for 10 minutes.
+          The zone GET to resolve the zone name from Cloudflare has not succeeded.
+          Check the credentials secret and Cloudflare API reachability.
         {{- if .Values.prometheusRule.runbookUrl }}
-        runbook_url: {{ .Values.prometheusRule.runbookUrl }}/CfEdgeOperatorZoneNotReady
+        runbook_url: {{ .Values.prometheusRule.runbookUrl }}/CfEdgeOperatorZoneNotInitialized
         {{- end }}
 
     # Fires when the operator metrics endpoint is unreachable. Custom hostname

@@ -2,11 +2,11 @@
 
 This runbook covers the alert rules shipped with the operator's PrometheusRule. Each section describes what the alert means, how to investigate, and how to resolve.
 
-## CfEdgeOperatorZoneNotReady
+## CfEdgeOperatorZoneNotInitialized
 
 **Severity:** critical
 
-**Meaning:** A Zone CR has been unable to validate its credentials or reach the Cloudflare (CF) API for 5 minutes. Drift detection and CustomHostname reconciliation are fully suspended for that zone.
+**Meaning:** A Zone CR has not been initialized for 10 minutes. The one-time zone GET to resolve the zone name from Cloudflare has not succeeded. This only fires on fresh zones or after credentialsRef changes -- not on transient API flakiness during steady state.
 
 **Investigate:**
 
@@ -20,21 +20,21 @@ kubectl get secret <credentialsRef.name> -n <operator-namespace>
 kubectl get secret <credentialsRef.name> -n <operator-namespace> \
   -o jsonpath='{.data.apiToken}' | base64 -d | wc -c  # should be non-zero
 
-# Operator logs for the zone reconcile errors
+# Operator logs for the zone initialization errors
 kubectl logs -n <operator-namespace> -l app.kubernetes.io/name=cf-edge-operator \
-  | grep -E "(SecretError|CloudflareError|zone)"
+  | grep -E "(API token fetch failed|initialization failed|zone)"
 ```
 
 **Common causes:**
 
-| Condition reason | Cause | Resolution |
-|-----------------|-------|------------|
-| `SecretError` | Secret missing, wrong name, or key absent | Verify `spec.credentialsRef.name` and `spec.credentialsRef.key` match the actual secret |
-| `CloudflareError` | Invalid API token, wrong zone ID, or CF API degradation | Verify `spec.id` matches the zone in the CF dashboard; check token permissions (`Zone: Read`, `SSL and Certificates: Edit`) |
+| Log message | Cause | Resolution |
+|-------------|-------|------------|
+| `zone - API token fetch failed` | Secret missing, wrong name, or key absent | Verify `spec.credentialsRef.name` and `spec.credentialsRef.key` match the actual secret |
+| `zone - initialization failed` | Invalid API token, wrong zone ID, or CF API degradation | Verify `spec.id` matches the zone in the CF dashboard; check token permissions (`Zone: Read`, `SSL and Certificates: Edit`) |
 
 **Resolve:**
 
-Fix the secret name, zone ID, or API token. The Zone reconciler retries on its standard schedule; `zone_ready` will flip to 1 on the next successful reconcile.
+Fix the secret name, zone ID, or API token. The Zone reconciler retries with backoff (capped at 30s); `zone_initialized` will be set to 1 on the first successful zone GET.
 
 ---
 
