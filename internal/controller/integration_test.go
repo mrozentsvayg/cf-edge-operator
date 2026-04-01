@@ -354,7 +354,7 @@ var _ = Describe("Integration", Ordered, func() {
 				CertificateAuthority: "lets_encrypt",
 				MinTLSVersion:        "1.2",
 			},
-			CFAPITimeout:    3 * time.Second,
+			CFAPITimeout:    5 * time.Second,
 			CFAPIMaxRetries: 1,
 			CFBaseURL:       cfMock.URL(),
 		}).SetupWithManager(mgr, chEvents)
@@ -366,7 +366,7 @@ var _ = Describe("Integration", Ordered, func() {
 			Scheme:               mgr.GetScheme(),
 			CustomHostnameEvents: chEvents,
 			DriftInterval:        5 * time.Second,
-			CFAPITimeout:         3 * time.Second,
+			CFAPITimeout:         5 * time.Second,
 			CFAPIMaxRetries:      1,
 			CFAPIBulkTimeout:     5 * time.Second,
 			CFAPIBulkMaxRetries:  0,

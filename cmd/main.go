@@ -120,7 +120,7 @@ func main() {
 	flag.IntVar(&driftBuffer, "drift-buffer", 1024,
 		"Buffer size of the internal channel used to enqueue drifted CustomHostname CRs. "+
 			"Increase if operating with many zones and very frequent drift cycles.")
-	flag.DurationVar(&cfAPITimeout, "cf-api-timeout", 3*time.Second,
+	flag.DurationVar(&cfAPITimeout, "cf-api-timeout", 5*time.Second,
 		"Per-request timeout for single Cloudflare API calls (zone lookup, CH get/create/update/delete).")
 	flag.IntVar(&cfAPIMaxRetries, "cf-api-max-retries", 1,
 		"Maximum number of retries for single CF API calls (immediate, no backoff). "+

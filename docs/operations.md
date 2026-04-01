@@ -14,7 +14,7 @@ All flags are set via Helm values, which are passed as container args in the Dep
 | `--dry-run` | `false` | `dryRun` | Log Cloudflare (CF) operations without executing them |
 | `--drift-interval` | `1m` | `driftInterval` | How often the zone controller bulk-lists CF hostnames |
 | `--drift-buffer` | `1024` | `driftBuffer` | Internal channel buffer for drift events |
-| `--cf-api-timeout` | `3s` | `cfAPITimeout` | Per-request timeout for single CF API calls (zone lookup, CH get/create/update/delete) |
+| `--cf-api-timeout` | `5s` | `cfAPITimeout` | Per-request timeout for single CF API calls (zone lookup, CH get/create/update/delete) |
 | `--cf-api-max-retries` | `1` | `cfAPIMaxRetries` | Retries for single CF API calls (immediate, no backoff). Skips retry on 429 |
 | `--cf-api-bulk-timeout` | `5s` | `cfAPIBulkTimeout` | Per-page timeout for paginated CF API calls (bulk drift list) |
 | `--cf-api-bulk-max-retries` | `0` | `cfAPIBulkMaxRetries` | Per-page retries for paginated CF API calls (SDK-level, ~2s backoff). Only the failed page is retried |
@@ -30,11 +30,11 @@ All flags are set via Helm values, which are passed as container args in the Dep
 
 Single CF API calls and paginated bulk list have separate timeout and retry settings.
 
-**Single calls** (`--cf-api-timeout`, `--cf-api-max-retries`): zone lookup, CH get/create/update/delete. Uses the operator's own retry loop with immediate retry (no backoff). Skips retry on 429 (rate limit). Default: 3s timeout, 1 retry. Worst case: 2 x 3s = 6s.
+**Single calls** (`--cf-api-timeout`, `--cf-api-max-retries`): zone lookup, CH get/create/update/delete. Uses the operator's own retry loop with immediate retry (no backoff). Skips retry on 429 (rate limit). Default: 5s timeout, 1 retry. Worst case: 2 x 5s = 10s.
 
 **Bulk drift list** (`--cf-api-bulk-timeout`, `--cf-api-bulk-max-retries`): paginated CH list during drift detection. Uses SDK-level per-page retries (~2s backoff). Only the failed page is retried, not the whole list. Default: 5s timeout, 0 retries. Worst case with 172 CHs at 50/page (5 HTTP calls): 5 x 5s = 25s.
 
-**Total worst case per drift cycle:** single call worst case + bulk list worst case. With defaults: 6s + 25s = 31s (just over the 30s drift interval, extreme case).
+**Total worst case per drift cycle:** single call worst case + bulk list worst case. With defaults: 10s + 25s = 35s (just over the 30s drift interval, extreme case).
 
 **Caution when increasing `--cf-api-bulk-max-retries`:** the SDK uses exponential backoff (base 2s, max 30s) between retries. Setting bulk retries to 1 adds ~2s per failed page. Setting to 2 adds ~6s (2s + 4s) per failed page. Keep the total budget well under `--drift-interval`.
 

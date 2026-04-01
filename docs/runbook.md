@@ -160,7 +160,7 @@ open https://www.cloudflarestatus.com
 # rate(cf_edge_operator_api_errors_by_code_total[5m])
 #
 # Break down by error type:
-#   status_code="timeout"   -- request exceeded --cf-api-timeout (default 3s)
+#   status_code="timeout"   -- request exceeded --cf-api-timeout (default 5s)
 #   status_code="canceled"  -- request canceled (pod shutdown, leader election loss)
 #   status_code=~"5.."      -- Cloudflare server errors (500, 502, 503, etc.)
 #   status_code="unknown"   -- non-HTTP errors (DNS resolution, connection refused)
@@ -169,7 +169,7 @@ open https://www.cloudflarestatus.com
 **Resolve:**
 
 - **CF service degradation:** Wait for Cloudflare to recover. The operator will resume automatically.
-- **Timeouts (`status_code="timeout"`):** CF API is responding slowly. Single calls (zone lookup, CH get/create/update/delete) retry immediately (default 1 retry). Check `cf_edge_operator_api_retries_total` -- non-zero means retries are absorbing transient slowdowns. If timeouts persist after retries, increase `--cf-api-timeout` (default 3s) or `--cf-api-bulk-timeout` (default 5s). For bulk-list timeouts, the log includes `itemsFetched` showing how many hostnames were fetched before the timeout (e.g., `itemsFetched: 100` = two full pages completed, third page timed out).
+- **Timeouts (`status_code="timeout"`):** CF API is responding slowly. Single calls (zone lookup, CH get/create/update/delete) retry immediately (default 1 retry). Check `cf_edge_operator_api_retries_total` -- non-zero means retries are absorbing transient slowdowns. If timeouts persist after retries, increase `--cf-api-timeout` (default 5s) or `--cf-api-bulk-timeout` (default 5s). For bulk-list timeouts, the log includes `itemsFetched` showing how many hostnames were fetched before the timeout (e.g., `itemsFetched: 100` = two full pages completed, third page timed out).
 - **Invalid API token:** A token that was valid may have been rotated or had permissions changed. Update the token in the Zone CR's secret.
 - **Zone ID misconfiguration:** A Zone CR with an invalid or deleted zone ID will produce sustained errors. Correct `spec.id` in the Zone CR.
 

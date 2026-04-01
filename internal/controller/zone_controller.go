@@ -62,7 +62,7 @@ type ZoneReconciler struct {
 	// resources to detect external drift. Set via --drift-interval (default: 1m).
 	DriftInterval time.Duration
 	// CFAPITimeout is the per-request timeout for single Cloudflare API calls.
-	// Set via --cf-api-timeout (default: 3s).
+	// Set via --cf-api-timeout (default: 5s).
 	CFAPITimeout time.Duration
 	// CFAPIMaxRetries is the maximum number of retries for single CF API calls.
 	// Set via --cf-api-max-retries (default: 1). Uses our retry loop (immediate, no backoff).
