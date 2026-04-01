@@ -364,8 +364,8 @@ func main() {
 	// +kubebuilder:scaffold:builder
 
 	// NOTE: Probes are trivial pings -- they don't check CF API reachability or
-	// controller health. Per-zone health is surfaced via the zoneReady metric and
-	// Zone CR conditions. Failing the readiness probe would remove the pod from
+	// controller health. Per-zone health is surfaced via the zoneInitialized metric
+	// and Zone CR conditions. Failing the readiness probe would remove the pod from
 	// service, which is worse than a single zone's token expiring.
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "Failed to set up health check")

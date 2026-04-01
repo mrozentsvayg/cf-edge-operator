@@ -193,7 +193,7 @@ Parse with jq: `jq '.drift.drifted | keys'` or `jq '.changed | to_entries[] | "\
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `cf_edge_operator_zone_ready{zone_cr}` | gauge | 1 if Zone CR credentials are valid and CF API is reachable, 0 otherwise. Uses CR name (always available, even on failure). |
+| `cf_edge_operator_zone_initialized{zone_cr}` | gauge | 1 if Zone CR has been initialized (zone name resolved from CF API). Set once on first successful zone GET; not toggled on transient failures. |
 | `cf_edge_operator_operations_total{resource,operation}` | counter | Successful CF operations; `resource`: customhostname; `operation`: adopt, create, recreate, update, delete |
 | `cf_edge_operator_customhostnames{zone_cr,state}` | gauge | CRs by zone CR and state (ready/pending/unhealthy/conflict). Sum = total CRs in zone |
 | `cf_edge_operator_zone_customhostnames{zone_cr,type}` | gauge | CF custom hostnames by zone CR and type (managed/orphan/drifted/total). `orphan` = no associated CR. `total` = CF quota usage for the zone |
@@ -213,7 +213,7 @@ The Helm chart ships a `PrometheusRule` (disabled by default):
 
 | Alert | Fires when |
 |-------|------------|
-| `CfEdgeOperatorZoneNotReady` | Zone CR unhealthy (bad secret or CF API error) for 5 min |
+| `CfEdgeOperatorZoneNotInitialized` | Zone CR not initialized (zone GET never succeeded) for 10 min |
 | `CfEdgeOperatorDown` | Metrics endpoint unreachable for 2 min |
 | `CfEdgeOperatorUnhealthyHostnames` | Any CR in `unhealthy` state for 5 min |
 | `CfEdgeOperatorConflictHostnames` | Any CR in `conflict` state for 5 min |

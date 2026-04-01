@@ -173,7 +173,7 @@ See [docs/architecture.md](docs/architecture.md) for the coordinator/worker desi
 
 Metrics are exposed on `:8080/metrics` (HTTP, via Helm chart). See [docs/architecture.md](docs/architecture.md#prometheus-metrics) for the full reference. Key metrics:
 
-- `cf_edge_operator_zone_ready{zone_cr}` -- 1 if zone credentials are valid and CF API is reachable, 0 otherwise
+- `cf_edge_operator_zone_initialized{zone_cr}` -- 1 if zone has been initialized (zone name resolved from CF API), set once
 - `cf_edge_operator_operations_total{resource,operation}` -- successful CF operations (adopt, create, recreate, update, delete)
 - `cf_edge_operator_customhostnames{zone_cr,state}` -- CRs by zone and state (ready/pending/unhealthy/conflict)
 - `cf_edge_operator_zone_customhostnames{zone_cr,type}` -- CF custom hostnames by type (managed/orphan/drifted/total); orphan = no associated CR

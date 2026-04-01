@@ -18,8 +18,8 @@ spec:
     - jsonPath: .status.name
       name: Zone
       type: string
-    - jsonPath: .status.conditions[?(@.type=="Ready")].status
-      name: Ready
+    - jsonPath: .status.conditions[?(@.type=="Initialized")].status
+      name: Initialized
       type: string
     name: v1beta1
     schema:
@@ -78,7 +78,7 @@ spec:
           status:
             description: |-
               ZoneStatus defines the observed state of Zone.
-              NOTE: No top-level ObservedGeneration -- it's set per-condition in setReady().
+              NOTE: No top-level ObservedGeneration -- it's set per-condition in setInitialized().
             properties:
               conditions:
                 items:

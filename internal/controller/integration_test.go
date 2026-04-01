@@ -476,15 +476,15 @@ var _ = Describe("Integration", Ordered, func() {
 			}, 10*time.Second, 100*time.Millisecond).ShouldNot(BeEmpty())
 		})
 
-		It("should recover Zone readiness after Secret is deleted and restored", func() {
-			// Verify Zone is Ready
+		It("should keep Initialized condition after Secret is deleted and restored", func() {
+			// Verify Zone is Initialized
 			Eventually(func() bool {
 				var zone domainsv1beta1.Zone
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: "test-zone", Namespace: testNS}, &zone); err != nil {
 					return false
 				}
 				for _, c := range zone.Status.Conditions {
-					if c.Type == conditionReady && c.Status == metav1.ConditionTrue {
+					if c.Type == conditionInitialized && c.Status == metav1.ConditionTrue {
 						return true
 					}
 				}
@@ -495,19 +495,20 @@ var _ = Describe("Integration", Ordered, func() {
 			secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cf-secret", Namespace: testNS}}
 			Expect(k8sClient.Delete(ctx, secret)).To(Succeed())
 
-			// Zone should become NotReady
-			Eventually(func() bool {
+			// Initialized should stay True -- secret absence is transient,
+			// not a zone identity problem. Wait a few cycles to confirm no flip.
+			Consistently(func() bool {
 				var zone domainsv1beta1.Zone
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: "test-zone", Namespace: testNS}, &zone); err != nil {
 					return false
 				}
 				for _, c := range zone.Status.Conditions {
-					if c.Type == conditionReady && c.Status == metav1.ConditionFalse {
+					if c.Type == conditionInitialized && c.Status == metav1.ConditionTrue {
 						return true
 					}
 				}
 				return false
-			}, 10*time.Second, 100*time.Millisecond).Should(BeTrue())
+			}, 10*time.Second, 500*time.Millisecond).Should(BeTrue())
 
 			// Restore Secret
 			newSecret := &corev1.Secret{
@@ -516,14 +517,15 @@ var _ = Describe("Integration", Ordered, func() {
 			}
 			Expect(k8sClient.Create(ctx, newSecret)).To(Succeed())
 
-			// Zone should recover to Ready within 30s (backoff cap)
+			// Verify Initialized stays True after secret restore. Wait long enough
+			// for at least one drift cycle to complete with valid credentials.
 			Eventually(func() bool {
 				var zone domainsv1beta1.Zone
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: "test-zone", Namespace: testNS}, &zone); err != nil {
 					return false
 				}
 				for _, c := range zone.Status.Conditions {
-					if c.Type == conditionReady && c.Status == metav1.ConditionTrue {
+					if c.Type == conditionInitialized && c.Status == metav1.ConditionTrue {
 						return true
 					}
 				}
@@ -572,19 +574,11 @@ var _ = Describe("Integration", Ordered, func() {
 			secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cf-secret", Namespace: testNS}}
 			Expect(k8sClient.Delete(ctx, secret)).To(Succeed())
 
-			// Wait for Zone to go NotReady (confirms Secret is gone)
+			// Confirm Secret is gone (Initialized stays True, so we check directly)
 			Eventually(func() bool {
-				var zone domainsv1beta1.Zone
-				if err := k8sClient.Get(ctx, types.NamespacedName{Name: "test-zone", Namespace: testNS}, &zone); err != nil {
-					return false
-				}
-				for _, c := range zone.Status.Conditions {
-					if c.Type == conditionReady && c.Status == metav1.ConditionFalse {
-						return true
-					}
-				}
-				return false
-			}, 10*time.Second, 100*time.Millisecond).Should(BeTrue())
+				var s corev1.Secret
+				return k8sClient.Get(ctx, types.NamespacedName{Name: "cf-secret", Namespace: testNS}, &s) != nil
+			}, 5*time.Second, 100*time.Millisecond).Should(BeTrue())
 
 			// Delete CH -- should release finalizer without needing CF client
 			Expect(k8sClient.Delete(ctx, ch)).To(Succeed())
@@ -606,19 +600,12 @@ var _ = Describe("Integration", Ordered, func() {
 			}
 			Expect(k8sClient.Create(ctx, newSecret)).To(Succeed())
 
-			// Wait for Zone to recover
-			Eventually(func() bool {
-				var zone domainsv1beta1.Zone
-				if err := k8sClient.Get(ctx, types.NamespacedName{Name: "test-zone", Namespace: testNS}, &zone); err != nil {
-					return false
-				}
-				for _, c := range zone.Status.Conditions {
-					if c.Type == conditionReady && c.Status == metav1.ConditionTrue {
-						return true
-					}
-				}
-				return false
-			}, 35*time.Second, 500*time.Millisecond).Should(BeTrue())
+			// Wait for the restored secret to be visible to the controller,
+			// so subsequent tests have valid credentials.
+			Eventually(func() error {
+				var s corev1.Secret
+				return k8sClient.Get(ctx, types.NamespacedName{Name: "cf-secret", Namespace: testNS}, &s)
+			}, 5*time.Second, 100*time.Millisecond).Should(Succeed())
 		})
 	})
 

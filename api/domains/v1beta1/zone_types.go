@@ -49,7 +49,7 @@ type SecretRef struct {
 }
 
 // ZoneStatus defines the observed state of Zone.
-// NOTE: No top-level ObservedGeneration -- it's set per-condition in setReady().
+// NOTE: No top-level ObservedGeneration -- it's set per-condition in setInitialized().
 type ZoneStatus struct {
 	// Name is the Cloudflare zone name (e.g. example.com), populated from the API
 	// +optional
@@ -64,7 +64,7 @@ type ZoneStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Zone",type=string,JSONPath=`.status.name`
-// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Initialized",type=string,JSONPath=`.status.conditions[?(@.type=="Initialized")].status`
 
 // Zone is the Schema for the zones API
 type Zone struct {

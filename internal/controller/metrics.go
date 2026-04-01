@@ -65,12 +65,12 @@ var (
 		Help: "Number of Cloudflare custom hostnames by zone CR and type (managed, orphan, drifted, total).",
 	}, []string{"zone_cr", "type"})
 
-	// zoneReady is 1 when the Zone CR credentials are valid and the Cloudflare API
-	// is reachable, 0 otherwise. Labeled by zone_cr (the Zone CR name, always
-	// available) rather than the CF domain name, which may not be known on failure.
-	zoneReady = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "cf_edge_operator_zone_ready",
-		Help: "1 if the Zone CR is healthy (credentials valid, Cloudflare API reachable), 0 otherwise.",
+	// zoneInitialized is 1 after the Zone CR has been initialized (zone name resolved
+	// from Cloudflare API), 0 otherwise. Set once on first successful zone GET; not
+	// toggled on transient failures. Labeled by zone_cr (the Zone CR name).
+	zoneInitialized = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "cf_edge_operator_zone_initialized",
+		Help: "1 if Zone CR has been initialized (zone name resolved from Cloudflare API), 0 otherwise.",
 	}, []string{"zone_cr"})
 
 	// cfAPICallDuration observes Cloudflare API call latency by resource and operation.
@@ -129,7 +129,7 @@ func init() {
 		sslProvisioningDuration,
 		customHostnames,
 		zoneCustomHostnames,
-		zoneReady,
+		zoneInitialized,
 		cfAPICallDuration,
 		cfAPIErrorsByCode,
 		cfAPIRetriesTotal,

@@ -83,6 +83,8 @@ type ZoneReconciler struct {
 // +kubebuilder:rbac:groups=saas.cf-edge.io,resources=customhostnames,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
+const conditionInitialized = "Initialized"
+
 func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -90,7 +92,7 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err := r.Get(ctx, req.NamespacedName, &zone); err != nil {
 		if client.IgnoreNotFound(err) == nil {
 			// Zone deleted -- remove stale metric series.
-			zoneReady.DeleteLabelValues(req.Name)
+			zoneInitialized.DeleteLabelValues(req.Name)
 			customHostnames.DeletePartialMatch(prometheus.Labels{"zone_cr": req.Name})
 			zoneCustomHostnames.DeletePartialMatch(prometheus.Labels{"zone_cr": req.Name})
 			sslProvisioningDuration.DeletePartialMatch(prometheus.Labels{"zone_cr": req.Name})
@@ -98,20 +100,75 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Fetch and validate API token
+	// Ensure metric series exists so the CfEdgeOperatorZoneNotInitialized alert
+	// (expr: == 0) can match before the first successful zone GET.
+	if meta.FindStatusCondition(zone.Status.Conditions, conditionInitialized) == nil {
+		zoneInitialized.WithLabelValues(zone.Name).Set(0)
+	} else {
+		zoneInitialized.WithLabelValues(zone.Name).Set(1)
+	}
+
+	// Fetch API token every cycle -- fast local K8s call, and the secret could
+	// be rotated at any time. Do not touch the Initialized condition on failure:
+	// a missing secret is a transient issue, not a zone identity problem.
 	apiToken, err := r.fetchAPIToken(ctx, &zone)
 	if err != nil {
 		log.Error(err, "zone - API token fetch failed")
-		zoneReady.WithLabelValues(zone.Name).Set(0)
-		// setReady is best-effort for observability; return the original error
-		// so controller-runtime retries with backoff (capped at 30s).
-		_ = r.setReady(ctx, &zone, metav1.ConditionFalse, "SecretError", err.Error())
 		return ctrl.Result{}, err
 	}
 
+	// Initialize zone on first reconcile, on spec change (credentialsRef rotation),
+	// or when the Initialized condition is missing.
+	var cf *cloudflare.Client
+	if r.needsInit(&zone) {
+		var err error
+		cf, err = r.initializeZone(ctx, &zone, apiToken)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		// Fall through to drift detection -- first cycle should also detect drift.
+	} else {
+		cf = r.buildCFClient(apiToken)
+	}
+
+	// Per-resource drift detection. Each resource type is in its own file
+	// (zone_*_drift.go) and can fail independently without affecting others.
+	// NOTE: Error is logged and counted (driftDetectionErrorsTotal) but not
+	// returned -- the zone requeues on DriftInterval regardless, so controller-runtime
+	// error tracking/backoff is unnecessary.
+	if err := r.detectCustomHostnameDrift(ctx, cf, &zone); err != nil {
+		log.V(1).Info("custom hostname - drift detection failed", "zoneID", zone.Spec.ID, "reason", err)
+		driftDetectionErrorsTotal.WithLabelValues(cfResourceCustomHostname).Inc()
+	}
+
+	// Clean up expired SSL provisioning gauge entries. Runs every drift cycle (~30s)
+	// to bound the cardinality of the per-hostname gauge.
+	cleanExpiredSSLProvisioning()
+
+	return ctrl.Result{RequeueAfter: r.DriftInterval}, nil
+}
+
+// needsInit returns true if the zone requires initialization (zone GET to resolve
+// the zone name from Cloudflare). This happens on first reconcile, after operator
+// restart with empty status, or after a spec change (e.g., credentialsRef rotation).
+func (r *ZoneReconciler) needsInit(zone *domainsv1beta1.Zone) bool {
+	if zone.Status.Name == "" {
+		return true
+	}
+	cond := meta.FindStatusCondition(zone.Status.Conditions, conditionInitialized)
+	if cond == nil {
+		return true
+	}
+	return cond.ObservedGeneration < zone.Generation
+}
+
+// buildCFClient creates a Cloudflare API client with the given token and the
+// reconciler's timeout/base-URL settings. SDK retries are disabled; single-call
+// retries are handled by cfRetry.
+func (r *ZoneReconciler) buildCFClient(apiToken string) *cloudflare.Client {
 	cfOpts := []option.RequestOption{
 		option.WithAPIToken(apiToken),
-		option.WithMaxRetries(0), // SDK retries disabled; we handle retries via cfRetry.
+		option.WithMaxRetries(0),
 	}
 	if r.CFAPITimeout > 0 {
 		cfOpts = append(cfOpts, option.WithRequestTimeout(r.CFAPITimeout))
@@ -119,9 +176,15 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if r.CFBaseURL != "" {
 		cfOpts = append(cfOpts, option.WithBaseURL(r.CFBaseURL))
 	}
-	cf := cloudflare.NewClient(cfOpts...)
+	return cloudflare.NewClient(cfOpts...)
+}
 
-	// Validate credentials and populate zone name
+// initializeZone runs the one-time zone GET to resolve the zone name from Cloudflare
+// and sets the Initialized condition. Called only when needsInit returns true.
+func (r *ZoneReconciler) initializeZone(ctx context.Context, zone *domainsv1beta1.Zone, apiToken string) (*cloudflare.Client, error) {
+	log := logf.FromContext(ctx)
+	cf := r.buildCFClient(apiToken)
+
 	var zoneDetails *zones.Zone
 	attempts, err := cfRetry(ctx, cfResourceZone, cfOpGet, r.CFAPIMaxRetries, func() error {
 		zoneGetStart := time.Now()
@@ -133,37 +196,18 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return callErr
 	})
 	if err != nil {
-		log.Error(err, "zone - Cloudflare lookup failed", "zoneID", zone.Spec.ID, "attempts", attempts)
-		zoneReady.WithLabelValues(zone.Name).Set(0)
-		_ = r.setReady(ctx, &zone, metav1.ConditionFalse, "CloudflareError", err.Error())
-		return ctrl.Result{}, err
+		log.Error(err, "zone - initialization failed", "zoneID", zone.Spec.ID, "attempts", attempts)
+		return nil, err
 	}
-	zoneReady.WithLabelValues(zone.Name).Set(1)
-	if !meta.IsStatusConditionTrue(zone.Status.Conditions, "Ready") {
-		log.Info("zone - ready", "zone", zoneDetails.Name, "zoneID", zone.Spec.ID)
-	}
+
 	zone.Status.Name = zoneDetails.Name
-	if err := r.setReady(ctx, &zone, metav1.ConditionTrue, "ZoneReady", "Zone credentials validated"); err != nil {
-		return ctrl.Result{}, err
+	if err := r.setInitialized(ctx, zone, "ZoneInitialized",
+		fmt.Sprintf("Zone credentials validated, zone: %s", zoneDetails.Name)); err != nil {
+		return nil, err
 	}
-
-	// Per-resource drift detection. Each resource type is in its own file
-	// (zone_*_drift.go) and can fail independently without affecting others.
-	// NOTE: Error is logged and counted (driftDetectionErrorsTotal) but not
-	// returned -- the zone requeues on DriftInterval regardless, so controller-runtime
-	// error tracking/backoff is unnecessary.
-	// When multiple detectors exist, parallelize with errgroup.Group to avoid
-	// sequential paginated API calls stretching the reconcile duration.
-	if err := r.detectCustomHostnameDrift(ctx, cf, &zone); err != nil {
-		log.V(1).Info("custom hostname - drift detection failed", "zoneID", zone.Spec.ID, "reason", err)
-		driftDetectionErrorsTotal.WithLabelValues(cfResourceCustomHostname).Inc()
-	}
-
-	// Clean up expired SSL provisioning gauge entries. Runs every drift cycle (~30s)
-	// to bound the cardinality of the per-hostname gauge.
-	cleanExpiredSSLProvisioning()
-
-	return ctrl.Result{RequeueAfter: r.DriftInterval}, nil
+	zoneInitialized.WithLabelValues(zone.Name).Set(1)
+	log.Info("zone - initialized", "zone", zoneDetails.Name, "zoneID", zone.Spec.ID)
+	return cf, nil
 }
 
 // fetchAPIToken reads the CF API token from the secret referenced by the Zone CR.
@@ -188,10 +232,10 @@ func (r *ZoneReconciler) fetchAPIToken(ctx context.Context, zone *domainsv1beta1
 	return string(token), nil
 }
 
-func (r *ZoneReconciler) setReady(ctx context.Context, zone *domainsv1beta1.Zone, status metav1.ConditionStatus, reason, message string) error {
+func (r *ZoneReconciler) setInitialized(ctx context.Context, zone *domainsv1beta1.Zone, reason, message string) error {
 	meta.SetStatusCondition(&zone.Status.Conditions, metav1.Condition{
-		Type:               conditionReady,
-		Status:             status,
+		Type:               conditionInitialized,
+		Status:             metav1.ConditionTrue,
 		Reason:             reason,
 		Message:            message,
 		ObservedGeneration: zone.Generation,
