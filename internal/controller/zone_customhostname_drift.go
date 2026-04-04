@@ -129,9 +129,13 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 	// Visible at V(2) (--zap-log-level=2). Useful for auditing manual
 	// Cloudflare changes or planning migration to CRs.
 	managedCount, orphanCount := 0, 0
+	// Pre-initialize common CF statuses to 0 so stale series decay when a status
+	// is no longer present (e.g. active_redeploying -> active).
+	cfStatusCounts := map[string]int{"active": 0, "pending": 0, "active_redeploying": 0, "blocked": 0, "moved": 0}
 	for hostname, cfCH := range cfHostnames {
 		if crHostnames[hostname] {
 			managedCount++
+			cfStatusCounts[string(cfCH.Status)]++
 		} else {
 			log.V(2).Info("custom hostname - not enqueuing, no associated CR found",
 				"hostname", hostname, "origin", cfCH.CustomOriginServer)
@@ -140,6 +144,9 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 	}
 	zoneCustomHostnames.WithLabelValues(zone.Name, "managed").Set(float64(managedCount))
 	zoneCustomHostnames.WithLabelValues(zone.Name, "orphan").Set(float64(orphanCount))
+	for status, count := range cfStatusCounts {
+		hostnameStatusGauge.WithLabelValues(zone.Name, status).Set(float64(count))
+	}
 	zoneCustomHostnames.WithLabelValues(zone.Name, "drifted").Set(float64(drifted))
 	zoneCustomHostnames.WithLabelValues(zone.Name, "total").Set(float64(len(cfHostnames)))
 

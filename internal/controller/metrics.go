@@ -60,6 +60,14 @@ var (
 		Help: "Number of CustomHostname CRs by zone CR and state (ready, pending, unhealthy, conflict).",
 	}, []string{"zone_cr", "state"})
 
+	// hostnameStatus counts managed Cloudflare custom hostnames by zone CR and CF
+	// activation status (active, pending, active_redeploying, blocked, moved, etc.).
+	// Only includes hostnames with an associated CR (not orphans).
+	hostnameStatusGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "cf_edge_operator_customhostname_status",
+		Help: "Number of managed Cloudflare custom hostnames by zone CR and CF activation status.",
+	}, []string{"zone_cr", "status"})
+
 	// zoneCustomHostnames counts Cloudflare custom hostnames by zone CR and type.
 	// managed: hostname has an associated CR; orphan: hostname has no associated CR.
 	// type=total is the CF quota usage for that zone.
@@ -132,6 +140,7 @@ func init() {
 		operationsTotal,
 		sslProvisioningDuration,
 		customHostnames,
+		hostnameStatusGauge,
 		zoneCustomHostnames,
 		zoneInitialized,
 		cfAPICallDuration,
