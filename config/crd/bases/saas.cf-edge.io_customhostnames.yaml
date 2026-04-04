@@ -21,6 +21,9 @@ spec:
     - jsonPath: .spec.originServer
       name: Origin
       type: string
+    - jsonPath: .status.hostnameStatus
+      name: CF Status
+      type: string
     - jsonPath: .status.ssl.status
       name: SSL
       type: string
@@ -242,6 +245,11 @@ spec:
                   A value greater than 1 indicates external deletions occurred (e.g. via CF dashboard).
                 format: int32
                 type: integer
+              hostnameStatus:
+                description: |-
+                  HostnameStatus is the CF custom hostname activation status
+                  (active, active_redeploying, pending, blocked, moved, etc.)
+                type: string
               id:
                 description: ID is the Cloudflare-assigned custom hostname ID, used
                   for updates and deletes

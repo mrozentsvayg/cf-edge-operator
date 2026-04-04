@@ -48,7 +48,7 @@ The operator uses structured logging with four verbosity levels:
 |-------|------|---------------|
 | ERROR | _(always visible)_ | API failures: lookup, create, update, delete, list errors; zone-level failures (token fetch, CF zone lookup) |
 | INFO | _(default)_ | Operational events: creates, deletes, drift corrections, policy skips, SSL provisioned, drift detection summaries (when drifted > 0) |
-| V(1) / DEBUG | `--zap-log-level=1` | Confirmations and heartbeats: finalizer added, status.ssl refreshed, drift detection complete (when drifted = 0), drift detection failed (summary), duplicate CR skip during drift detection |
+| V(1) / DEBUG | `--zap-log-level=1` | Confirmations and heartbeats: finalizer added, hostnameStatus refreshed, status.ssl refreshed, drift detection complete (when drifted = 0), drift detection failed (summary), duplicate CR skip during drift detection |
 | V(2) / TRACE | `--zap-log-level=2` | Per-item verbose: orphan CF hostnames (no associated CR), dry-run per-CR "no drift detected" |
 
 In development mode (`--zap-devel=true`, the default), V(1)/DEBUG is visible by default; V(2)/TRACE requires `--zap-log-level=2`. In production mode (`--zap-devel=false`), only INFO is visible by default; set `--zap-log-level` to increase verbosity.

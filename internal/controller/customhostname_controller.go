@@ -309,7 +309,9 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 			}
 			operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpUpdate).Inc()
 			// Use post-edit response for status -- reflects the corrected CF state.
-			ch.Status.SSL = sslStatusFromEdit(editResp)
+			editState := cfStateFromEdit(editResp)
+			ch.Status.SSL = editState.ssl
+			ch.Status.HostnameStatus = editState.hostnameStatus
 			edited = true
 		}
 	}
@@ -318,11 +320,16 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 	// When an edit occurred, ch.Status.SSL already has the post-edit state (set above);
 	// otherwise, refresh from the pre-edit list response to catch external CF changes.
 	if !edited {
-		newSSL := sslStatusFromList(existing)
-		if !sslStatusEqual(ch.Status.SSL, newSSL) {
-			log.V(1).Info("custom hostname - status.ssl refreshed", "hostname", ch.Spec.Hostname, "ssl", newSSL)
+		state := cfStateFromList(existing)
+		if state.hostnameStatus != ch.Status.HostnameStatus {
+			log.V(1).Info("custom hostname - hostnameStatus refreshed", "hostname", ch.Spec.Hostname,
+				"hostnameStatus", state.hostnameStatus)
 		}
-		ch.Status.SSL = newSSL
+		if !sslStatusEqual(ch.Status.SSL, state.ssl) {
+			log.V(1).Info("custom hostname - status.ssl refreshed", "hostname", ch.Spec.Hostname, "ssl", state.ssl)
+		}
+		ch.Status.SSL = state.ssl
+		ch.Status.HostnameStatus = state.hostnameStatus
 	}
 	return r.requeueOrReady(ctx, zi.CR, ch)
 }
@@ -394,7 +401,9 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, zi *zoneInf
 	ch.Status.SSLProvisioningStartedAt = &now
 	ch.Status.CreateCount++
 	ch.Status.ID = resp.ID
-	ch.Status.SSL = sslStatusFromNew(resp)
+	state := cfStateFromNew(resp)
+	ch.Status.SSL = state.ssl
+	ch.Status.HostnameStatus = state.hostnameStatus
 	// Single write: requeueOrReady -> setCondition persists ID, SSL, and condition together.
 	return r.requeueOrReady(ctx, zi.CR, ch)
 }
@@ -890,11 +899,19 @@ func buildSSLParams(ssl *saasv1beta1.CustomHostnameSSL, defaults SSLDefaults) cu
 	return p
 }
 
-// sslStatusFromNew maps the CF create response to status.ssl.
-// Mirror of sslStatusFromList / sslStatusFromEdit -- if you change one, change the others.
+// cfState captures the fields we extract from a CF custom hostname response.
+// SSL status and hostname status are sibling fields on the CF response,
+// extracted together into a single struct.
+type cfState struct {
+	hostnameStatus string
+	ssl            *saasv1beta1.CustomHostnameSSLStatus
+}
+
+// cfStateFromNew maps the CF create response to cfState.
+// Mirror of cfStateFromList / cfStateFromEdit -- if you change one, change the others.
 // Not deduplicated because the CF SDK uses separate generated types for
 // create, list, and edit responses with no shared interface.
-func sslStatusFromNew(resp *custom_hostnames.CustomHostnameNewResponse) *saasv1beta1.CustomHostnameSSLStatus {
+func cfStateFromNew(resp *custom_hostnames.CustomHostnameNewResponse) *cfState {
 	s := &saasv1beta1.CustomHostnameSSLStatus{
 		Status:               string(resp.SSL.Status),
 		CertificateAuthority: string(resp.SSL.CertificateAuthority),
@@ -928,12 +945,12 @@ func sslStatusFromNew(resp *custom_hostnames.CustomHostnameNewResponse) *saasv1b
 	for _, ve := range resp.SSL.ValidationErrors {
 		s.ValidationErrors = append(s.ValidationErrors, ve.Message)
 	}
-	return s
+	return &cfState{hostnameStatus: string(resp.Status), ssl: s}
 }
 
-// sslStatusFromList maps the CF list/get response to status.ssl.
-// Mirror of sslStatusFromNew / sslStatusFromEdit -- if you change one, change the others.
-func sslStatusFromList(resp *custom_hostnames.CustomHostnameListResponse) *saasv1beta1.CustomHostnameSSLStatus {
+// cfStateFromList maps the CF list/get response to cfState.
+// Mirror of cfStateFromNew / cfStateFromEdit -- if you change one, change the others.
+func cfStateFromList(resp *custom_hostnames.CustomHostnameListResponse) *cfState {
 	s := &saasv1beta1.CustomHostnameSSLStatus{
 		Status:               string(resp.SSL.Status),
 		CertificateAuthority: string(resp.SSL.CertificateAuthority),
@@ -967,12 +984,12 @@ func sslStatusFromList(resp *custom_hostnames.CustomHostnameListResponse) *saasv
 	for _, ve := range resp.SSL.ValidationErrors {
 		s.ValidationErrors = append(s.ValidationErrors, ve.Message)
 	}
-	return s
+	return &cfState{hostnameStatus: string(resp.Status), ssl: s}
 }
 
-// sslStatusFromEdit maps the CF edit response to status.ssl.
-// Mirror of sslStatusFromNew / sslStatusFromList -- if you change one, change the others.
-func sslStatusFromEdit(resp *custom_hostnames.CustomHostnameEditResponse) *saasv1beta1.CustomHostnameSSLStatus {
+// cfStateFromEdit maps the CF edit response to cfState.
+// Mirror of cfStateFromNew / cfStateFromList -- if you change one, change the others.
+func cfStateFromEdit(resp *custom_hostnames.CustomHostnameEditResponse) *cfState {
 	s := &saasv1beta1.CustomHostnameSSLStatus{
 		Status:               string(resp.SSL.Status),
 		CertificateAuthority: string(resp.SSL.CertificateAuthority),
@@ -1006,7 +1023,7 @@ func sslStatusFromEdit(resp *custom_hostnames.CustomHostnameEditResponse) *saasv
 	for _, ve := range resp.SSL.ValidationErrors {
 		s.ValidationErrors = append(s.ValidationErrors, ve.Message)
 	}
-	return s
+	return &cfState{hostnameStatus: string(resp.Status), ssl: s}
 }
 
 // fastWritePredicate filters informer events for the CustomHostname worker.

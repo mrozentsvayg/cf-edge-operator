@@ -139,6 +139,11 @@ type CustomHostnameStatus struct {
 	// +optional
 	ID string `json:"id,omitempty"`
 
+	// HostnameStatus is the CF custom hostname activation status
+	// (active, active_redeploying, pending, blocked, moved, etc.)
+	// +optional
+	HostnameStatus string `json:"hostnameStatus,omitempty"`
+
 	// SSL reflects the current SSL certificate state as reported by Cloudflare
 	// +optional
 	SSL *CustomHostnameSSLStatus `json:"ssl,omitempty"`
@@ -256,6 +261,7 @@ type SSLValidationRecord struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Hostname",type=string,JSONPath=`.spec.hostname`
 // +kubebuilder:printcolumn:name="Origin",type=string,JSONPath=`.spec.originServer`
+// +kubebuilder:printcolumn:name="CF Status",type=string,JSONPath=`.status.hostnameStatus`
 // +kubebuilder:printcolumn:name="SSL",type=string,JSONPath=`.status.ssl.status`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Creates",type=integer,JSONPath=`.status.createCount`

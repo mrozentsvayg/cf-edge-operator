@@ -50,6 +50,7 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 	// cycle retries from scratch.
 	cfHostnames, err := r.listCloudflareHostnames(ctx, cf, zone.Spec.ID)
 	if err != nil {
+		driftDetectionErrorsTotal.WithLabelValues(cfResourceCustomHostname, driftSourceCFList).Inc()
 		return err
 	}
 
@@ -57,6 +58,7 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 	var chList saasv1beta1.CustomHostnameList
 	if err := r.List(ctx, &chList, client.MatchingFields{zoneRefField: zone.Name}); err != nil {
 		log.Error(err, "custom hostname - CR list failed", "zone", zone.Name)
+		driftDetectionErrorsTotal.WithLabelValues(cfResourceCustomHostname, driftSourceK8sList).Inc()
 		return err
 	}
 
@@ -82,7 +84,9 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 		// INFO/DEBUG asymmetry (by design):
 		// - Spec drift: INFO here (zone enqueue with drift details) + INFO in CH controller (outcome).
 		//   Both visible in production -- spec drift is an operator decision (correct or skip).
-		// - Status SSL change: INFO here (zone enqueue with changed fields) + DEBUG in CH controller
+		// - Hostname status change: INFO here (zone enqueue with changed field) + V(1) in CH controller
+		//   (refresh confirmation). Same pattern as SSL status -- internal bookkeeping.
+		// - Status SSL change: INFO here (zone enqueue with changed fields) + V(1) in CH controller
 		//   (refresh confirmation). The refresh is internal bookkeeping, not an operator decision.
 		if !exists {
 			// Hostname missing from CF: always enqueue, even if the CR previously had a
@@ -100,6 +104,13 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 				r.sendDriftEvent(ctx, ch)
 				drifted++
 			}
+		} else if cfStatus := string(cfCH.Status); cfStatus != ch.Status.HostnameStatus {
+			log.Info("custom hostname - enqueuing, hostname status changed",
+				"hostname", ch.Spec.Hostname, "changed", map[string]statusPair{
+					"hostnameStatus": {Status: ch.Status.HostnameStatus, CF: cfStatus},
+				})
+			r.sendDriftEvent(ctx, ch)
+			drifted++
 		} else if changed := sslStatusChangedFields(ch.Status.SSL, cfCH.SSL); changed != nil {
 			log.Info("custom hostname - enqueuing, status.ssl changed", "hostname", ch.Spec.Hostname, "changed", changed)
 			r.sendDriftEvent(ctx, ch)

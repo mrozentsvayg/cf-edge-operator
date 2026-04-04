@@ -53,6 +53,7 @@ type cfMockServer struct {
 type mockHostname struct {
 	ID                 string  `json:"id"`
 	Hostname           string  `json:"hostname"`
+	Status             string  `json:"status"`
 	CustomOriginServer string  `json:"custom_origin_server"`
 	CustomOriginSNI    string  `json:"custom_origin_sni,omitempty"`
 	SSL                mockSSL `json:"ssl"`
@@ -156,6 +157,7 @@ func (m *cfMockServer) handleCHCreate(w http.ResponseWriter, r *http.Request) {
 	ch := mockHostname{
 		ID:                 id,
 		Hostname:           body.Hostname,
+		Status:             "pending",
 		CustomOriginServer: body.CustomOriginServer,
 		CustomOriginSNI:    body.CustomOriginSNI,
 		SSL: mockSSL{
@@ -184,6 +186,22 @@ func (m *cfMockServer) handleCHCreate(w http.ResponseWriter, r *http.Request) {
 func (m *cfMockServer) handleCHList(w http.ResponseWriter, r *http.Request) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Only return results on page 1 (or when page is absent). The SDK's
+	// ListAutoPaging fetches pages until it gets an empty result set (N+1 pattern).
+	// Without this guard, the mock returns the same results on every page, causing
+	// an infinite pagination loop.
+	page := r.URL.Query().Get("page")
+	if page != "" && page != "1" {
+		resp := map[string]any{
+			"success":     true,
+			"result":      []mockHostname{},
+			"result_info": map[string]any{"page": 2, "per_page": 50, "total_pages": 1, "count": 0, "total_count": 0},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
 
 	var results []mockHostname
 	hostname := r.URL.Query().Get("hostname")
@@ -424,6 +442,40 @@ var _ = Describe("Integration", Ordered, func() {
 			Expect(updated.Status.SSL.Method).To(Equal("http"))
 			Expect(updated.Status.SSL.Type).To(Equal("dv"))
 			Expect(updated.Status.CreateCount).To(Equal(int32(1)))
+			Expect(updated.Status.HostnameStatus).To(Equal("pending"))
+		})
+
+		It("should detect hostname status change from CF", func() {
+			// Change the mock's status for lifecycle-test (already exists from previous It)
+			cfMock.mu.Lock()
+			for id, ch := range cfMock.hostnames {
+				if ch.Hostname == "lifecycle.test.example.com" {
+					ch.Status = "active_redeploying"
+					cfMock.hostnames[id] = ch
+				}
+			}
+			cfMock.mu.Unlock()
+
+			// Trigger a zone reconcile by annotating the Zone CR. The zone controller
+			// watches Zone CRs, so an update triggers an immediate reconcile rather
+			// than waiting for the next RequeueAfter cycle.
+			var zone domainsv1beta1.Zone
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "test-zone", Namespace: testNS}, &zone)).To(Succeed())
+			if zone.Annotations == nil {
+				zone.Annotations = map[string]string{}
+			}
+			zone.Annotations["test/trigger-drift"] = "1"
+			Expect(k8sClient.Update(ctx, &zone)).To(Succeed())
+
+			// Wait for the zone drift loop to detect the status change
+			// and the CH controller to update the CR
+			Eventually(func() string {
+				var updated saasv1beta1.CustomHostname
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: "lifecycle-test", Namespace: testNS}, &updated); err != nil {
+					return ""
+				}
+				return updated.Status.HostnameStatus
+			}, 15*time.Second, 500*time.Millisecond).Should(Equal("active_redeploying"))
 		})
 
 		It("should delete the CF hostname when CR is deleted", func() {
