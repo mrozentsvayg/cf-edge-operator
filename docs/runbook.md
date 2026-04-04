@@ -241,6 +241,8 @@ curl -s localhost:8080/metrics | grep cf_edge_operator
 #   cf_edge_operator_zone_customhostnames{type="drifted"}
 # Total CF hostnames per zone (quota usage):
 #   cf_edge_operator_zone_customhostnames{type="total"}
+# CF hostname activation status (non-active = potential 404s):
+#   cf_edge_operator_customhostname_status{status!="active"}
 # Drift detection errors by source (cf_list = CF API, k8s_list = k8s CR list):
 #   cf_edge_operator_drift_detection_errors_total
 # CF API error rate by status code:
