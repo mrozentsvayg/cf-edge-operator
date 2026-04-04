@@ -464,7 +464,7 @@ func TestSslDrifted(t *testing.T) {
 	}
 }
 
-func TestSSLStatusFromNew(t *testing.T) {
+func TestCfStateFromNew(t *testing.T) {
 	expires := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 
 	tests := []struct {
@@ -475,7 +475,8 @@ func TestSSLStatusFromNew(t *testing.T) {
 		{
 			name: "status only",
 			resp: custom_hostnames.CustomHostnameNewResponse{
-				SSL: custom_hostnames.CustomHostnameNewResponseSSL{Status: "pending_validation"},
+				Status: "pending",
+				SSL:    custom_hostnames.CustomHostnameNewResponseSSL{Status: "pending_validation"},
 			},
 			want: saasv1beta1.CustomHostnameSSLStatus{Status: "pending_validation"},
 		},
@@ -525,27 +526,30 @@ func TestSSLStatusFromNew(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := sslStatusFromNew(&tt.resp)
-			if got.Status != tt.want.Status {
-				t.Errorf("Status = %q, want %q", got.Status, tt.want.Status)
+			got := cfStateFromNew(&tt.resp)
+			if got.hostnameStatus != string(tt.resp.Status) {
+				t.Errorf("hostnameStatus = %q, want %q", got.hostnameStatus, tt.resp.Status)
 			}
-			if (got.ExpiresOn == nil) != (tt.want.ExpiresOn == nil) {
-				t.Errorf("ExpiresOn nil mismatch: got %v, want %v", got.ExpiresOn, tt.want.ExpiresOn)
-			} else if got.ExpiresOn != nil && !got.ExpiresOn.Equal(tt.want.ExpiresOn) {
-				t.Errorf("ExpiresOn = %v, want %v", got.ExpiresOn, tt.want.ExpiresOn)
+			if got.ssl.Status != tt.want.Status {
+				t.Errorf("ssl.Status = %q, want %q", got.ssl.Status, tt.want.Status)
 			}
-			if len(got.ValidationRecords) != len(tt.want.ValidationRecords) {
-				t.Fatalf("ValidationRecords len = %d, want %d", len(got.ValidationRecords), len(tt.want.ValidationRecords))
+			if (got.ssl.ExpiresOn == nil) != (tt.want.ExpiresOn == nil) {
+				t.Errorf("ExpiresOn nil mismatch: got %v, want %v", got.ssl.ExpiresOn, tt.want.ExpiresOn)
+			} else if got.ssl.ExpiresOn != nil && !got.ssl.ExpiresOn.Equal(tt.want.ExpiresOn) {
+				t.Errorf("ExpiresOn = %v, want %v", got.ssl.ExpiresOn, tt.want.ExpiresOn)
 			}
-			for i, vr := range got.ValidationRecords {
+			if len(got.ssl.ValidationRecords) != len(tt.want.ValidationRecords) {
+				t.Fatalf("ValidationRecords len = %d, want %d", len(got.ssl.ValidationRecords), len(tt.want.ValidationRecords))
+			}
+			for i, vr := range got.ssl.ValidationRecords {
 				if !reflect.DeepEqual(vr, tt.want.ValidationRecords[i]) {
 					t.Errorf("ValidationRecords[%d] = %+v, want %+v", i, vr, tt.want.ValidationRecords[i])
 				}
 			}
-			if len(got.ValidationErrors) != len(tt.want.ValidationErrors) {
-				t.Fatalf("ValidationErrors len = %d, want %d", len(got.ValidationErrors), len(tt.want.ValidationErrors))
+			if len(got.ssl.ValidationErrors) != len(tt.want.ValidationErrors) {
+				t.Fatalf("ValidationErrors len = %d, want %d", len(got.ssl.ValidationErrors), len(tt.want.ValidationErrors))
 			}
-			for i, ve := range got.ValidationErrors {
+			for i, ve := range got.ssl.ValidationErrors {
 				if ve != tt.want.ValidationErrors[i] {
 					t.Errorf("ValidationErrors[%d] = %q, want %q", i, ve, tt.want.ValidationErrors[i])
 				}
@@ -554,7 +558,7 @@ func TestSSLStatusFromNew(t *testing.T) {
 	}
 }
 
-func TestSSLStatusFromList(t *testing.T) {
+func TestCfStateFromList_detailed(t *testing.T) {
 	expires := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 
 	tests := []struct {
@@ -565,7 +569,8 @@ func TestSSLStatusFromList(t *testing.T) {
 		{
 			name: "status only",
 			resp: custom_hostnames.CustomHostnameListResponse{
-				SSL: custom_hostnames.CustomHostnameListResponseSSL{Status: "pending_validation"},
+				Status: "pending",
+				SSL:    custom_hostnames.CustomHostnameListResponseSSL{Status: "pending_validation"},
 			},
 			want: saasv1beta1.CustomHostnameSSLStatus{Status: "pending_validation"},
 		},
@@ -615,27 +620,30 @@ func TestSSLStatusFromList(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := sslStatusFromList(&tt.resp)
-			if got.Status != tt.want.Status {
-				t.Errorf("Status = %q, want %q", got.Status, tt.want.Status)
+			got := cfStateFromList(&tt.resp)
+			if got.hostnameStatus != string(tt.resp.Status) {
+				t.Errorf("hostnameStatus = %q, want %q", got.hostnameStatus, tt.resp.Status)
 			}
-			if (got.ExpiresOn == nil) != (tt.want.ExpiresOn == nil) {
-				t.Errorf("ExpiresOn nil mismatch: got %v, want %v", got.ExpiresOn, tt.want.ExpiresOn)
-			} else if got.ExpiresOn != nil && !got.ExpiresOn.Equal(tt.want.ExpiresOn) {
-				t.Errorf("ExpiresOn = %v, want %v", got.ExpiresOn, tt.want.ExpiresOn)
+			if got.ssl.Status != tt.want.Status {
+				t.Errorf("ssl.Status = %q, want %q", got.ssl.Status, tt.want.Status)
 			}
-			if len(got.ValidationRecords) != len(tt.want.ValidationRecords) {
-				t.Fatalf("ValidationRecords len = %d, want %d", len(got.ValidationRecords), len(tt.want.ValidationRecords))
+			if (got.ssl.ExpiresOn == nil) != (tt.want.ExpiresOn == nil) {
+				t.Errorf("ExpiresOn nil mismatch: got %v, want %v", got.ssl.ExpiresOn, tt.want.ExpiresOn)
+			} else if got.ssl.ExpiresOn != nil && !got.ssl.ExpiresOn.Equal(tt.want.ExpiresOn) {
+				t.Errorf("ExpiresOn = %v, want %v", got.ssl.ExpiresOn, tt.want.ExpiresOn)
 			}
-			for i, vr := range got.ValidationRecords {
+			if len(got.ssl.ValidationRecords) != len(tt.want.ValidationRecords) {
+				t.Fatalf("ValidationRecords len = %d, want %d", len(got.ssl.ValidationRecords), len(tt.want.ValidationRecords))
+			}
+			for i, vr := range got.ssl.ValidationRecords {
 				if !reflect.DeepEqual(vr, tt.want.ValidationRecords[i]) {
 					t.Errorf("ValidationRecords[%d] = %+v, want %+v", i, vr, tt.want.ValidationRecords[i])
 				}
 			}
-			if len(got.ValidationErrors) != len(tt.want.ValidationErrors) {
-				t.Fatalf("ValidationErrors len = %d, want %d", len(got.ValidationErrors), len(tt.want.ValidationErrors))
+			if len(got.ssl.ValidationErrors) != len(tt.want.ValidationErrors) {
+				t.Fatalf("ValidationErrors len = %d, want %d", len(got.ssl.ValidationErrors), len(tt.want.ValidationErrors))
 			}
-			for i, ve := range got.ValidationErrors {
+			for i, ve := range got.ssl.ValidationErrors {
 				if ve != tt.want.ValidationErrors[i] {
 					t.Errorf("ValidationErrors[%d] = %q, want %q", i, ve, tt.want.ValidationErrors[i])
 				}
@@ -644,7 +652,7 @@ func TestSSLStatusFromList(t *testing.T) {
 	}
 }
 
-func TestSSLStatusFromEdit(t *testing.T) {
+func TestCfStateFromEdit(t *testing.T) {
 	expires := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 
 	tests := []struct {
@@ -655,7 +663,8 @@ func TestSSLStatusFromEdit(t *testing.T) {
 		{
 			name: "status only",
 			resp: custom_hostnames.CustomHostnameEditResponse{
-				SSL: custom_hostnames.CustomHostnameEditResponseSSL{Status: "pending_validation"},
+				Status: "active",
+				SSL:    custom_hostnames.CustomHostnameEditResponseSSL{Status: "pending_validation"},
 			},
 			want: saasv1beta1.CustomHostnameSSLStatus{Status: "pending_validation"},
 		},
@@ -705,27 +714,30 @@ func TestSSLStatusFromEdit(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := sslStatusFromEdit(&tt.resp)
-			if got.Status != tt.want.Status {
-				t.Errorf("Status = %q, want %q", got.Status, tt.want.Status)
+			got := cfStateFromEdit(&tt.resp)
+			if got.hostnameStatus != string(tt.resp.Status) {
+				t.Errorf("hostnameStatus = %q, want %q", got.hostnameStatus, tt.resp.Status)
 			}
-			if (got.ExpiresOn == nil) != (tt.want.ExpiresOn == nil) {
-				t.Errorf("ExpiresOn nil mismatch: got %v, want %v", got.ExpiresOn, tt.want.ExpiresOn)
-			} else if got.ExpiresOn != nil && !got.ExpiresOn.Equal(tt.want.ExpiresOn) {
-				t.Errorf("ExpiresOn = %v, want %v", got.ExpiresOn, tt.want.ExpiresOn)
+			if got.ssl.Status != tt.want.Status {
+				t.Errorf("ssl.Status = %q, want %q", got.ssl.Status, tt.want.Status)
 			}
-			if len(got.ValidationRecords) != len(tt.want.ValidationRecords) {
-				t.Fatalf("ValidationRecords len = %d, want %d", len(got.ValidationRecords), len(tt.want.ValidationRecords))
+			if (got.ssl.ExpiresOn == nil) != (tt.want.ExpiresOn == nil) {
+				t.Errorf("ExpiresOn nil mismatch: got %v, want %v", got.ssl.ExpiresOn, tt.want.ExpiresOn)
+			} else if got.ssl.ExpiresOn != nil && !got.ssl.ExpiresOn.Equal(tt.want.ExpiresOn) {
+				t.Errorf("ExpiresOn = %v, want %v", got.ssl.ExpiresOn, tt.want.ExpiresOn)
 			}
-			for i, vr := range got.ValidationRecords {
+			if len(got.ssl.ValidationRecords) != len(tt.want.ValidationRecords) {
+				t.Fatalf("ValidationRecords len = %d, want %d", len(got.ssl.ValidationRecords), len(tt.want.ValidationRecords))
+			}
+			for i, vr := range got.ssl.ValidationRecords {
 				if !reflect.DeepEqual(vr, tt.want.ValidationRecords[i]) {
 					t.Errorf("ValidationRecords[%d] = %+v, want %+v", i, vr, tt.want.ValidationRecords[i])
 				}
 			}
-			if len(got.ValidationErrors) != len(tt.want.ValidationErrors) {
-				t.Fatalf("ValidationErrors len = %d, want %d", len(got.ValidationErrors), len(tt.want.ValidationErrors))
+			if len(got.ssl.ValidationErrors) != len(tt.want.ValidationErrors) {
+				t.Fatalf("ValidationErrors len = %d, want %d", len(got.ssl.ValidationErrors), len(tt.want.ValidationErrors))
 			}
-			for i, ve := range got.ValidationErrors {
+			for i, ve := range got.ssl.ValidationErrors {
 				if ve != tt.want.ValidationErrors[i] {
 					t.Errorf("ValidationErrors[%d] = %q, want %q", i, ve, tt.want.ValidationErrors[i])
 				}
@@ -978,30 +990,34 @@ func TestBuildDriftInfo(t *testing.T) {
 	}
 }
 
-func TestSslStatusFromList(t *testing.T) {
+func TestCfStateFromList(t *testing.T) {
 	minTLS := sslMinTLS12
 	resp := &custom_hostnames.CustomHostnameListResponse{}
+	resp.Status = "active"
 	resp.SSL.Status = sslStatusActive
 	resp.SSL.Method = sslMethodHTTP
 	resp.SSL.Type = sslTypeDV
 	resp.SSL.CertificateAuthority = sslCAGoogle
 	resp.SSL.Settings.MinTLSVersion = custom_hostnames.CustomHostnameListResponseSSLSettingsMinTLSVersion(minTLS)
 
-	s := sslStatusFromList(resp)
-	if s.Status != sslStatusActive {
-		t.Errorf("Status = %q, want %q", s.Status, sslStatusActive)
+	s := cfStateFromList(resp)
+	if s.hostnameStatus != "active" {
+		t.Errorf("hostnameStatus = %q, want %q", s.hostnameStatus, "active")
 	}
-	if s.Method != sslMethodHTTP {
-		t.Errorf("Method = %q, want %q", s.Method, sslMethodHTTP)
+	if s.ssl.Status != sslStatusActive {
+		t.Errorf("ssl.Status = %q, want %q", s.ssl.Status, sslStatusActive)
 	}
-	if s.Type != sslTypeDV {
-		t.Errorf("Type = %q, want %q", s.Type, sslTypeDV)
+	if s.ssl.Method != sslMethodHTTP {
+		t.Errorf("ssl.Method = %q, want %q", s.ssl.Method, sslMethodHTTP)
 	}
-	if s.CertificateAuthority != sslCAGoogle {
-		t.Errorf("CertificateAuthority = %q, want %q", s.CertificateAuthority, sslCAGoogle)
+	if s.ssl.Type != sslTypeDV {
+		t.Errorf("ssl.Type = %q, want %q", s.ssl.Type, sslTypeDV)
 	}
-	if s.MinTLSVersion != minTLS {
-		t.Errorf("MinTLSVersion = %q, want %q", s.MinTLSVersion, minTLS)
+	if s.ssl.CertificateAuthority != sslCAGoogle {
+		t.Errorf("ssl.CertificateAuthority = %q, want %q", s.ssl.CertificateAuthority, sslCAGoogle)
+	}
+	if s.ssl.MinTLSVersion != minTLS {
+		t.Errorf("ssl.MinTLSVersion = %q, want %q", s.ssl.MinTLSVersion, minTLS)
 	}
 }
 

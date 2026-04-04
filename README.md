@@ -96,6 +96,7 @@ kubectl get customhostnames -A
 | Field | Description |
 |-------|-------------|
 | `status.id` | Cloudflare-assigned hostname ID |
+| `status.hostnameStatus` | CF custom hostname activation status (`active`, `pending`, `active_redeploying`, `blocked`, `moved`, etc.). Refreshed on every drift cycle. |
 | `status.ssl.status` | SSL state: `pending_validation`, `active`, `expired`, etc. |
 | `status.ssl.certificateAuthority` | CA that issued the certificate (`lets_encrypt`, `google`, `ssl_com`) |
 | `status.ssl.minTLSVersion` | Minimum TLS version configured for this hostname |
@@ -183,7 +184,7 @@ Metrics are exposed on `:8080/metrics` (HTTP, via Helm chart). See [docs/archite
 - `cf_edge_operator_api_duration_seconds{resource,operation}` -- CF API latency histogram
 - `cf_edge_operator_drift_buffer_depth{resource}` -- current items in the drift event channel
 - `cf_edge_operator_drift_buffer_overflow_total{resource}` -- times the drift buffer was full (zone controller blocked)
-- `cf_edge_operator_drift_detection_errors_total{resource}` -- drift detection failures
+- `cf_edge_operator_drift_detection_errors_total{resource,source}` -- drift detection failures by error source (`cf_list`, `k8s_list`)
 
 ## Development
 

@@ -163,6 +163,7 @@ Note: when `managementPolicy` is `observe`, the operator always releases the fin
 | Field | Purpose |
 |-------|---------|
 | `status.id` | CF custom hostname ID, used for updates and deletes |
+| `status.hostnameStatus` | CF custom hostname activation status (active, pending, active_redeploying, blocked, moved, etc.). Refreshed on every drift cycle. |
 | `status.ssl` | Full SSL state from Cloudflare -- refreshed on every drift cycle. See README for complete field list. |
 | `status.createCount` | How many times this hostname was (re)created in CF. Values > 1 indicate external deletions. |
 | `status.consecutiveErrors` | Consecutive reconcile failures. Resets to 0 on success. |
@@ -203,7 +204,7 @@ Parse with jq: `jq '.drift.drifted | keys'` or `jq '.changed | to_entries[] | "\
 | `cf_edge_operator_ssl_provisioning_duration_seconds{zone_cr,hostname,method}` | gauge | Time from CF create to `ssl.status == active`. Set once per provisioning cycle, expires after 3 minutes (TTL-based cleanup to bound per-hostname cardinality). |
 | `cf_edge_operator_drift_buffer_depth{resource}` | gauge | Current items in the drift event channel by resource type. Approaching `--drift-buffer` capacity means the worker controller is not draining fast enough. |
 | `cf_edge_operator_drift_buffer_overflow_total{resource}` | counter | Times the drift buffer was full by resource type, causing the zone controller to block. Non-zero indicates capacity issue. |
-| `cf_edge_operator_drift_detection_errors_total{resource}` | counter | Drift detection failures by resource type. Non-zero means drift detection is failing for one or more zones. |
+| `cf_edge_operator_drift_detection_errors_total{resource,source}` | counter | Drift detection failures by resource type and error source. `source`: `cf_list` (CF API list failed), `k8s_list` (k8s CR list failed). |
 
 Controller-runtime also exposes `controller_runtime_reconcile_total` and `controller_runtime_reconcile_time_seconds` per controller.
 

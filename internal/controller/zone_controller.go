@@ -133,12 +133,11 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	// Per-resource drift detection. Each resource type is in its own file
 	// (zone_*_drift.go) and can fail independently without affecting others.
-	// NOTE: Error is logged and counted (driftDetectionErrorsTotal) but not
-	// returned -- the zone requeues on DriftInterval regardless, so controller-runtime
-	// error tracking/backoff is unnecessary.
+	// NOTE: Error is logged and counted (driftDetectionErrorsTotal) inside
+	// detectCustomHostnameDrift -- not returned. The zone requeues on DriftInterval
+	// regardless, so controller-runtime error tracking/backoff is unnecessary.
 	if err := r.detectCustomHostnameDrift(ctx, cf, &zone); err != nil {
 		log.V(1).Info("custom hostname - drift detection failed", "zoneID", zone.Spec.ID, "reason", err)
-		driftDetectionErrorsTotal.WithLabelValues(cfResourceCustomHostname).Inc()
 	}
 
 	// Clean up expired SSL provisioning gauge entries. Runs every drift cycle (~30s)

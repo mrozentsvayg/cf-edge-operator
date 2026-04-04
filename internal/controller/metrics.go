@@ -25,6 +25,9 @@ const (
 	cfOpRecreate = "recreate"
 	cfOpUpdate   = "update"
 	cfOpDelete   = "delete"
+
+	driftSourceCFList  = "cf_list"
+	driftSourceK8sList = "k8s_list"
 )
 
 var (
@@ -107,12 +110,13 @@ var (
 		Help: "Number of times the drift event buffer was full, by resource type.",
 	}, []string{"resource"})
 
-	// driftDetectionErrorsTotal counts drift detection failures by resource type.
-	// Non-zero means drift detection is failing for one or more zones.
+	// driftDetectionErrorsTotal counts drift detection failures by resource type and
+	// error source. source=cf_list: CF API list call failed. source=k8s_list: k8s CR
+	// list call failed.
 	driftDetectionErrorsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "cf_edge_operator_drift_detection_errors_total",
-		Help: "Number of drift detection failures, by resource type.",
-	}, []string{"resource"})
+		Help: "Number of drift detection failures, by resource type and error source.",
+	}, []string{"resource", "source"})
 
 	// cfAPIRetriesTotal counts retry attempts for single (non-paginated) CF API calls.
 	// Incremented per retry attempt (attempt > 0). Non-zero means first attempts are
