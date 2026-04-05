@@ -61,7 +61,7 @@ var (
 	}, []string{"zone_cr", "state"})
 
 	// hostnameStatus counts managed Cloudflare custom hostnames by zone CR and CF
-	// activation status (active, pending, active_redeploying, blocked, moved, etc.).
+	// activation status (active, pending, active_redeploying, blocked, moved, deleted, etc.).
 	// Only includes hostnames with an associated CR (not orphans).
 	hostnameStatusGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "cf_edge_operator_customhostname_status",

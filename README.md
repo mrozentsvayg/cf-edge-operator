@@ -96,7 +96,7 @@ kubectl get customhostnames -A
 | Field | Description |
 |-------|-------------|
 | `status.id` | Cloudflare-assigned hostname ID |
-| `status.hostnameStatus` | CF custom hostname activation status (`active`, `pending`, `active_redeploying`, `blocked`, `moved`, etc.). Refreshed on every drift cycle. |
+| `status.hostnameStatus` | CF custom hostname activation status (`active`, `pending`, `active_redeploying`, `blocked`, `moved`, `deleted`, etc.). Refreshed on every drift cycle. |
 | `status.ssl.status` | SSL state: `pending_validation`, `active`, `expired`, etc. |
 | `status.ssl.certificateAuthority` | CA that issued the certificate (`lets_encrypt`, `google`, `ssl_com`) |
 | `status.ssl.minTLSVersion` | Minimum TLS version configured for this hostname |
@@ -177,7 +177,7 @@ Metrics are exposed on `:8080/metrics` (HTTP, via Helm chart). See [docs/archite
 - `cf_edge_operator_zone_initialized{zone_cr}` -- 1 if zone has been initialized (zone name resolved from CF API), set once
 - `cf_edge_operator_operations_total{resource,operation}` -- successful CF operations (adopt, create, recreate, update, delete)
 - `cf_edge_operator_customhostnames{zone_cr,state}` -- CRs by zone and state (ready/pending/unhealthy/conflict)
-- `cf_edge_operator_customhostname_status{zone_cr,status}` -- managed CF hostnames by activation status (active/pending/active_redeploying/blocked/moved)
+- `cf_edge_operator_customhostname_status{zone_cr,status}` -- managed CF hostnames by activation status (active/pending/active_redeploying/blocked/moved/deleted)
 - `cf_edge_operator_zone_customhostnames{zone_cr,type}` -- CF custom hostnames by type (managed/orphan/drifted/total); orphan = no associated CR
 - `cf_edge_operator_ssl_provisioning_duration_seconds{zone_cr,hostname,method}` -- time from CF create to SSL active (gauge, expires after 3 min)
 - `cf_edge_operator_api_errors_by_code_total{resource,operation,status_code}` -- CF API errors by HTTP status code
