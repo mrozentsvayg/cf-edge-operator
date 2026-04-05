@@ -248,7 +248,7 @@ spec:
               hostnameStatus:
                 description: |-
                   HostnameStatus is the CF custom hostname activation status
-                  (active, active_redeploying, pending, blocked, moved, etc.)
+                  (active, pending, active_redeploying, blocked, moved, deleted, etc.)
                 type: string
               id:
                 description: ID is the Cloudflare-assigned custom hostname ID, used

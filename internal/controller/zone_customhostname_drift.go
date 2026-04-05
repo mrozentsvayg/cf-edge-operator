@@ -131,7 +131,7 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 	managedCount, orphanCount := 0, 0
 	// Pre-initialize common CF statuses to 0 so stale series decay when a status
 	// is no longer present (e.g. active_redeploying -> active).
-	cfStatusCounts := map[string]int{"active": 0, "pending": 0, "active_redeploying": 0, "blocked": 0, "moved": 0}
+	cfStatusCounts := map[string]int{"active": 0, "pending": 0, "active_redeploying": 0, "blocked": 0, "moved": 0, "deleted": 0}
 	for hostname, cfCH := range cfHostnames {
 		if crHostnames[hostname] {
 			managedCount++

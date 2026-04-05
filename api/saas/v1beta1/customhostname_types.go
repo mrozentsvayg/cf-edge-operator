@@ -140,7 +140,7 @@ type CustomHostnameStatus struct {
 	ID string `json:"id,omitempty"`
 
 	// HostnameStatus is the CF custom hostname activation status
-	// (active, active_redeploying, pending, blocked, moved, etc.)
+	// (active, pending, active_redeploying, blocked, moved, deleted, etc.)
 	// +optional
 	HostnameStatus string `json:"hostnameStatus,omitempty"`
 
