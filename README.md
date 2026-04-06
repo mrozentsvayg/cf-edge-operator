@@ -137,7 +137,8 @@ kubectl get customhostnames -A
 | `dryRun` | `false` | Log CF operations without executing them |
 | `driftInterval` | `1m` | How often the zone controller bulk-lists CF to detect drift |
 | `driftBuffer` | `1024` | Internal channel buffer for drift events |
-| `cfAPITimeout` | `3s` | Per-request timeout for single CF API calls |
+| `cfAPITimeout` | `5s` | Per-request timeout for CF API read calls (GET) |
+| `cfAPIWriteTimeout` | `15s` | Per-request timeout for CF API write calls (create/update/delete) |
 | `cfAPIMaxRetries` | `1` | Retries for single CF API calls (immediate, no backoff) |
 | `cfAPIBulkTimeout` | `5s` | Per-page timeout for paginated bulk drift list |
 | `cfAPIBulkMaxRetries` | `0` | Per-page retries for bulk drift list (SDK-level, ~2s backoff) |

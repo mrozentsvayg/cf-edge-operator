@@ -81,6 +81,7 @@ func main() {
 	var driftInterval time.Duration
 	var driftBuffer int
 	var cfAPITimeout time.Duration
+	var cfAPIWriteTimeout time.Duration
 	var cfAPIMaxRetries int
 	var cfAPIBulkTimeout time.Duration
 	var cfAPIBulkMaxRetries int
@@ -122,7 +123,10 @@ func main() {
 		"Buffer size of the internal channel used to enqueue drifted CustomHostname CRs. "+
 			"Increase if operating with many zones and very frequent drift cycles.")
 	flag.DurationVar(&cfAPITimeout, "cf-api-timeout", 5*time.Second,
-		"Per-request timeout for single Cloudflare API calls (zone lookup, CH get/create/update/delete).")
+		"Per-request timeout for CF API read calls (zone lookup, CH get/findByHostname).")
+	flag.DurationVar(&cfAPIWriteTimeout, "cf-api-write-timeout", 15*time.Second,
+		"Per-request timeout for CF API write calls (CH create/update/delete). "+
+			"Longer than read timeout to accommodate CF processing during degradation.")
 	flag.IntVar(&cfAPIMaxRetries, "cf-api-max-retries", 1,
 		"Maximum number of retries for single CF API calls (immediate, no backoff). "+
 			"Does not apply to paginated bulk list (see --cf-api-bulk-max-retries). "+
@@ -173,6 +177,7 @@ func main() {
 		"driftInterval", driftInterval,
 		"driftBuffer", driftBuffer,
 		"cfAPITimeout", cfAPITimeout,
+		"cfAPIWriteTimeout", cfAPIWriteTimeout,
 		"cfAPIMaxRetries", cfAPIMaxRetries,
 		"cfAPIBulkTimeout", cfAPIBulkTimeout,
 		"cfAPIBulkMaxRetries", cfAPIBulkMaxRetries,
@@ -207,6 +212,10 @@ func main() {
 	}
 	if cfAPITimeout <= 0 {
 		setupLog.Error(nil, "invalid --cf-api-timeout: must be positive", "value", cfAPITimeout)
+		os.Exit(1)
+	}
+	if cfAPIWriteTimeout <= 0 {
+		setupLog.Error(nil, "invalid --cf-api-write-timeout: must be positive", "value", cfAPIWriteTimeout)
 		os.Exit(1)
 	}
 	if cfAPIMaxRetries < 0 {
@@ -350,9 +359,10 @@ func main() {
 			Method:               sslMethod,
 			Type:                 sslType,
 		},
-		CFAPITimeout:    cfAPITimeout,
-		CFAPIMaxRetries: cfAPIMaxRetries,
-		CFAPIWriteDelay: cfAPIWriteDelay,
+		CFAPITimeout:      cfAPITimeout,
+		CFAPIWriteTimeout: cfAPIWriteTimeout,
+		CFAPIMaxRetries:   cfAPIMaxRetries,
+		CFAPIWriteDelay:   cfAPIWriteDelay,
 	}).SetupWithManager(mgr, driftEvents); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "CustomHostname")
 		os.Exit(1)

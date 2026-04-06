@@ -43,9 +43,12 @@ driftInterval: "1m"
 # running many zones with large numbers of custom hostnames.
 driftBuffer: 1024
 
-# Per-request timeout for Cloudflare API calls. A hung call will be cancelled
-# after this duration. Uses Go duration format (e.g. "30s", "1m").
+# Per-request timeout for CF API read calls (zone lookup, CH get/findByHostname).
 cfAPITimeout: "5s"
+
+# Per-request timeout for CF API write calls (CH create/update/delete).
+# Longer than read timeout to accommodate CF processing during degradation.
+cfAPIWriteTimeout: "15s"
 
 # Maximum retries for single CF API calls (immediate, no backoff).
 # Does not apply to paginated bulk list (see cfAPIBulkMaxRetries).

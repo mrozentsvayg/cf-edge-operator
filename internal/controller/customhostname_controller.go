@@ -106,9 +106,13 @@ type CustomHostnameReconciler struct {
 	DryRun bool
 	// SSLDefaults are operator-wide defaults applied on create when the CR field is empty.
 	SSLDefaults SSLDefaults
-	// CFAPITimeout is the per-request timeout for single Cloudflare API calls.
+	// CFAPITimeout is the per-request timeout for single CF API read calls (GET).
 	// Set via --cf-api-timeout (default: 5s).
 	CFAPITimeout time.Duration
+	// CFAPIWriteTimeout is the per-request timeout for CF API write calls (create/edit/delete).
+	// Longer than read timeout to accommodate CF processing time during degradation.
+	// Set via --cf-api-write-timeout (default: 15s).
+	CFAPIWriteTimeout time.Duration
 	// CFAPIMaxRetries is the maximum number of retries for single CF API calls.
 	// Set via --cf-api-max-retries (default: 1). Uses our retry loop (immediate, no backoff).
 	CFAPIMaxRetries int
@@ -292,7 +296,10 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 				"hostname", ch.Spec.Hostname,
 				"drift", di)
 			editParams := custom_hostnames.CustomHostnameEditParams{ZoneID: cloudflare.F(zi.ID)}
-			opts := []option.RequestOption{option.WithJSONSet("custom_origin_server", ch.Spec.OriginServer)}
+			opts := []option.RequestOption{
+				option.WithJSONSet("custom_origin_server", ch.Spec.OriginServer),
+				option.WithRequestTimeout(r.CFAPIWriteTimeout),
+			}
 			if ch.Spec.OriginSNI != nil {
 				opts = append(opts, option.WithJSONSet("custom_origin_sni", *ch.Spec.OriginSNI))
 			}
@@ -366,7 +373,10 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, zi *zoneInf
 		sslSpec = &saasv1beta1.CustomHostnameSSL{}
 	}
 	params.SSL = cloudflare.F(buildSSLParams(sslSpec, r.SSLDefaults))
-	opts := []option.RequestOption{option.WithJSONSet("custom_origin_server", ch.Spec.OriginServer)}
+	opts := []option.RequestOption{
+		option.WithJSONSet("custom_origin_server", ch.Spec.OriginServer),
+		option.WithRequestTimeout(r.CFAPIWriteTimeout),
+	}
 	if ch.Spec.OriginSNI != nil {
 		opts = append(opts, option.WithJSONSet("custom_origin_sni", *ch.Spec.OriginSNI))
 	}
@@ -465,7 +475,7 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 			deleteStart := time.Now()
 			_, callErr := cf.CustomHostnames.Delete(ctx, ch.Status.ID, custom_hostnames.CustomHostnameDeleteParams{
 				ZoneID: cloudflare.F(zoneID),
-			})
+			}, option.WithRequestTimeout(r.CFAPIWriteTimeout))
 			recordCFCall(cfResourceCustomHostname, cfOpDelete, deleteStart, &callErr)
 			return callErr
 		})
