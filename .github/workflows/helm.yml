@@ -55,6 +55,7 @@ jobs:
 
           # Operator flags render with correct values
           out=$(helm template test charts/cf-edge-operator/ \
+            --set podLabels.export-logs=true \
             --set managementPolicy=create \
             --set deletePolicy=never \
             --set driftInterval=30s \
@@ -81,6 +82,7 @@ jobs:
           echo "$out" | grep -q "\-\-ssl-min-tls-version=1.2"               || { echo "FAIL: sslMinTLSVersion"; exit 1; }
           echo "$out" | grep -q "\-\-zap-devel=false"                       || { echo "FAIL: zapDevel"; exit 1; }
           echo "$out" | grep -q "\-\-zap-log-level=2"                       || { echo "FAIL: zapLogLevel"; exit 1; }
+          echo "$out" | grep -q "export-logs"                                || { echo "FAIL: podLabels"; exit 1; }
 
           # Optional flags absent when empty (defaults)
           out=$(helm template test charts/cf-edge-operator/)
@@ -89,6 +91,7 @@ jobs:
           echo "$out" | grep -q "\-\-ssl-method"                && { echo "FAIL: sslMethod should be absent by default"; exit 1; }
           echo "$out" | grep -q "\-\-ssl-type"                  && { echo "FAIL: sslType should be absent by default"; exit 1; }
           echo "$out" | grep -q "\-\-zap-log-level"             && { echo "FAIL: zapLogLevel should be absent by default"; exit 1; }
+          echo "$out" | grep -q "export-logs"                  && { echo "FAIL: podLabels should be absent by default"; exit 1; }
 
           echo "All flag rendering tests passed"
 

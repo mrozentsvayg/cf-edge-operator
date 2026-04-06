@@ -7,6 +7,9 @@ image:
 # Example: imagePullSecrets: ["ghcr-pull-secret"]
 imagePullSecrets: []
 
+# Additional labels to add to the pod template.
+podLabels: {}
+
 replicaCount: 1
 
 # Enable leader election (required when running multiple replicas)

@@ -127,6 +127,7 @@ kubectl get customhostnames -A
 | `image.tag` | chart appVersion | Image tag |
 | `image.pullPolicy` | `IfNotPresent` | Image pull policy |
 | `imagePullSecrets` | `[]` | Pull secret names for private registries |
+| `podLabels` | `{}` | Additional labels for the pod template |
 | `operatorNamespace` | release namespace | Namespace where Zone CRs live |
 | `managementPolicy` | `manage` | `manage`, `create`, or `observe`. See [docs/architecture.md](docs/architecture.md#management-policy). |
 | `deletePolicy` | `always` | `always`, `own-only`, or `never`. See [docs/architecture.md](docs/architecture.md#delete-policy). |
