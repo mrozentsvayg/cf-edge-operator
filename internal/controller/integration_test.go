@@ -478,6 +478,33 @@ var _ = Describe("Integration", Ordered, func() {
 			}, 15*time.Second, 500*time.Millisecond).Should(Equal("active_redeploying"))
 		})
 
+		It("should clear stale consecutiveErrors when CF state matches spec", func() {
+			// Simulate post-timeout state: CR has errors but CF is correct.
+			// Manually patch consecutiveErrors on the CR.
+			var ch saasv1beta1.CustomHostname
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "lifecycle-test", Namespace: testNS}, &ch)).To(Succeed())
+			ch.Status.ConsecutiveErrors = 1
+			Expect(k8sClient.Status().Update(ctx, &ch)).To(Succeed())
+
+			// Trigger a zone reconcile
+			var zone domainsv1beta1.Zone
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "test-zone", Namespace: testNS}, &zone)).To(Succeed())
+			if zone.Annotations == nil {
+				zone.Annotations = map[string]string{}
+			}
+			zone.Annotations["test/trigger-drift"] = "stale-errors"
+			Expect(k8sClient.Update(ctx, &zone)).To(Succeed())
+
+			// Wait for drift detection to enqueue and CH controller to clear errors
+			Eventually(func() int32 {
+				var updated saasv1beta1.CustomHostname
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: "lifecycle-test", Namespace: testNS}, &updated); err != nil {
+					return -1
+				}
+				return updated.Status.ConsecutiveErrors
+			}, 15*time.Second, 500*time.Millisecond).Should(Equal(int32(0)))
+		})
+
 		It("should delete the CF hostname when CR is deleted", func() {
 			ch := &saasv1beta1.CustomHostname{
 				ObjectMeta: metav1.ObjectMeta{

@@ -115,6 +115,10 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 			log.Info("custom hostname - enqueuing, status.ssl changed", "hostname", ch.Spec.Hostname, "changed", changed)
 			r.sendDriftEvent(ctx, ch)
 			drifted++
+		} else if ch.Status.ConsecutiveErrors > 0 {
+			log.Info("custom hostname - enqueuing, stale errors detected", "hostname", ch.Spec.Hostname, "errors", ch.Status.ConsecutiveErrors)
+			r.sendDriftEvent(ctx, ch)
+			drifted++
 		} else if r.DryRun {
 			log.V(2).Info("custom hostname - no drift detected (dry-run)", "hostname", ch.Spec.Hostname)
 		}
