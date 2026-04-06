@@ -18,6 +18,7 @@ All flags are set via Helm values, which are passed as container args in the Dep
 | `--cf-api-max-retries` | `1` | `cfAPIMaxRetries` | Retries for single CF API calls (immediate, no backoff). Skips retry on 429 |
 | `--cf-api-bulk-timeout` | `5s` | `cfAPIBulkTimeout` | Per-page timeout for paginated CF API calls (bulk drift list) |
 | `--cf-api-bulk-max-retries` | `0` | `cfAPIBulkMaxRetries` | Per-page retries for paginated CF API calls (SDK-level, ~2s backoff). Only the failed page is retried |
+| `--cf-api-write-delay` | `250ms` | `cfAPIWriteDelay` | Pause after each successful CF write (create/edit/delete). Paces sequential writes to avoid CF API throttling |
 | `--leader-elect` | `true` | `leaderElect` | Required when running multiple replicas. Binary default is `false`; Helm default is `true` (safe for production) |
 | `--zap-devel` | `true` | `zapDevel` | Development logger: human-readable console format, DPanic panics. Set `false` for JSON output (recommended for production log aggregation). |
 | `--zap-log-level` | _(auto)_ | `zapLogLevel` | Log verbosity: `0` = INFO, `1` = DEBUG, `2` = TRACE. In dev mode, V(1) is visible by default; V(2) requires `--zap-log-level=2`. In production mode, only INFO is visible by default. |
@@ -35,6 +36,8 @@ Single CF API calls and paginated bulk list have separate timeout and retry sett
 **Bulk drift list** (`--cf-api-bulk-timeout`, `--cf-api-bulk-max-retries`): paginated CH list during drift detection. Uses SDK-level per-page retries (~2s backoff). Only the failed page is retried, not the whole list. Default: 5s timeout, 0 retries. Worst case with 172 CHs at 50/page (5 HTTP calls): 5 x 5s = 25s.
 
 **Total worst case per drift cycle:** single call worst case + bulk list worst case. With defaults: 10s + 25s = 35s (just over the 30s drift interval, extreme case).
+
+**Write pacing** (`--cf-api-write-delay`): pause after each successful CF write operation. Prevents burst writes from triggering CF API throttling during bulk spec changes (e.g., originSNI rollout across many CRs). Default: 250ms. Set to 0 for no delay. For N writes, total pacing overhead is N x delay (e.g., 24 writes x 250ms = 6s).
 
 **Caution when increasing `--cf-api-bulk-max-retries`:** the SDK uses exponential backoff (base 2s, max 30s) between retries. Setting bulk retries to 1 adds ~2s per failed page. Setting to 2 adds ~6s (2s + 4s) per failed page. Keep the total budget well under `--drift-interval`.
 

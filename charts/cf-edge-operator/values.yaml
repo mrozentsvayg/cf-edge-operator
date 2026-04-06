@@ -59,6 +59,10 @@ cfAPIBulkTimeout: "5s"
 # Only the failed page is retried, not the whole list.
 cfAPIBulkMaxRetries: 0
 
+# Pause after each successful CF write operation (create/edit/delete).
+# Paces sequential writes to avoid triggering CF API throttling during bulk changes.
+cfAPIWriteDelay: "250ms"
+
 # Default SSL settings for new custom hostnames. Applied on create when the
 # CR's spec.ssl field is empty. CA/minTLS: empty = CF default. Method: empty = http. Type: empty = dv.
 sslCertificateAuthority: ""
