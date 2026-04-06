@@ -112,6 +112,10 @@ type CustomHostnameReconciler struct {
 	// CFAPIMaxRetries is the maximum number of retries for single CF API calls.
 	// Set via --cf-api-max-retries (default: 1). Uses our retry loop (immediate, no backoff).
 	CFAPIMaxRetries int
+	// CFAPIWriteDelay is the pause after each successful CF write operation (create/edit/delete).
+	// Paces sequential writes to avoid triggering CF API throttling during bulk changes.
+	// Set via --cf-api-write-delay (default: 250ms).
+	CFAPIWriteDelay time.Duration
 	// CFBaseURL overrides the Cloudflare API base URL (for integration tests).
 	CFBaseURL string
 }
@@ -308,6 +312,7 @@ func (r *CustomHostnameReconciler) reconcileCloudflareState(ctx context.Context,
 				return ctrl.Result{}, r.setError(ctx, ch, "UpdateFailed", editErr.Error())
 			}
 			operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpUpdate).Inc()
+			r.paceWrite()
 			// Use post-edit response for status -- reflects the corrected CF state.
 			editState := cfStateFromEdit(editResp)
 			ch.Status.SSL = editState.ssl
@@ -395,6 +400,7 @@ func (r *CustomHostnameReconciler) handleCreate(ctx context.Context, zi *zoneInf
 		log.Info("custom hostname - created", "hostname", ch.Spec.Hostname, "id", resp.ID)
 	}
 	operationsTotal.WithLabelValues(cfResourceCustomHostname, op).Inc()
+	r.paceWrite()
 
 	// Reset SSL provisioning timer on every (re)create so the metric reflects the current cycle.
 	now := metav1.Now()
@@ -479,6 +485,7 @@ func (r *CustomHostnameReconciler) handleDelete(ctx context.Context, cf *cloudfl
 			// A 404 means the CH was already gone -- the operator didn't perform the delete.
 			// The 404 is still recorded in api_errors_by_code_total via recordCFCall above.
 			operationsTotal.WithLabelValues(cfResourceCustomHostname, cfOpDelete).Inc()
+			r.paceWrite()
 		}
 	}
 
@@ -1024,6 +1031,14 @@ func cfStateFromEdit(resp *custom_hostnames.CustomHostnameEditResponse) *cfState
 		s.ValidationErrors = append(s.ValidationErrors, ve.Message)
 	}
 	return &cfState{hostnameStatus: string(resp.Status), ssl: s}
+}
+
+// paceWrite sleeps for CFAPIWriteDelay after a successful CF write operation.
+// Prevents burst writes from triggering CF API throttling during bulk changes.
+func (r *CustomHostnameReconciler) paceWrite() {
+	if r.CFAPIWriteDelay > 0 {
+		time.Sleep(r.CFAPIWriteDelay)
+	}
 }
 
 // fastWritePredicate filters informer events for the CustomHostname worker.

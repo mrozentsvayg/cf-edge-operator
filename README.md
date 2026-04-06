@@ -141,6 +141,7 @@ kubectl get customhostnames -A
 | `cfAPIMaxRetries` | `1` | Retries for single CF API calls (immediate, no backoff) |
 | `cfAPIBulkTimeout` | `5s` | Per-page timeout for paginated bulk drift list |
 | `cfAPIBulkMaxRetries` | `0` | Per-page retries for bulk drift list (SDK-level, ~2s backoff) |
+| `cfAPIWriteDelay` | `250ms` | Pause after each successful CF write (create/edit/delete). Paces bulk changes. |
 | `sslCertificateAuthority` | _(empty)_ | Default CA for new CHs. Empty = CF default |
 | `sslMinTLSVersion` | _(empty)_ | Default min TLS version for new CHs. Empty = CF default |
 | `sslMethod` | _(empty)_ | Default DCV method for new CHs. Empty = `http` |

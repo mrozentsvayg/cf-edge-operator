@@ -84,6 +84,7 @@ func main() {
 	var cfAPIMaxRetries int
 	var cfAPIBulkTimeout time.Duration
 	var cfAPIBulkMaxRetries int
+	var cfAPIWriteDelay time.Duration
 	var sslCertificateAuthority, sslMinTLSVersion, sslMethod, sslType string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -132,6 +133,9 @@ func main() {
 	flag.IntVar(&cfAPIBulkMaxRetries, "cf-api-bulk-max-retries", 0,
 		"Maximum number of per-page retries for paginated CF API calls (SDK-level, ~2s backoff). "+
 			"Only the failed page is retried, not the whole list.")
+	flag.DurationVar(&cfAPIWriteDelay, "cf-api-write-delay", 250*time.Millisecond,
+		"Pause after each successful CF write operation (create/edit/delete). "+
+			"Paces sequential writes to avoid triggering CF API throttling during bulk changes.")
 	flag.StringVar(&sslCertificateAuthority, "ssl-certificate-authority", "",
 		"Default certificate authority for new custom hostnames (lets_encrypt, google, ssl_com). "+
 			"Applied on create when the CR's spec.ssl.certificateAuthority is empty. If empty, Cloudflare uses its own default.")
@@ -172,6 +176,7 @@ func main() {
 		"cfAPIMaxRetries", cfAPIMaxRetries,
 		"cfAPIBulkTimeout", cfAPIBulkTimeout,
 		"cfAPIBulkMaxRetries", cfAPIBulkMaxRetries,
+		"cfAPIWriteDelay", cfAPIWriteDelay,
 		"leaderElect", enableLeaderElection,
 		"sslCertificateAuthority", sslCertificateAuthority,
 		"sslMinTLSVersion", sslMinTLSVersion,
@@ -214,6 +219,10 @@ func main() {
 	}
 	if cfAPIBulkMaxRetries < 0 {
 		setupLog.Error(nil, "invalid --cf-api-bulk-max-retries: must be non-negative", "value", cfAPIBulkMaxRetries)
+		os.Exit(1)
+	}
+	if cfAPIWriteDelay < 0 {
+		setupLog.Error(nil, "invalid --cf-api-write-delay: must be non-negative", "value", cfAPIWriteDelay)
 		os.Exit(1)
 	}
 	if sslCertificateAuthority != "" {
@@ -343,6 +352,7 @@ func main() {
 		},
 		CFAPITimeout:    cfAPITimeout,
 		CFAPIMaxRetries: cfAPIMaxRetries,
+		CFAPIWriteDelay: cfAPIWriteDelay,
 	}).SetupWithManager(mgr, driftEvents); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "CustomHostname")
 		os.Exit(1)
