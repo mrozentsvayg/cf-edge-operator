@@ -59,6 +59,7 @@ jobs:
             --set deletePolicy=never \
             --set driftInterval=30s \
             --set cfAPITimeout=5s \
+            --set cfAPIWriteTimeout=20s \
             --set cfAPIMaxRetries=2 \
             --set cfAPIBulkTimeout=10s \
             --set cfAPIBulkMaxRetries=1 \
@@ -71,6 +72,7 @@ jobs:
           echo "$out" | grep -q "\-\-delete-policy=never"                   || { echo "FAIL: deletePolicy"; exit 1; }
           echo "$out" | grep -q "\-\-drift-interval=30s"                    || { echo "FAIL: driftInterval"; exit 1; }
           echo "$out" | grep -q "\-\-cf-api-timeout=5s"                     || { echo "FAIL: cfAPITimeout"; exit 1; }
+          echo "$out" | grep -q "\-\-cf-api-write-timeout=20s"               || { echo "FAIL: cfAPIWriteTimeout"; exit 1; }
           echo "$out" | grep -q "\-\-cf-api-max-retries=2"                  || { echo "FAIL: cfAPIMaxRetries"; exit 1; }
           echo "$out" | grep -q "\-\-cf-api-bulk-timeout=10s"               || { echo "FAIL: cfAPIBulkTimeout"; exit 1; }
           echo "$out" | grep -q "\-\-cf-api-bulk-max-retries=1"             || { echo "FAIL: cfAPIBulkMaxRetries"; exit 1; }

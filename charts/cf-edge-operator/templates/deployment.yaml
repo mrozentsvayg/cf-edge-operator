@@ -43,6 +43,7 @@ spec:
         - --drift-interval={{ .Values.driftInterval }}
         - --drift-buffer={{ .Values.driftBuffer }}
         - --cf-api-timeout={{ .Values.cfAPITimeout }}
+        - --cf-api-write-timeout={{ .Values.cfAPIWriteTimeout }}
         - --cf-api-max-retries={{ .Values.cfAPIMaxRetries }}
         - --cf-api-bulk-timeout={{ .Values.cfAPIBulkTimeout }}
         - --cf-api-bulk-max-retries={{ .Values.cfAPIBulkMaxRetries }}
