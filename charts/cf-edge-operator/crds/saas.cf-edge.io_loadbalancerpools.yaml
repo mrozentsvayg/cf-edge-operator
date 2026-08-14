@@ -1,0 +1,329 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: loadbalancerpools.saas.cf-edge.io
+spec:
+  group: saas.cf-edge.io
+  names:
+    kind: LoadBalancerPool
+    listKind: LoadBalancerPoolList
+    plural: loadbalancerpools
+    singular: loadbalancerpool
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.origins.length()
+      name: Origins
+      type: integer
+    - jsonPath: .spec.monitorRef.name
+      name: Monitor
+      type: string
+    - jsonPath: .status.id
+      name: CF ID
+      type: string
+    - jsonPath: .status.healthy
+      name: Healthy
+      type: boolean
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.createCount
+      name: Creates
+      type: integer
+    - jsonPath: .status.consecutiveErrors
+      name: Errors
+      type: integer
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: LoadBalancerPool is the Schema for the loadbalancerpools API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              LoadBalancerPoolSpec defines the desired state of a Cloudflare
+              LoadBalancerPool.
+
+              Pools are Cloudflare account-scoped resources; the CR's AccountRef reuses
+              the Zone CR as its account carrier (see LoadBalancerMonitorSpec doc for
+              rationale). CR names are used verbatim as the CF-side pool name, so charts
+              must ensure names are unique across the fleet (typically by prefixing with
+              the service / namespace, e.g. "web-us-pool").
+            properties:
+              accountRef:
+                description: |-
+                  AccountRef references the Zone whose credentialsRef + status.accountID
+                  the controller uses to talk to Cloudflare. See
+                  LoadBalancerMonitorSpec.AccountRef for the rationale.
+                properties:
+                  name:
+                    description: Name of the Zone resource
+                    type: string
+                  namespace:
+                    description: Namespace of the Zone resource. Defaults to the operator
+                      namespace if omitted.
+                    type: string
+                required:
+                - name
+                type: object
+              deletePolicy:
+                description: |-
+                  DeletePolicy overrides the operator-wide --delete-policy for this CR.
+                  See CustomHostname docs for semantics.
+                enum:
+                - always
+                - own-only
+                - never
+                type: string
+              description:
+                description: Description is a human-readable description shown in
+                  the CF dashboard.
+                maxLength: 1024
+                type: string
+              enabled:
+                default: true
+                description: |-
+                  Enabled controls whether the pool receives traffic. Disabled pools are
+                  excluded from steering and health checks; any LB referencing a disabled
+                  pool will fail over to the next pool in its list.
+                  Defaults to true.
+                type: boolean
+              latitude:
+                description: |-
+                  Latitude sets the pool's geographic latitude for latitude/longitude-based
+                  steering. Valid range -90 to 90 (validated via pattern; use decimal
+                  degrees, e.g. "37.7749"). If set, Longitude must also be set.
+                  Represented as a string to preserve fractional precision; CF accepts
+                  float in its API.
+                pattern: ^-?([0-8]?[0-9](\.[0-9]+)?|90(\.0+)?)$
+                type: string
+              longitude:
+                description: |-
+                  Longitude sets the pool's geographic longitude for latitude/longitude-based
+                  steering. Valid range -180 to 180 (validated via pattern; use decimal
+                  degrees, e.g. "-122.4194"). If set, Latitude must also be set.
+                pattern: ^-?(1[0-7][0-9](\.[0-9]+)?|[0-9]{1,2}(\.[0-9]+)?|180(\.0+)?)$
+                type: string
+              managementPolicy:
+                description: |-
+                  ManagementPolicy overrides the operator-wide --management-policy for
+                  this CR. See CustomHostname docs for semantics.
+                enum:
+                - manage
+                - create
+                - observe
+                type: string
+              minimumOrigins:
+                description: |-
+                  MinimumOrigins is the number of origins that must be healthy for the
+                  pool itself to be considered healthy. If fewer origins are healthy the
+                  pool is marked unhealthy and any LB referencing it fails over.
+                  CF default is 1.
+                format: int32
+                maximum: 1024
+                minimum: 1
+                type: integer
+              monitorRef:
+                description: |-
+                  MonitorRef references the LoadBalancerMonitor whose CF ID CF should use
+                  to health-check origins in this pool. The controller resolves the ref
+                  to a monitor CR, reads its Status.ID, and passes the CF monitor ID to
+                  CF. If the monitor CR isn't ready yet (Status.ID empty), the pool
+                  reconcile requeues.
+                properties:
+                  name:
+                    description: Name of the LoadBalancerMonitor CR.
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of the LoadBalancerMonitor CR. Defaults to the pool's
+                      namespace if omitted.
+                    type: string
+                required:
+                - name
+                type: object
+              notificationEmail:
+                description: |-
+                  NotificationEmail is a comma-separated list of email addresses CF
+                  notifies when the pool's health changes. Deprecated by CF in favor of
+                  their centralized notifications, but still functional.
+                maxLength: 1024
+                type: string
+              origins:
+                description: |-
+                  Origins is the set of backend endpoints this pool balances traffic
+                  across. Each origin has its own health status tracked by CF using the
+                  pool's monitor.
+                items:
+                  description: LoadBalancerPoolOrigin is a single backend endpoint
+                    in a pool.
+                  properties:
+                    address:
+                      description: |-
+                        Address is the IP address or publicly-resolvable hostname of the
+                        origin. Hostnames MUST resolve directly to the origin -- a
+                        Cloudflare-proxied CNAME won't work.
+                      minLength: 1
+                      type: string
+                    enabled:
+                      default: true
+                      description: |-
+                        Enabled controls whether this specific origin receives traffic and is
+                        health-checked. Disabled origins are hidden from steering.
+                        Defaults to true.
+                      type: boolean
+                    header:
+                      additionalProperties:
+                        items:
+                          type: string
+                        type: array
+                      description: |-
+                        Header sets per-origin request headers CF sends when routing traffic
+                        or health-checking. The Host header is the common use case.
+                      type: object
+                    name:
+                      description: |-
+                        Name is a human-readable identifier for the origin, shown in CF status
+                        and dashboards. Not the routing target; use Address for that.
+                      maxLength: 255
+                      minLength: 1
+                      type: string
+                    weight:
+                      description: |-
+                        Weight is the origin's weight for the pool's origin_steering policy.
+                        A weight of 0 excludes the origin from origin steering; higher weights
+                        send more traffic. Only meaningful when multiple origins are present.
+                        Represented as a string to preserve fractional precision (e.g. "0.5"),
+                        but CF only accepts values from 0.0 to 1.0.
+                      pattern: ^(0(\.\d+)?|1(\.0+)?)$
+                      type: string
+                  required:
+                  - address
+                  - name
+                  type: object
+                minItems: 1
+                type: array
+            required:
+            - accountRef
+            - origins
+            type: object
+            x-kubernetes-validations:
+            - message: latitude and longitude must be set together (both or neither)
+              rule: '!has(self.latitude) == !has(self.longitude)'
+          status:
+            description: LoadBalancerPoolStatus is the observed state of a LoadBalancerPool.
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              consecutiveErrors:
+                description: |-
+                  ConsecutiveErrors is the number of consecutive reconcile failures.
+                  Resets to 0 on the next successful reconcile.
+                format: int32
+                type: integer
+              createCount:
+                description: |-
+                  CreateCount tracks how many times this pool has been (re)created in
+                  Cloudflare. Values greater than 1 indicate external deletions occurred.
+                format: int32
+                type: integer
+              healthy:
+                description: |-
+                  Healthy is the last observed pool-level health status from CF's
+                  health-check state.
+                type: boolean
+              id:
+                description: |-
+                  ID is the Cloudflare-assigned pool ID, used for updates and deletes.
+                  Also read by LoadBalancer controllers to resolve peer pool references
+                  to CF pool IDs.
+                type: string
+              monitorID:
+                description: |-
+                  MonitorID is the resolved CF monitor ID from spec.monitorRef. Empty
+                  when monitorRef is unset or the referenced monitor CR isn't ready.
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

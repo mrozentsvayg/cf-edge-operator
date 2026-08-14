@@ -381,6 +381,51 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "Zone")
 		os.Exit(1)
 	}
+	if err := (&controller.LoadBalancerMonitorReconciler{
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		OperatorNamespace: operatorNamespace,
+		ManagementPolicy:  managementPolicy,
+		DeletePolicy:      deletePolicy,
+		DryRun:            dryRun,
+		CFAPITimeout:      cfAPITimeout,
+		CFAPIWriteTimeout: cfAPIWriteTimeout,
+		CFAPIMaxRetries:   cfAPIMaxRetries,
+		CFAPIWriteDelay:   cfAPIWriteDelay,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "LoadBalancerMonitor")
+		os.Exit(1)
+	}
+	if err := (&controller.LoadBalancerPoolReconciler{
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		OperatorNamespace: operatorNamespace,
+		ManagementPolicy:  managementPolicy,
+		DeletePolicy:      deletePolicy,
+		DryRun:            dryRun,
+		CFAPITimeout:      cfAPITimeout,
+		CFAPIWriteTimeout: cfAPIWriteTimeout,
+		CFAPIMaxRetries:   cfAPIMaxRetries,
+		CFAPIWriteDelay:   cfAPIWriteDelay,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "LoadBalancerPool")
+		os.Exit(1)
+	}
+	if err := (&controller.LoadBalancerReconciler{
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		OperatorNamespace: operatorNamespace,
+		ManagementPolicy:  managementPolicy,
+		DeletePolicy:      deletePolicy,
+		DryRun:            dryRun,
+		CFAPITimeout:      cfAPITimeout,
+		CFAPIWriteTimeout: cfAPIWriteTimeout,
+		CFAPIMaxRetries:   cfAPIMaxRetries,
+		CFAPIWriteDelay:   cfAPIWriteDelay,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "LoadBalancer")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	// NOTE: Probes are trivial pings -- they don't check CF API reachability or

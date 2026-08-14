@@ -48,13 +48,33 @@ rules:
   - saas.cf-edge.io
   resources:
   - customhostnames/finalizers
+  - loadbalancermonitors/finalizers
+  - loadbalancerpools/finalizers
+  - loadbalancers/finalizers
   verbs:
   - update
 - apiGroups:
   - saas.cf-edge.io
   resources:
   - customhostnames/status
+  - loadbalancermonitors/status
+  - loadbalancerpools/status
+  - loadbalancers/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - saas.cf-edge.io
+  resources:
+  - loadbalancermonitors
+  - loadbalancerpools
+  - loadbalancers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch

@@ -1,0 +1,481 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: loadbalancers.saas.cf-edge.io
+spec:
+  group: saas.cf-edge.io
+  names:
+    kind: LoadBalancer
+    listKind: LoadBalancerList
+    plural: loadbalancers
+    singular: loadbalancer
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.hostname
+      name: Hostname
+      type: string
+    - jsonPath: .spec.steeringPolicy
+      name: Steering
+      type: string
+    - jsonPath: .spec.defaultPoolRefs.length()
+      name: Pools
+      type: integer
+    - jsonPath: .status.id
+      name: CF ID
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.unresolvedPoolRefs.length()
+      name: Unresolved
+      priority: 1
+      type: integer
+    - jsonPath: .status.createCount
+      name: Creates
+      type: integer
+    - jsonPath: .status.consecutiveErrors
+      name: Errors
+      type: integer
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: LoadBalancer is the Schema for the loadbalancers API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              LoadBalancerSpec defines the desired state of a Cloudflare LoadBalancer.
+
+              Load Balancers are Cloudflare zone-scoped: the Hostname becomes a DNS
+              record in the ZoneRef zone that CF geo-steers to healthy origin pools.
+              CR names are used verbatim as the CF-side LB name (which is the hostname
+              itself for public LBs), so charts must ensure names are unique per zone.
+
+              Pool references are by-name across the whole CF account, so this CR can
+              reference LoadBalancerPool CRs that live in a different namespace or even
+              a different cluster (as long as both clusters point at the same CF
+              account). The controller resolves peer pool names by:
+               1. Look up the local LoadBalancerPool CR (same-cluster) if it exists.
+               2. Fall back to a CF pool-list-by-name lookup if the CR isn't found
+                  locally (i.e. it's owned by a peer cluster).
+
+              This is what enables the multi-region pattern: each region's cluster owns
+              its own LoadBalancerPool CR; the parent region owns the LoadBalancer CR
+              that stitches them together.
+            properties:
+              countryPools:
+                additionalProperties:
+                  items:
+                    description: |-
+                      LoadBalancerPoolRef references a LoadBalancerPool by name.
+
+                      If Namespace is set, the controller looks up a local LoadBalancerPool CR
+                      at that (Name, Namespace) and reads its Status.ID for the CF pool ID.
+
+                      If Namespace is unset, the controller first tries a local same-namespace
+                      LoadBalancerPool CR lookup. On miss (which is expected for peer-cluster
+                      pools), it falls back to a CF-side pool-list-by-name resolution.
+
+                      The cross-cluster fallback is what enables the multi-region pattern
+                      (parent-region LB references peer-region pools created by peer-region
+                      clusters). See the LoadBalancer CRD-level doc.
+                    properties:
+                      name:
+                        description: Name of the LoadBalancerPool (which is also the
+                          CF pool name).
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace of the local LoadBalancerPool CR, when Name is
+                          same-cluster. Omit for cross-cluster peer pools; the controller
+                          resolves via CF API by name.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  type: array
+                description: |-
+                  CountryPools maps ISO-3166-1-alpha-2 country codes to ordered pool
+                  reference lists that override DefaultPoolRefs (and RegionPools) for
+                  clients from that country. Only used when SteeringPolicy=geo.
+                type: object
+              defaultPoolRefs:
+                description: |-
+                  DefaultPoolRefs is the ordered list of pool references CF uses when no
+                  region_pools / country_pools / pop_pools rule matches. Pool references
+                  are resolved to CF pool IDs at reconcile time (see the CRD-level doc
+                  for cross-cluster resolution semantics).
+                items:
+                  description: |-
+                    LoadBalancerPoolRef references a LoadBalancerPool by name.
+
+                    If Namespace is set, the controller looks up a local LoadBalancerPool CR
+                    at that (Name, Namespace) and reads its Status.ID for the CF pool ID.
+
+                    If Namespace is unset, the controller first tries a local same-namespace
+                    LoadBalancerPool CR lookup. On miss (which is expected for peer-cluster
+                    pools), it falls back to a CF-side pool-list-by-name resolution.
+
+                    The cross-cluster fallback is what enables the multi-region pattern
+                    (parent-region LB references peer-region pools created by peer-region
+                    clusters). See the LoadBalancer CRD-level doc.
+                  properties:
+                    name:
+                      description: Name of the LoadBalancerPool (which is also the
+                        CF pool name).
+                      minLength: 1
+                      type: string
+                    namespace:
+                      description: |-
+                        Namespace of the local LoadBalancerPool CR, when Name is
+                        same-cluster. Omit for cross-cluster peer pools; the controller
+                        resolves via CF API by name.
+                      type: string
+                  required:
+                  - name
+                  type: object
+                minItems: 1
+                type: array
+              deletePolicy:
+                description: |-
+                  DeletePolicy overrides the operator-wide --delete-policy for this CR.
+                  See CustomHostname docs for semantics.
+                enum:
+                - always
+                - own-only
+                - never
+                type: string
+              description:
+                description: Description is a human-readable description shown in
+                  the CF dashboard.
+                maxLength: 1024
+                type: string
+              fallbackPoolRef:
+                description: |-
+                  FallbackPoolRef is the pool CF sends traffic to when EVERY other pool
+                  is unhealthy. Required by CF, so we require it here.
+                properties:
+                  name:
+                    description: Name of the LoadBalancerPool (which is also the CF
+                      pool name).
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of the local LoadBalancerPool CR, when Name is
+                      same-cluster. Omit for cross-cluster peer pools; the controller
+                      resolves via CF API by name.
+                    type: string
+                required:
+                - name
+                type: object
+              hostname:
+                description: |-
+                  Hostname is the DNS name that clients resolve. Must be within the
+                  referenced zone. Immutable once set -- changing it would orphan the
+                  existing CF load balancer.
+                format: hostname
+                type: string
+                x-kubernetes-validations:
+                - message: hostname is immutable
+                  rule: self == oldSelf
+              managementPolicy:
+                description: |-
+                  ManagementPolicy overrides the operator-wide --management-policy for
+                  this CR. See CustomHostname docs for semantics.
+                enum:
+                - manage
+                - create
+                - observe
+                type: string
+              minimumPools:
+                description: |-
+                  MinimumPools controls behavior when some referenced pools can't be
+                  resolved (e.g., peer cluster hasn't yet reconciled). Interpretation:
+                    - unset (nil): fail-hard. LB reconcile errors if any pool ref is
+                      unresolvable; requeues until all pools exist.
+                    - set to N: partial. LB is created with whatever pools resolve, as
+                      long as at least N of the total (default + fallback) resolve.
+                      Missing pools are omitted from the CF LB config; they get added
+                      on the next reconcile after they appear in CF.
+                  The partial mode trades slightly less-precise routing for faster
+                  bootstrap: a new multi-region service can bring its global endpoint
+                  up as soon as one region's pool exists, and other regions light up
+                  as they come online.
+                format: int32
+                minimum: 1
+                type: integer
+              popPools:
+                additionalProperties:
+                  items:
+                    description: |-
+                      LoadBalancerPoolRef references a LoadBalancerPool by name.
+
+                      If Namespace is set, the controller looks up a local LoadBalancerPool CR
+                      at that (Name, Namespace) and reads its Status.ID for the CF pool ID.
+
+                      If Namespace is unset, the controller first tries a local same-namespace
+                      LoadBalancerPool CR lookup. On miss (which is expected for peer-cluster
+                      pools), it falls back to a CF-side pool-list-by-name resolution.
+
+                      The cross-cluster fallback is what enables the multi-region pattern
+                      (parent-region LB references peer-region pools created by peer-region
+                      clusters). See the LoadBalancer CRD-level doc.
+                    properties:
+                      name:
+                        description: Name of the LoadBalancerPool (which is also the
+                          CF pool name).
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace of the local LoadBalancerPool CR, when Name is
+                          same-cluster. Omit for cross-cluster peer pools; the controller
+                          resolves via CF API by name.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  type: array
+                description: |-
+                  PopPools maps CF PoP identifiers to ordered pool reference lists.
+                  Enterprise-only feature. Only used when SteeringPolicy=geo.
+                type: object
+              proxied:
+                default: true
+                description: |-
+                  Proxied controls whether the LB hostname is orange-clouded (CF proxy
+                  on, HTTP/S routing) or grey-clouded (DNS-only, direct IP steering).
+                  Load-balancer features (health checks, most steering policies)
+                  require proxied=true.
+                type: boolean
+              regionPools:
+                additionalProperties:
+                  items:
+                    description: |-
+                      LoadBalancerPoolRef references a LoadBalancerPool by name.
+
+                      If Namespace is set, the controller looks up a local LoadBalancerPool CR
+                      at that (Name, Namespace) and reads its Status.ID for the CF pool ID.
+
+                      If Namespace is unset, the controller first tries a local same-namespace
+                      LoadBalancerPool CR lookup. On miss (which is expected for peer-cluster
+                      pools), it falls back to a CF-side pool-list-by-name resolution.
+
+                      The cross-cluster fallback is what enables the multi-region pattern
+                      (parent-region LB references peer-region pools created by peer-region
+                      clusters). See the LoadBalancer CRD-level doc.
+                    properties:
+                      name:
+                        description: Name of the LoadBalancerPool (which is also the
+                          CF pool name).
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace of the local LoadBalancerPool CR, when Name is
+                          same-cluster. Omit for cross-cluster peer pools; the controller
+                          resolves via CF API by name.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  type: array
+                description: |-
+                  RegionPools maps CF region codes to ordered pool reference lists that
+                  override DefaultPoolRefs for clients from that region. Only used when
+                  SteeringPolicy=geo. Region codes are CF's macro-regions:
+                    WNAM, ENAM, WEU, EEU, NSAM, SSAM, OC, ME, NAF, SAF, SAS, SEAS, NEAS.
+                  See https://developers.cloudflare.com/load-balancing/reference/region-mapping-api/.
+                type: object
+              sessionAffinity:
+                description: |-
+                  SessionAffinity sets client-to-pool stickiness across requests.
+                  - "none" (default): each request may hit any healthy pool.
+                  - "cookie": CF sets a cookie so a client sticks to one origin.
+                  - "ip_cookie": cookie tied to client IP.
+                  - "header": stickiness by a request header value.
+                enum:
+                - none
+                - cookie
+                - ip_cookie
+                - header
+                type: string
+              steeringPolicy:
+                default: dynamic_latency
+                description: |-
+                  SteeringPolicy is how CF picks a pool from the pool list.
+                  - "off": always use defaultPools order; no geo/latency logic.
+                  - "geo": use region_pools / country_pools / pop_pools.
+                  - "random": pick a random pool weighted by random_steering weights.
+                  - "dynamic_latency": pick the pool with lowest observed latency from
+                    the client's PoP (uses CF's real-time analytics).
+                  - "proximity": pick the pool closest by geographic distance.
+                  - "least_outstanding_requests" / "least_connections": Enterprise only.
+                  Defaults to dynamic_latency for latency-sensitive multi-region workloads.
+                enum:
+                - "off"
+                - geo
+                - random
+                - dynamic_latency
+                - proximity
+                - least_outstanding_requests
+                - least_connections
+                type: string
+              ttl:
+                description: |-
+                  TTL is the DNS TTL in seconds. Only meaningful when Proxied=false;
+                  CF ignores it for proxied LBs (uses its own internal TTL).
+                format: int32
+                maximum: 86400
+                minimum: 30
+                type: integer
+              zoneRef:
+                description: |-
+                  ZoneRef references the Zone hosting the LB's DNS name. The Zone
+                  provides both the CF zone ID (for the LB API call) and the CF API
+                  credentials.
+                properties:
+                  name:
+                    description: Name of the Zone resource
+                    type: string
+                  namespace:
+                    description: Namespace of the Zone resource. Defaults to the operator
+                      namespace if omitted.
+                    type: string
+                required:
+                - name
+                type: object
+            required:
+            - defaultPoolRefs
+            - fallbackPoolRef
+            - hostname
+            - zoneRef
+            type: object
+          status:
+            description: LoadBalancerStatus is the observed state of a LoadBalancer.
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              consecutiveErrors:
+                description: |-
+                  ConsecutiveErrors is the number of consecutive reconcile failures.
+                  Resets to 0 on the next successful reconcile.
+                format: int32
+                type: integer
+              createCount:
+                description: |-
+                  CreateCount tracks how many times this LB has been (re)created in
+                  Cloudflare. Values greater than 1 indicate external deletions occurred.
+                format: int32
+                type: integer
+              id:
+                description: ID is the Cloudflare-assigned LB ID, used for updates
+                  and deletes.
+                type: string
+              resolvedDefaultPoolIDs:
+                description: |-
+                  ResolvedDefaultPoolIDs is the CF pool IDs the controller resolved
+                  from spec.defaultPoolRefs on the last successful reconcile.
+                  Order matches the spec.
+                items:
+                  type: string
+                type: array
+              resolvedFallbackPoolID:
+                description: ResolvedFallbackPoolID is the CF pool ID for spec.fallbackPoolRef.
+                type: string
+              unresolvedPoolRefs:
+                description: |-
+                  UnresolvedPoolRefs lists pool ref names the controller couldn't
+                  resolve on the last reconcile. Under fail-hard mode this triggers a
+                  requeue; under partial mode (spec.minimumPools set) these are
+                  dropped from the CF LB config until they appear.
+                items:
+                  type: string
+                type: array
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

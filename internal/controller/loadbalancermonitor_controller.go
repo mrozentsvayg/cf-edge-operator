@@ -1,0 +1,669 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package controller
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"reflect"
+	"strings"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/workqueue"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	"github.com/cloudflare/cloudflare-go/v6"
+	"github.com/cloudflare/cloudflare-go/v6/load_balancers"
+	"github.com/cloudflare/cloudflare-go/v6/option"
+
+	domainsv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/domains/v1beta1"
+	saasv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1beta1"
+)
+
+const (
+	// finalizerNameLBMonitor is the finalizer key for LoadBalancerMonitor CRs.
+	// Matches the pattern used by CustomHostname (finalizerName).
+	finalizerNameLBMonitor = "saas.cf-edge.io/loadbalancermonitor"
+)
+
+// LoadBalancerMonitorReconciler reconciles a LoadBalancerMonitor object.
+//
+// Monitors are Cloudflare account-scoped resources; the CR references a Zone
+// as its account carrier (see LoadBalancerMonitorSpec.AccountRef doc). The
+// controller resolves the Zone to (a) CF API credentials and (b) the account
+// ID, then talks to the CF Load Balancer Monitors API under that account.
+//
+// The controller name-scopes each monitor: the CR's metadata.name is used
+// verbatim as the CF-side monitor description (the CF monitor doesn't have a
+// separate "name" field, so we key off status.id + description). List-by-CR
+// look-ups query the account's monitors and match by CR-name-in-description
+// to make reconciliation idempotent across restarts and CF-side deletions.
+type LoadBalancerMonitorReconciler struct {
+	client.Client
+	Scheme            *runtime.Scheme
+	OperatorNamespace string
+	// ManagementPolicy is the operator-wide default: manage / create / observe.
+	ManagementPolicy string
+	// DeletePolicy is the operator-wide default: always / own-only / never.
+	DeletePolicy string
+	// DryRun skips CF write operations.
+	DryRun bool
+	// CFAPITimeout is the per-request timeout for reads.
+	CFAPITimeout time.Duration
+	// CFAPIWriteTimeout is the per-request timeout for writes.
+	CFAPIWriteTimeout time.Duration
+	// CFAPIMaxRetries bounds cfRetry attempts for single API calls.
+	CFAPIMaxRetries int
+	// CFAPIWriteDelay paces successful writes to avoid CF API throttling.
+	CFAPIWriteDelay time.Duration
+	// CFBaseURL overrides the CF API base URL (test hook).
+	CFBaseURL string
+}
+
+// accountInfo bundles a CF client with the account ID it should act against.
+// Analogous to zoneInfo for zone-scoped resources.
+type accountInfo struct {
+	Client    *cloudflare.Client
+	AccountID string
+	// ZoneCR is the K8s Zone CR name that supplied the credentials + account
+	// (for metrics / logging labels).
+	ZoneCR string
+}
+
+// +kubebuilder:rbac:groups=saas.cf-edge.io,resources=loadbalancermonitors,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=saas.cf-edge.io,resources=loadbalancermonitors/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=saas.cf-edge.io,resources=loadbalancermonitors/finalizers,verbs=update
+
+func (r *LoadBalancerMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	var mon saasv1beta1.LoadBalancerMonitor
+	if err := r.Get(ctx, req.NamespacedName, &mon); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Deletion paths that don't need a CF client (no ID recorded yet, or
+	// managementPolicy=observe / deletePolicy=never) short-circuit here.
+	if !mon.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(&mon, finalizerNameLBMonitor) && mon.Status.ID == "" {
+			log.Info("loadbalancermonitor - could not be deleted, finalizer released (association with Cloudflare was never established)",
+				"name", mon.Name)
+			controllerutil.RemoveFinalizer(&mon, finalizerNameLBMonitor)
+			return ctrl.Result{}, r.Update(ctx, &mon)
+		}
+		if controllerutil.ContainsFinalizer(&mon, finalizerNameLBMonitor) {
+			mgmt := effectiveManagementPolicy(mon.Spec.ManagementPolicy, r.ManagementPolicy)
+			if mgmt == ManagementPolicyObserve {
+				log.Info("loadbalancermonitor - not deleted, finalizer released (managementPolicy=observe)",
+					"name", mon.Name, "id", mon.Status.ID)
+				controllerutil.RemoveFinalizer(&mon, finalizerNameLBMonitor)
+				return ctrl.Result{}, r.Update(ctx, &mon)
+			}
+			del := effectiveDeletePolicy(mon.Spec.DeletePolicy, r.DeletePolicy)
+			if del == DeletePolicyNever {
+				log.Info("loadbalancermonitor - not deleted, finalizer released (deletePolicy=never)",
+					"name", mon.Name, "id", mon.Status.ID)
+				controllerutil.RemoveFinalizer(&mon, finalizerNameLBMonitor)
+				return ctrl.Result{}, r.Update(ctx, &mon)
+			}
+		}
+		ai, err := r.buildAccountClient(ctx, &mon)
+		if err != nil {
+			log.Error(err, "loadbalancermonitor - client initialization failed")
+			return ctrl.Result{}, err // bare error for retry during deletion
+		}
+		return r.handleDelete(ctx, ai, &mon)
+	}
+
+	ai, err := r.buildAccountClient(ctx, &mon)
+	if err != nil {
+		log.Error(err, "loadbalancermonitor - client initialization failed")
+		return ctrl.Result{}, r.setError(ctx, &mon, "AccountError", err.Error())
+	}
+
+	if !controllerutil.ContainsFinalizer(&mon, finalizerNameLBMonitor) {
+		controllerutil.AddFinalizer(&mon, finalizerNameLBMonitor)
+		if err := r.Update(ctx, &mon); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.V(1).Info("loadbalancermonitor - finalizer added", "name", mon.Name)
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	return r.reconcileCloudflareState(ctx, ai, &mon)
+}
+
+func (r *LoadBalancerMonitorReconciler) reconcileCloudflareState(ctx context.Context, ai *accountInfo, mon *saasv1beta1.LoadBalancerMonitor) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	mgmt := effectiveManagementPolicy(mon.Spec.ManagementPolicy, r.ManagementPolicy)
+
+	// Always resolve current CF state -- the CR name is the source of truth,
+	// so if status.ID is stale (deleted externally) we still find the current
+	// monitor. Empty description filter falls through to list; we match by
+	// CR name (see findMonitorByCRName).
+	var existing *load_balancers.Monitor
+	attempts, err := cfRetry(ctx, cfResourceLoadBalancerMon, cfOpGet, r.CFAPIMaxRetries, func() error {
+		var callErr error
+		existing, callErr = r.findMonitorByCRName(ctx, ai, mon)
+		return callErr
+	})
+	if err != nil {
+		log.Error(err, "loadbalancermonitor - lookup failed", "name", mon.Name, "attempts", attempts)
+		return ctrl.Result{}, r.setError(ctx, mon, "LookupFailed", err.Error())
+	}
+
+	if existing == nil {
+		if mgmt == ManagementPolicyObserve {
+			log.Info("loadbalancermonitor - not creating (managementPolicy=observe)", "name", mon.Name)
+			mon.Status.ConsecutiveErrors = 0
+			return ctrl.Result{}, r.setCondition(ctx, mon, metav1.ConditionFalse,
+				"WaitingForExternal", "Monitor not yet provisioned in Cloudflare")
+		}
+		return r.handleCreate(ctx, ai, mon)
+	}
+
+	// Adopt: record the CF ID on first sight (or re-adopt after external recreate).
+	if mon.Status.ID != existing.ID {
+		if mon.Status.ID == "" {
+			log.Info("loadbalancermonitor - adopted", "name", mon.Name, "id", existing.ID)
+		} else {
+			log.Info("loadbalancermonitor - readopted (externally recreated)",
+				"name", mon.Name, "previousID", mon.Status.ID, "newID", existing.ID)
+		}
+		operationsTotal.WithLabelValues(cfResourceLoadBalancerMon, cfOpAdopt).Inc()
+		mon.Status.ID = existing.ID
+	}
+
+	// Drift detection: only correct if managementPolicy=manage.
+	if monitorDrifted(existing, mon) {
+		if mgmt != ManagementPolicyManage {
+			log.Info(fmt.Sprintf("loadbalancermonitor - not updating, drift detected (managementPolicy=%s)", mgmt),
+				"name", mon.Name)
+		} else if r.DryRun {
+			log.Info("loadbalancermonitor - not updating, drift detected (dry-run)", "name", mon.Name)
+		} else {
+			log.Info("loadbalancermonitor - updating, drift detected", "name", mon.Name)
+			updated, updErr := r.editMonitor(ctx, ai, mon, existing.ID)
+			if updErr != nil {
+				return ctrl.Result{}, r.setError(ctx, mon, "UpdateFailed", updErr.Error())
+			}
+			existing = updated
+		}
+	}
+
+	// (Optional) refresh any status fields sourced from the CF response
+	// once we have a fresher representation. Monitors are simple structs,
+	// so there's nothing to mirror beyond ID -- keep this hook for parity.
+	_ = existing
+
+	return r.markReady(ctx, mon)
+}
+
+func (r *LoadBalancerMonitorReconciler) handleCreate(ctx context.Context, ai *accountInfo, mon *saasv1beta1.LoadBalancerMonitor) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	if r.DryRun {
+		log.Info("loadbalancermonitor - not creating (dry-run)", "name", mon.Name)
+		return ctrl.Result{}, r.setCondition(ctx, mon, metav1.ConditionFalse, "DryRun", "not creating (dry-run)")
+	}
+
+	params := buildMonitorNewParams(ai.AccountID, mon)
+	var resp *load_balancers.Monitor
+	attempts, err := cfRetry(ctx, cfResourceLoadBalancerMon, cfOpCreate, r.CFAPIMaxRetries, func() error {
+		start := time.Now()
+		var callErr error
+		resp, callErr = ai.Client.LoadBalancers.Monitors.New(ctx, params,
+			option.WithRequestTimeout(r.CFAPIWriteTimeout))
+		recordCFCall(cfResourceLoadBalancerMon, cfOpCreate, start, &callErr)
+		return callErr
+	})
+	if err != nil {
+		log.Error(err, "loadbalancermonitor - create failed", "name", mon.Name, "attempts", attempts)
+		return ctrl.Result{}, r.setError(ctx, mon, "CreateFailed", err.Error())
+	}
+
+	isRecreation := mon.Status.CreateCount > 0
+	op := cfOpCreate
+	if isRecreation {
+		op = cfOpRecreate
+		log.Info("loadbalancermonitor - recreated", "name", mon.Name, "id", resp.ID)
+	} else {
+		log.Info("loadbalancermonitor - created", "name", mon.Name, "id", resp.ID)
+	}
+	operationsTotal.WithLabelValues(cfResourceLoadBalancerMon, op).Inc()
+	r.paceWrite()
+
+	mon.Status.ID = resp.ID
+	mon.Status.CreateCount++
+	return r.markReady(ctx, mon)
+}
+
+func (r *LoadBalancerMonitorReconciler) editMonitor(ctx context.Context, ai *accountInfo, mon *saasv1beta1.LoadBalancerMonitor, cfID string) (*load_balancers.Monitor, error) {
+	log := logf.FromContext(ctx)
+
+	// Use Update (full replace) rather than Edit (partial). The full spec is
+	// idempotent -- we always submit every field the CRD manages -- and the
+	// CF Update semantics ensure unspecified fields reset to the API defaults
+	// rather than silently retaining stale values.
+	params := buildMonitorUpdateParams(ai.AccountID, mon)
+	var resp *load_balancers.Monitor
+	attempts, err := cfRetry(ctx, cfResourceLoadBalancerMon, cfOpUpdate, r.CFAPIMaxRetries, func() error {
+		start := time.Now()
+		var callErr error
+		resp, callErr = ai.Client.LoadBalancers.Monitors.Update(ctx, cfID, params,
+			option.WithRequestTimeout(r.CFAPIWriteTimeout))
+		recordCFCall(cfResourceLoadBalancerMon, cfOpUpdate, start, &callErr)
+		return callErr
+	})
+	if err != nil {
+		log.Error(err, "loadbalancermonitor - update failed", "id", cfID, "attempts", attempts)
+		return nil, err
+	}
+	operationsTotal.WithLabelValues(cfResourceLoadBalancerMon, cfOpUpdate).Inc()
+	r.paceWrite()
+	return resp, nil
+}
+
+func (r *LoadBalancerMonitorReconciler) handleDelete(ctx context.Context, ai *accountInfo, mon *saasv1beta1.LoadBalancerMonitor) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	if r.DryRun {
+		log.Info("loadbalancermonitor - not deleted, finalizer released (dry-run)", "name", mon.Name, "id", mon.Status.ID)
+		controllerutil.RemoveFinalizer(mon, finalizerNameLBMonitor)
+		return ctrl.Result{}, r.Update(ctx, mon)
+	}
+
+	if controllerutil.ContainsFinalizer(mon, finalizerNameLBMonitor) {
+		policy := effectiveDeletePolicy(mon.Spec.DeletePolicy, r.DeletePolicy)
+		if policy == DeletePolicyOwnOnly {
+			var current *load_balancers.Monitor
+			_, err := cfRetry(ctx, cfResourceLoadBalancerMon, cfOpGet, r.CFAPIMaxRetries, func() error {
+				var callErr error
+				current, callErr = r.findMonitorByCRName(ctx, ai, mon)
+				return callErr
+			})
+			if err != nil {
+				log.Error(err, "loadbalancermonitor - pre-delete lookup failed (deletePolicy=own-only)", "name", mon.Name)
+				return ctrl.Result{}, err
+			}
+			if current == nil || current.ID != mon.Status.ID {
+				log.Info("loadbalancermonitor - not deleted, finalizer released (deletePolicy=own-only)",
+					"name", mon.Name, "statusID", mon.Status.ID)
+				controllerutil.RemoveFinalizer(mon, finalizerNameLBMonitor)
+				return ctrl.Result{}, r.Update(ctx, mon)
+			}
+		}
+
+		_, delErr := cfRetry(ctx, cfResourceLoadBalancerMon, cfOpDelete, r.CFAPIMaxRetries, func() error {
+			start := time.Now()
+			_, callErr := ai.Client.LoadBalancers.Monitors.Delete(ctx, mon.Status.ID,
+				load_balancers.MonitorDeleteParams{AccountID: cloudflare.F(ai.AccountID)},
+				option.WithRequestTimeout(r.CFAPIWriteTimeout))
+			recordCFCall(cfResourceLoadBalancerMon, cfOpDelete, start, &callErr)
+			return callErr
+		})
+		if delErr != nil {
+			var cfErr *cloudflare.Error
+			if errors.As(delErr, &cfErr) && cfErr.StatusCode == 404 {
+				log.Info("loadbalancermonitor - could not be deleted, finalizer released (not found in Cloudflare)",
+					"name", mon.Name, "id", mon.Status.ID)
+			} else {
+				log.Error(delErr, "loadbalancermonitor - delete failed", "id", mon.Status.ID)
+				return ctrl.Result{}, delErr
+			}
+		} else {
+			log.Info("loadbalancermonitor - deleted, finalizer released", "name", mon.Name, "id", mon.Status.ID)
+			operationsTotal.WithLabelValues(cfResourceLoadBalancerMon, cfOpDelete).Inc()
+			r.paceWrite()
+		}
+	}
+
+	controllerutil.RemoveFinalizer(mon, finalizerNameLBMonitor)
+	return ctrl.Result{}, r.Update(ctx, mon)
+}
+
+// findMonitorByCRName lists monitors in the account and returns the one whose
+// description matches the CR's namespace/name marker. Matching by description
+// is the only cross-restart identity we have -- CF monitors don't have a
+// user-provided "name" field, and status.ID may be stale.
+//
+// The description marker format is: "<namespace>/<name> (cf-edge-operator)"
+// (see buildMonitorDescription). Any user-provided description in
+// spec.description is preserved -- we prefix the marker so lookups by CR
+// identity are unambiguous.
+func (r *LoadBalancerMonitorReconciler) findMonitorByCRName(ctx context.Context, ai *accountInfo, mon *saasv1beta1.LoadBalancerMonitor) (*load_balancers.Monitor, error) {
+	marker := monitorMarker(mon)
+	start := time.Now()
+	pager := ai.Client.LoadBalancers.Monitors.ListAutoPaging(ctx, load_balancers.MonitorListParams{
+		AccountID: cloudflare.F(ai.AccountID),
+	})
+	var noErr error
+	for pager.Next() {
+		m := pager.Current()
+		if descriptionHasMarker(m.Description, marker) {
+			recordCFCall(cfResourceLoadBalancerMon, cfOpGet, start, &noErr)
+			return &m, nil
+		}
+	}
+	if err := pager.Err(); err != nil {
+		recordCFCall(cfResourceLoadBalancerMon, cfOpGet, start, &err)
+		return nil, err
+	}
+	recordCFCall(cfResourceLoadBalancerMon, cfOpGet, start, &noErr)
+	return nil, nil
+}
+
+func (r *LoadBalancerMonitorReconciler) buildAccountClient(ctx context.Context, mon *saasv1beta1.LoadBalancerMonitor) (*accountInfo, error) {
+	zoneNS := mon.Spec.AccountRef.Namespace
+	if zoneNS == "" {
+		zoneNS = r.OperatorNamespace
+	}
+	var zone domainsv1beta1.Zone
+	if err := r.Get(ctx, types.NamespacedName{Name: mon.Spec.AccountRef.Name, Namespace: zoneNS}, &zone); err != nil {
+		return nil, fmt.Errorf("zone %q not found: %w", mon.Spec.AccountRef.Name, err)
+	}
+	if zone.Status.AccountID == "" {
+		return nil, fmt.Errorf("zone %q status.accountID not yet populated; wait for zone reconcile", zone.Name)
+	}
+	key := zone.Spec.CredentialsRef.Key
+	if key == "" {
+		key = defaultAPITokenKey
+	}
+	var secret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Name: zone.Spec.CredentialsRef.Name, Namespace: zone.Namespace}, &secret); err != nil {
+		return nil, fmt.Errorf("secret %q not found: %w", zone.Spec.CredentialsRef.Name, err)
+	}
+	token, ok := secret.Data[key]
+	if !ok {
+		return nil, fmt.Errorf("key %q not found in secret %q", key, zone.Spec.CredentialsRef.Name)
+	}
+	opts := []option.RequestOption{
+		option.WithAPIToken(string(token)),
+		option.WithMaxRetries(0),
+	}
+	if r.CFAPITimeout > 0 {
+		opts = append(opts, option.WithRequestTimeout(r.CFAPITimeout))
+	}
+	if r.CFBaseURL != "" {
+		opts = append(opts, option.WithBaseURL(r.CFBaseURL))
+	}
+	return &accountInfo{
+		Client:    cloudflare.NewClient(opts...),
+		AccountID: zone.Status.AccountID,
+		ZoneCR:    zone.Name,
+	}, nil
+}
+
+func (r *LoadBalancerMonitorReconciler) markReady(ctx context.Context, mon *saasv1beta1.LoadBalancerMonitor) (ctrl.Result, error) {
+	mon.Status.ConsecutiveErrors = 0
+	return ctrl.Result{}, r.setCondition(ctx, mon, metav1.ConditionTrue, "Reconciled", "Monitor is synchronized with Cloudflare")
+}
+
+func (r *LoadBalancerMonitorReconciler) setError(ctx context.Context, mon *saasv1beta1.LoadBalancerMonitor, reason, message string) error {
+	mon.Status.ConsecutiveErrors++
+	return r.setCondition(ctx, mon, metav1.ConditionFalse, reason, message)
+}
+
+func (r *LoadBalancerMonitorReconciler) setCondition(ctx context.Context, mon *saasv1beta1.LoadBalancerMonitor, status metav1.ConditionStatus, reason, message string) error {
+	apimeta.SetStatusCondition(&mon.Status.Conditions, metav1.Condition{
+		Type:               conditionReady,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: mon.Generation,
+	})
+	if err := r.Status().Update(ctx, mon); err != nil {
+		return fmt.Errorf("failed to update conditions: %w", err)
+	}
+	return nil
+}
+
+// paceWrite mirrors CustomHostname's pacing: sleeps CFAPIWriteDelay after
+// each successful write to reduce CF API throttling risk under bulk changes.
+func (r *LoadBalancerMonitorReconciler) paceWrite() {
+	if r.CFAPIWriteDelay > 0 {
+		time.Sleep(r.CFAPIWriteDelay)
+	}
+}
+
+// ---- SetupWithManager --------------------------------------------------
+
+func (r *LoadBalancerMonitorReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&saasv1beta1.LoadBalancerMonitor{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Named("loadbalancermonitor").
+		WithOptions(controller.Options{
+			RateLimiter: workqueue.NewTypedWithMaxWaitRateLimiter(
+				workqueue.DefaultTypedControllerRateLimiter[reconcile.Request](),
+				30*time.Second,
+			),
+		}).
+		Complete(r)
+}
+
+// ---- Helpers -----------------------------------------------------------
+
+// monitorMarker returns the identity marker stamped into the CF monitor's
+// description so we can look the monitor up by CR identity across restarts.
+func monitorMarker(mon *saasv1beta1.LoadBalancerMonitor) string {
+	return fmt.Sprintf("[cf-edge-operator:%s/%s]", mon.Namespace, mon.Name)
+}
+
+// descriptionHasMarker reports whether a CF description string contains the
+// given operator marker. Matching is a plain substring test so users can
+// add their own description prefix / suffix.
+func descriptionHasMarker(desc, marker string) bool {
+	if marker == "" {
+		return false
+	}
+	return strings.Contains(desc, marker)
+}
+
+// buildMonitorDescription composes the CF monitor description: user-provided
+// prefix (if any) then the operator identity marker. The marker must always
+// be present so findMonitorByCRName can locate the resource.
+func buildMonitorDescription(mon *saasv1beta1.LoadBalancerMonitor) string {
+	marker := monitorMarker(mon)
+	if mon.Spec.Description == "" {
+		return marker
+	}
+	return mon.Spec.Description + " " + marker
+}
+
+// buildMonitorNewParams translates a MonitorSpec into a CF create request.
+// Nil / zero-value spec fields are omitted from the CF params so the CF-side
+// defaults apply.
+func buildMonitorNewParams(accountID string, mon *saasv1beta1.LoadBalancerMonitor) load_balancers.MonitorNewParams {
+	p := load_balancers.MonitorNewParams{
+		AccountID:   cloudflare.F(accountID),
+		Description: cloudflare.F(buildMonitorDescription(mon)),
+	}
+	if mon.Spec.Type != "" {
+		p.Type = cloudflare.F(load_balancers.MonitorNewParamsType(mon.Spec.Type))
+	}
+	if mon.Spec.Method != "" {
+		p.Method = cloudflare.F(mon.Spec.Method)
+	}
+	if mon.Spec.Path != "" {
+		p.Path = cloudflare.F(mon.Spec.Path)
+	}
+	if mon.Spec.Port > 0 {
+		p.Port = cloudflare.F(int64(mon.Spec.Port))
+	}
+	if len(mon.Spec.Header) > 0 {
+		p.Header = cloudflare.F(mon.Spec.Header)
+	}
+	if mon.Spec.ExpectedCodes != "" {
+		p.ExpectedCodes = cloudflare.F(mon.Spec.ExpectedCodes)
+	}
+	if mon.Spec.ExpectedBody != "" {
+		p.ExpectedBody = cloudflare.F(mon.Spec.ExpectedBody)
+	}
+	if mon.Spec.FollowRedirects {
+		p.FollowRedirects = cloudflare.F(mon.Spec.FollowRedirects)
+	}
+	if mon.Spec.AllowInsecure {
+		p.AllowInsecure = cloudflare.F(mon.Spec.AllowInsecure)
+	}
+	if mon.Spec.Interval > 0 {
+		p.Interval = cloudflare.F(int64(mon.Spec.Interval))
+	}
+	if mon.Spec.Retries > 0 {
+		p.Retries = cloudflare.F(int64(mon.Spec.Retries))
+	}
+	if mon.Spec.Timeout > 0 {
+		p.Timeout = cloudflare.F(int64(mon.Spec.Timeout))
+	}
+	if mon.Spec.ConsecutiveUp > 0 {
+		p.ConsecutiveUp = cloudflare.F(int64(mon.Spec.ConsecutiveUp))
+	}
+	if mon.Spec.ConsecutiveDown > 0 {
+		p.ConsecutiveDown = cloudflare.F(int64(mon.Spec.ConsecutiveDown))
+	}
+	if mon.Spec.ProbeZone != "" {
+		p.ProbeZone = cloudflare.F(mon.Spec.ProbeZone)
+	}
+	return p
+}
+
+// buildMonitorUpdateParams is the update-side twin of buildMonitorNewParams.
+// The CF SDK's MonitorUpdateParams shape mirrors MonitorNewParams but has a
+// distinct Type enum, so the two builders can't share code without an
+// enum-conversion detour that would obscure the intent.
+func buildMonitorUpdateParams(accountID string, mon *saasv1beta1.LoadBalancerMonitor) load_balancers.MonitorUpdateParams {
+	p := load_balancers.MonitorUpdateParams{
+		AccountID:   cloudflare.F(accountID),
+		Description: cloudflare.F(buildMonitorDescription(mon)),
+	}
+	if mon.Spec.Type != "" {
+		p.Type = cloudflare.F(load_balancers.MonitorUpdateParamsType(mon.Spec.Type))
+	}
+	if mon.Spec.Method != "" {
+		p.Method = cloudflare.F(mon.Spec.Method)
+	}
+	if mon.Spec.Path != "" {
+		p.Path = cloudflare.F(mon.Spec.Path)
+	}
+	if mon.Spec.Port > 0 {
+		p.Port = cloudflare.F(int64(mon.Spec.Port))
+	}
+	if len(mon.Spec.Header) > 0 {
+		p.Header = cloudflare.F(mon.Spec.Header)
+	}
+	if mon.Spec.ExpectedCodes != "" {
+		p.ExpectedCodes = cloudflare.F(mon.Spec.ExpectedCodes)
+	}
+	if mon.Spec.ExpectedBody != "" {
+		p.ExpectedBody = cloudflare.F(mon.Spec.ExpectedBody)
+	}
+	if mon.Spec.FollowRedirects {
+		p.FollowRedirects = cloudflare.F(mon.Spec.FollowRedirects)
+	}
+	if mon.Spec.AllowInsecure {
+		p.AllowInsecure = cloudflare.F(mon.Spec.AllowInsecure)
+	}
+	if mon.Spec.Interval > 0 {
+		p.Interval = cloudflare.F(int64(mon.Spec.Interval))
+	}
+	if mon.Spec.Retries > 0 {
+		p.Retries = cloudflare.F(int64(mon.Spec.Retries))
+	}
+	if mon.Spec.Timeout > 0 {
+		p.Timeout = cloudflare.F(int64(mon.Spec.Timeout))
+	}
+	if mon.Spec.ConsecutiveUp > 0 {
+		p.ConsecutiveUp = cloudflare.F(int64(mon.Spec.ConsecutiveUp))
+	}
+	if mon.Spec.ConsecutiveDown > 0 {
+		p.ConsecutiveDown = cloudflare.F(int64(mon.Spec.ConsecutiveDown))
+	}
+	if mon.Spec.ProbeZone != "" {
+		p.ProbeZone = cloudflare.F(mon.Spec.ProbeZone)
+	}
+	return p
+}
+
+// monitorDrifted returns true when any CF-observable field differs from the
+// CR spec. Reflects intent: fields the CR doesn't manage (empty spec value)
+// aren't compared. Kept explicit rather than reflection-driven because the
+// field-by-field comparison also documents what the operator manages.
+func monitorDrifted(cf *load_balancers.Monitor, mon *saasv1beta1.LoadBalancerMonitor) bool {
+	if mon.Spec.Type != "" && string(cf.Type) != mon.Spec.Type {
+		return true
+	}
+	if mon.Spec.Method != "" && cf.Method != mon.Spec.Method {
+		return true
+	}
+	if mon.Spec.Path != "" && cf.Path != mon.Spec.Path {
+		return true
+	}
+	if mon.Spec.Port > 0 && int32(cf.Port) != mon.Spec.Port {
+		return true
+	}
+	if len(mon.Spec.Header) > 0 && !reflect.DeepEqual(cf.Header, mon.Spec.Header) {
+		return true
+	}
+	if mon.Spec.ExpectedCodes != "" && cf.ExpectedCodes != mon.Spec.ExpectedCodes {
+		return true
+	}
+	if mon.Spec.ExpectedBody != "" && cf.ExpectedBody != mon.Spec.ExpectedBody {
+		return true
+	}
+	if cf.FollowRedirects != mon.Spec.FollowRedirects {
+		return true
+	}
+	if cf.AllowInsecure != mon.Spec.AllowInsecure {
+		return true
+	}
+	if mon.Spec.Interval > 0 && int32(cf.Interval) != mon.Spec.Interval {
+		return true
+	}
+	if mon.Spec.Retries > 0 && int32(cf.Retries) != mon.Spec.Retries {
+		return true
+	}
+	if mon.Spec.Timeout > 0 && int32(cf.Timeout) != mon.Spec.Timeout {
+		return true
+	}
+	if mon.Spec.ConsecutiveUp > 0 && int32(cf.ConsecutiveUp) != mon.Spec.ConsecutiveUp {
+		return true
+	}
+	if mon.Spec.ConsecutiveDown > 0 && int32(cf.ConsecutiveDown) != mon.Spec.ConsecutiveDown {
+		return true
+	}
+	if mon.Spec.ProbeZone != "" && cf.ProbeZone != mon.Spec.ProbeZone {
+		return true
+	}
+	// Description drift includes marker check: if CF description lost our
+	// marker (e.g. user edited it via dashboard), we need to reassert.
+	if cf.Description != buildMonitorDescription(mon) {
+		return true
+	}
+	return false
+}

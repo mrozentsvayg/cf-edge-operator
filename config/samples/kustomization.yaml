@@ -2,4 +2,7 @@
 resources:
 - saas_v1beta1_customhostname.yaml
 - domains_v1beta1_zone.yaml
+- saas_v1beta1_loadbalancermonitor.yaml
+- saas_v1beta1_loadbalancerpool.yaml
+- saas_v1beta1_loadbalancer.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

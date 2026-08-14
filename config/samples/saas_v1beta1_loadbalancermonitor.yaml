@@ -1,0 +1,22 @@
+apiVersion: saas.cf-edge.io/v1beta1
+kind: LoadBalancerMonitor
+metadata:
+  name: http-health
+  namespace: default
+spec:
+  # Zone CR whose credentials + status.accountID this monitor should use.
+  # LoadBalancer resources are account-scoped in Cloudflare; we reuse the
+  # Zone CR as the account carrier rather than introducing a new Account CRD.
+  accountRef:
+    name: example-com
+    # namespace: defaults to the operator namespace if omitted
+
+  # HTTPS health check for the pool's origins: GET /healthz, healthy on 200.
+  type: https
+  method: GET
+  path: /healthz
+  expectedCodes: "200"
+  interval: 30
+  retries: 2
+  timeout: 5
+  # description: "optional prefix"   # combined with an operator-added marker

@@ -18,6 +18,10 @@ spec:
     - jsonPath: .status.name
       name: Zone
       type: string
+    - jsonPath: .status.accountID
+      name: Account
+      priority: 1
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Initialized")].status
       name: Initialized
       type: string
@@ -80,6 +84,14 @@ spec:
               ZoneStatus defines the observed state of Zone.
               NOTE: No top-level ObservedGeneration -- it's set per-condition in setInitialized().
             properties:
+              accountID:
+                description: |-
+                  AccountID is the Cloudflare account that owns this zone, populated from
+                  the API on zone init. Downstream account-scoped resources (LoadBalancer
+                  Monitors and Pools) reference a Zone as their AccountRef and read this
+                  field to resolve the CF account for their API calls, avoiding a separate
+                  Account CRD or an ambient --account-id operator flag.
+                type: string
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current

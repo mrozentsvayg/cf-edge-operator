@@ -1,0 +1,319 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: loadbalancermonitors.saas.cf-edge.io
+spec:
+  group: saas.cf-edge.io
+  names:
+    kind: LoadBalancerMonitor
+    listKind: LoadBalancerMonitorList
+    plural: loadbalancermonitors
+    singular: loadbalancermonitor
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .spec.path
+      name: Path
+      type: string
+    - jsonPath: .spec.interval
+      name: Interval
+      type: integer
+    - jsonPath: .status.id
+      name: CF ID
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.createCount
+      name: Creates
+      type: integer
+    - jsonPath: .status.consecutiveErrors
+      name: Errors
+      type: integer
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: LoadBalancerMonitor is the Schema for the loadbalancermonitors
+          API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              LoadBalancerMonitorSpec defines the desired state of LoadBalancerMonitor.
+
+              A LoadBalancerMonitor is a Cloudflare health-check definition that pools
+              reference to probe their origins. Monitors are Cloudflare account-scoped
+              (not zone-scoped): a monitor created in one namespace/cluster is visible
+              across the whole CF account. The controller keys off the CR name for the
+              CF-side identity, so charts must ensure names are unique across the fleet
+              (e.g. by prefixing with the service / namespace).
+            properties:
+              accountRef:
+                description: |-
+                  AccountRef references the Zone whose credentialsRef + accountID the
+                  controller uses to talk to Cloudflare. Monitors are account-scoped in
+                  CF, so we reuse Zone as the credential and account carrier rather than
+                  introducing a separate Account CRD. The Zone's accountID (looked up
+                  from the CF API on Zone reconcile) provides the account ID for the
+                  monitor's CF path.
+                properties:
+                  name:
+                    description: Name of the Zone resource
+                    type: string
+                  namespace:
+                    description: Namespace of the Zone resource. Defaults to the operator
+                      namespace if omitted.
+                    type: string
+                required:
+                - name
+                type: object
+              allowInsecure:
+                description: AllowInsecure skips TLS certificate validation. Only
+                  valid for https.
+                type: boolean
+              consecutiveDown:
+                description: |-
+                  ConsecutiveDown is the number of consecutive unhealthy probes before
+                  a healthy origin is marked unhealthy. 0 means "use CF default".
+                format: int32
+                maximum: 10
+                minimum: 0
+                type: integer
+              consecutiveUp:
+                description: |-
+                  ConsecutiveUp is the number of consecutive healthy probes before an
+                  unhealthy origin is marked healthy again. 0 means "use CF default".
+                format: int32
+                maximum: 10
+                minimum: 0
+                type: integer
+              deletePolicy:
+                description: |-
+                  DeletePolicy overrides the operator-wide --delete-policy for this CR.
+                  See CustomHostname docs for semantics.
+                enum:
+                - always
+                - own-only
+                - never
+                type: string
+              description:
+                description: Description is a human-readable description shown in
+                  the CF dashboard.
+                maxLength: 1024
+                type: string
+              expectedBody:
+                description: |-
+                  ExpectedBody is a case-insensitive substring that must appear in the
+                  response body for the origin to be considered healthy. Only valid for
+                  http/https.
+                maxLength: 8192
+                type: string
+              expectedCodes:
+                description: |-
+                  ExpectedCodes is the HTTP response code or range considered healthy
+                  (e.g. "200", "2xx", "200-299"). Only valid for http/https.
+                maxLength: 32
+                type: string
+              followRedirects:
+                description: |-
+                  FollowRedirects controls whether the probe follows HTTP redirects.
+                  Only valid for http/https.
+                type: boolean
+              header:
+                additionalProperties:
+                  items:
+                    type: string
+                  type: array
+                description: |-
+                  Header is the set of request headers to send with the probe. The Host
+                  header is commonly needed when probing shared origins.
+                type: object
+              interval:
+                default: 60
+                description: |-
+                  Interval is the seconds between health-check probes. Shorter intervals
+                  detect failures faster but add load to origins. CF minimum is 15s;
+                  account-plan-dependent.
+                format: int32
+                maximum: 3600
+                minimum: 15
+                type: integer
+              managementPolicy:
+                description: |-
+                  ManagementPolicy overrides the operator-wide --management-policy for
+                  this CR. See CustomHostname docs for semantics.
+                enum:
+                - manage
+                - create
+                - observe
+                type: string
+              method:
+                description: |-
+                  Method is the HTTP method (for http/https types) or "connection_established"
+                  for tcp. Defaults to "GET" for http/https on the CF side if omitted.
+                maxLength: 32
+                type: string
+              path:
+                description: Path is the endpoint path to probe. Only valid for http/https
+                  types.
+                maxLength: 2048
+                type: string
+              port:
+                description: |-
+                  Port is the port to connect to. Only required for tcp/udp/smtp.
+                  For http/https, only set to override the protocol default (80/443).
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
+              probeZone:
+                description: |-
+                  ProbeZone sets the zone to emulate when probing. If set, the probe
+                  sends a Host header for this zone; useful when origins serve multiple
+                  hostnames. Only valid for http/https.
+                maxLength: 253
+                type: string
+              retries:
+                default: 2
+                description: |-
+                  Retries is the number of immediate retries before marking the origin
+                  unhealthy on a single interval. Total retries per interval = Retries + 1.
+                format: int32
+                maximum: 5
+                minimum: 0
+                type: integer
+              timeout:
+                default: 5
+                description: |-
+                  Timeout is seconds to wait for a probe response before considering the
+                  origin unhealthy for that attempt.
+                format: int32
+                maximum: 10
+                minimum: 1
+                type: integer
+              type:
+                default: https
+                description: Type is the protocol to use for the health check.
+                enum:
+                - http
+                - https
+                - tcp
+                - udp_icmp
+                - icmp_ping
+                - smtp
+                type: string
+            required:
+            - accountRef
+            type: object
+          status:
+            description: LoadBalancerMonitorStatus is the observed state of a LoadBalancerMonitor.
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              consecutiveErrors:
+                description: |-
+                  ConsecutiveErrors is the number of consecutive reconcile failures.
+                  Resets to 0 on the next successful reconcile.
+                format: int32
+                type: integer
+              createCount:
+                description: |-
+                  CreateCount tracks how many times this monitor has been (re)created in
+                  Cloudflare. Values greater than 1 indicate external deletions occurred
+                  (e.g. via CF dashboard).
+                format: int32
+                type: integer
+              id:
+                description: |-
+                  ID is the Cloudflare-assigned monitor ID, used for updates and deletes.
+                  Also exported to pool controllers via the poolMonitorField index so a
+                  LoadBalancerPool.spec.monitorRef can resolve to a CF monitor ID without
+                  an extra CF API round-trip.
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

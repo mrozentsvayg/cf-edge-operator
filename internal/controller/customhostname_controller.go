@@ -667,7 +667,7 @@ func (r *CustomHostnameReconciler) buildCloudflareClient(ctx context.Context, ch
 	}
 	key := zone.Spec.CredentialsRef.Key
 	if key == "" {
-		key = "apiToken"
+		key = defaultAPITokenKey
 	}
 	var secret corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{Name: zone.Spec.CredentialsRef.Name, Namespace: zone.Namespace}, &secret); err != nil {

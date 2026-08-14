@@ -15,8 +15,11 @@ import (
 // Cloudflare API label values for cfAPICallDuration and cfAPIErrorsByCode.
 // Shared strings referenced in >1 place; single-use strings stay as literals.
 const (
-	cfResourceCustomHostname = "customhostname"
-	cfResourceZone           = "zone"
+	cfResourceCustomHostname   = "customhostname"
+	cfResourceZone             = "zone"
+	cfResourceLoadBalancerMon  = "loadbalancermonitor"
+	cfResourceLoadBalancerPool = "loadbalancerpool"
+	cfResourceLoadBalancer     = "loadbalancer"
 
 	cfOpGet      = "get"
 	cfOpList     = "list"
@@ -163,6 +166,21 @@ func init() {
 		cfAPIRetriesTotal.WithLabelValues(cfResourceCustomHostname, op)
 	}
 	cfAPIRetriesTotal.WithLabelValues(cfResourceZone, cfOpGet)
+
+	// LoadBalancer family (monitor, pool, loadbalancer) share the same
+	// operation set as customhostname. Pre-initialize all series so
+	// dashboards can plot from t=0 without a "no data" gap.
+	for _, res := range []string{cfResourceLoadBalancerMon, cfResourceLoadBalancerPool, cfResourceLoadBalancer} {
+		for _, op := range []string{cfOpList, cfOpGet, cfOpCreate, cfOpUpdate, cfOpDelete} {
+			cfAPICallDuration.WithLabelValues(res, op)
+		}
+		for _, op := range []string{cfOpAdopt, cfOpCreate, cfOpRecreate, cfOpUpdate, cfOpDelete} {
+			operationsTotal.WithLabelValues(res, op)
+		}
+		for _, op := range []string{cfOpGet, cfOpCreate, cfOpUpdate, cfOpDelete} {
+			cfAPIRetriesTotal.WithLabelValues(res, op)
+		}
+	}
 }
 
 // recordCFCall records duration and any error for a Cloudflare API call.
