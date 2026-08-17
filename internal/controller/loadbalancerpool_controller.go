@@ -23,7 +23,6 @@ import (
 	"strconv"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -43,8 +42,7 @@ import (
 	"github.com/cloudflare/cloudflare-go/v6/load_balancers"
 	"github.com/cloudflare/cloudflare-go/v6/option"
 
-	domainsv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/domains/v1beta1"
-	saasv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1beta1"
+	lbv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/loadbalancing/v1beta1"
 )
 
 const (
@@ -76,15 +74,17 @@ type LoadBalancerPoolReconciler struct {
 	CFBaseURL         string
 }
 
-// +kubebuilder:rbac:groups=saas.cf-edge.io,resources=loadbalancerpools,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=saas.cf-edge.io,resources=loadbalancerpools/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=saas.cf-edge.io,resources=loadbalancerpools/finalizers,verbs=update
-// +kubebuilder:rbac:groups=saas.cf-edge.io,resources=loadbalancermonitors,verbs=get;list;watch
+// +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=loadbalancerpools,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=loadbalancerpools/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=loadbalancerpools/finalizers,verbs=update
+// +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=loadbalancermonitors,verbs=get;list;watch
+// +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=accounts,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 func (r *LoadBalancerPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	var pool saasv1beta1.LoadBalancerPool
+	var pool lbv1beta1.LoadBalancerPool
 	if err := r.Get(ctx, req.NamespacedName, &pool); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -155,7 +155,7 @@ func (r *LoadBalancerPoolReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	return r.reconcileCloudflareState(ctx, ai, &pool, monitorID)
 }
 
-func (r *LoadBalancerPoolReconciler) reconcileCloudflareState(ctx context.Context, ai *accountInfo, pool *saasv1beta1.LoadBalancerPool, monitorID string) (ctrl.Result, error) {
+func (r *LoadBalancerPoolReconciler) reconcileCloudflareState(ctx context.Context, ai *accountInfo, pool *lbv1beta1.LoadBalancerPool, monitorID string) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	mgmt := effectiveManagementPolicy(pool.Spec.ManagementPolicy, r.ManagementPolicy)
 
@@ -212,7 +212,7 @@ func (r *LoadBalancerPoolReconciler) reconcileCloudflareState(ctx context.Contex
 	return r.markReady(ctx, pool)
 }
 
-func (r *LoadBalancerPoolReconciler) handleCreate(ctx context.Context, ai *accountInfo, pool *saasv1beta1.LoadBalancerPool, monitorID string) (ctrl.Result, error) {
+func (r *LoadBalancerPoolReconciler) handleCreate(ctx context.Context, ai *accountInfo, pool *lbv1beta1.LoadBalancerPool, monitorID string) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	if r.DryRun {
@@ -251,7 +251,7 @@ func (r *LoadBalancerPoolReconciler) handleCreate(ctx context.Context, ai *accou
 	return r.markReady(ctx, pool)
 }
 
-func (r *LoadBalancerPoolReconciler) editPool(ctx context.Context, ai *accountInfo, pool *saasv1beta1.LoadBalancerPool, cfID, monitorID string) (*load_balancers.Pool, error) {
+func (r *LoadBalancerPoolReconciler) editPool(ctx context.Context, ai *accountInfo, pool *lbv1beta1.LoadBalancerPool, cfID, monitorID string) (*load_balancers.Pool, error) {
 	log := logf.FromContext(ctx)
 	params := buildPoolUpdateParams(ai.AccountID, pool, monitorID)
 	var resp *load_balancers.Pool
@@ -272,7 +272,7 @@ func (r *LoadBalancerPoolReconciler) editPool(ctx context.Context, ai *accountIn
 	return resp, nil
 }
 
-func (r *LoadBalancerPoolReconciler) handleDelete(ctx context.Context, ai *accountInfo, pool *saasv1beta1.LoadBalancerPool) (ctrl.Result, error) {
+func (r *LoadBalancerPoolReconciler) handleDelete(ctx context.Context, ai *accountInfo, pool *lbv1beta1.LoadBalancerPool) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	if r.DryRun {
@@ -333,7 +333,7 @@ func (r *LoadBalancerPoolReconciler) handleDelete(ctx context.Context, ai *accou
 // findPoolByCRName lists pools in the account and returns the one whose
 // name matches this CR. Unlike Monitors, Pools have a first-class Name
 // field in the CF API -- we key off that directly (CR name == CF pool name).
-func (r *LoadBalancerPoolReconciler) findPoolByCRName(ctx context.Context, ai *accountInfo, pool *saasv1beta1.LoadBalancerPool) (*load_balancers.Pool, error) {
+func (r *LoadBalancerPoolReconciler) findPoolByCRName(ctx context.Context, ai *accountInfo, pool *lbv1beta1.LoadBalancerPool) (*load_balancers.Pool, error) {
 	start := time.Now()
 	pager := ai.Client.LoadBalancers.Pools.ListAutoPaging(ctx, load_balancers.PoolListParams{
 		AccountID: cloudflare.F(ai.AccountID),
@@ -358,7 +358,7 @@ func (r *LoadBalancerPoolReconciler) findPoolByCRName(ctx context.Context, ai *a
 // status.ID. Returns "" if MonitorRef is unset (pool has no monitor).
 // Returns "" + nil error if the monitor CR exists but isn't ready yet
 // (status.ID empty) -- the caller treats this as "requeue and wait".
-func (r *LoadBalancerPoolReconciler) resolveMonitorID(ctx context.Context, pool *saasv1beta1.LoadBalancerPool) (string, error) {
+func (r *LoadBalancerPoolReconciler) resolveMonitorID(ctx context.Context, pool *lbv1beta1.LoadBalancerPool) (string, error) {
 	if pool.Spec.MonitorRef == nil {
 		return "", nil
 	}
@@ -366,65 +366,28 @@ func (r *LoadBalancerPoolReconciler) resolveMonitorID(ctx context.Context, pool 
 	if ns == "" {
 		ns = pool.Namespace
 	}
-	var mon saasv1beta1.LoadBalancerMonitor
+	var mon lbv1beta1.LoadBalancerMonitor
 	if err := r.Get(ctx, types.NamespacedName{Name: pool.Spec.MonitorRef.Name, Namespace: ns}, &mon); err != nil {
 		return "", fmt.Errorf("resolve monitor %q in ns %q: %w", pool.Spec.MonitorRef.Name, ns, err)
 	}
 	return mon.Status.ID, nil
 }
 
-func (r *LoadBalancerPoolReconciler) buildAccountClient(ctx context.Context, pool *saasv1beta1.LoadBalancerPool) (*accountInfo, error) {
-	zoneNS := pool.Spec.AccountRef.Namespace
-	if zoneNS == "" {
-		zoneNS = r.OperatorNamespace
-	}
-	var zone domainsv1beta1.Zone
-	if err := r.Get(ctx, types.NamespacedName{Name: pool.Spec.AccountRef.Name, Namespace: zoneNS}, &zone); err != nil {
-		return nil, fmt.Errorf("zone %q not found: %w", pool.Spec.AccountRef.Name, err)
-	}
-	if zone.Status.AccountID == "" {
-		return nil, fmt.Errorf("zone %q status.accountID not yet populated; wait for zone reconcile", zone.Name)
-	}
-	key := zone.Spec.CredentialsRef.Key
-	if key == "" {
-		key = defaultAPITokenKey
-	}
-	var secret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Name: zone.Spec.CredentialsRef.Name, Namespace: zone.Namespace}, &secret); err != nil {
-		return nil, fmt.Errorf("secret %q not found: %w", zone.Spec.CredentialsRef.Name, err)
-	}
-	token, ok := secret.Data[key]
-	if !ok {
-		return nil, fmt.Errorf("key %q not found in secret %q", key, zone.Spec.CredentialsRef.Name)
-	}
-	opts := []option.RequestOption{
-		option.WithAPIToken(string(token)),
-		option.WithMaxRetries(0),
-	}
-	if r.CFAPITimeout > 0 {
-		opts = append(opts, option.WithRequestTimeout(r.CFAPITimeout))
-	}
-	if r.CFBaseURL != "" {
-		opts = append(opts, option.WithBaseURL(r.CFBaseURL))
-	}
-	return &accountInfo{
-		Client:    cloudflare.NewClient(opts...),
-		AccountID: zone.Status.AccountID,
-		ZoneCR:    zone.Name,
-	}, nil
+func (r *LoadBalancerPoolReconciler) buildAccountClient(ctx context.Context, pool *lbv1beta1.LoadBalancerPool) (*accountInfo, error) {
+	return buildAccountClientFromRef(ctx, r.Client, r.OperatorNamespace, pool.Spec.AccountRef, r.CFAPITimeout, r.CFBaseURL)
 }
 
-func (r *LoadBalancerPoolReconciler) markReady(ctx context.Context, pool *saasv1beta1.LoadBalancerPool) (ctrl.Result, error) {
+func (r *LoadBalancerPoolReconciler) markReady(ctx context.Context, pool *lbv1beta1.LoadBalancerPool) (ctrl.Result, error) {
 	pool.Status.ConsecutiveErrors = 0
 	return ctrl.Result{}, r.setCondition(ctx, pool, metav1.ConditionTrue, "Reconciled", "Pool is synchronized with Cloudflare")
 }
 
-func (r *LoadBalancerPoolReconciler) setError(ctx context.Context, pool *saasv1beta1.LoadBalancerPool, reason, message string) error {
+func (r *LoadBalancerPoolReconciler) setError(ctx context.Context, pool *lbv1beta1.LoadBalancerPool, reason, message string) error {
 	pool.Status.ConsecutiveErrors++
 	return r.setCondition(ctx, pool, metav1.ConditionFalse, reason, message)
 }
 
-func (r *LoadBalancerPoolReconciler) setCondition(ctx context.Context, pool *saasv1beta1.LoadBalancerPool, status metav1.ConditionStatus, reason, message string) error {
+func (r *LoadBalancerPoolReconciler) setCondition(ctx context.Context, pool *lbv1beta1.LoadBalancerPool, status metav1.ConditionStatus, reason, message string) error {
 	apimeta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
 		Type:               conditionReady,
 		Status:             status,
@@ -451,9 +414,9 @@ func (r *LoadBalancerPoolReconciler) paceWrite() {
 // wake up automatically when the monitor's Status.ID lands.
 func (r *LoadBalancerPoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&saasv1beta1.LoadBalancerPool{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&lbv1beta1.LoadBalancerPool{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(
-			&saasv1beta1.LoadBalancerMonitor{},
+			&lbv1beta1.LoadBalancerMonitor{},
 			handler.EnqueueRequestsFromMapFunc(r.mapMonitorToPools),
 		).
 		Named("loadbalancerpool").
@@ -471,11 +434,11 @@ func (r *LoadBalancerPoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // change so pools blocked on WaitingForMonitor pick up the monitor's new
 // Status.ID as soon as it appears.
 func (r *LoadBalancerPoolReconciler) mapMonitorToPools(ctx context.Context, obj client.Object) []reconcile.Request {
-	mon, ok := obj.(*saasv1beta1.LoadBalancerMonitor)
+	mon, ok := obj.(*lbv1beta1.LoadBalancerMonitor)
 	if !ok {
 		return nil
 	}
-	var pools saasv1beta1.LoadBalancerPoolList
+	var pools lbv1beta1.LoadBalancerPoolList
 	// List across the whole cluster; the monitor could be referenced from
 	// any namespace. This is called once per monitor-change event so the
 	// wide list scope isn't a hot path.
@@ -516,7 +479,7 @@ func poolHealthyFromCF(cf *load_balancers.Pool) bool {
 }
 
 // buildOriginParams translates each origin from the CRD into CF's OriginParam.
-func buildOriginParams(origins []saasv1beta1.LoadBalancerPoolOrigin) []load_balancers.OriginParam {
+func buildOriginParams(origins []lbv1beta1.LoadBalancerPoolOrigin) []load_balancers.OriginParam {
 	out := make([]load_balancers.OriginParam, 0, len(origins))
 	for _, o := range origins {
 		op := load_balancers.OriginParam{
@@ -543,7 +506,7 @@ func buildOriginParams(origins []saasv1beta1.LoadBalancerPoolOrigin) []load_bala
 	return out
 }
 
-func buildPoolNewParams(accountID string, pool *saasv1beta1.LoadBalancerPool, monitorID string) load_balancers.PoolNewParams {
+func buildPoolNewParams(accountID string, pool *lbv1beta1.LoadBalancerPool, monitorID string) load_balancers.PoolNewParams {
 	p := load_balancers.PoolNewParams{
 		AccountID: cloudflare.F(accountID),
 		Name:      cloudflare.F(pool.Name),
@@ -577,7 +540,7 @@ func buildPoolNewParams(accountID string, pool *saasv1beta1.LoadBalancerPool, mo
 	return p
 }
 
-func buildPoolUpdateParams(accountID string, pool *saasv1beta1.LoadBalancerPool, monitorID string) load_balancers.PoolUpdateParams {
+func buildPoolUpdateParams(accountID string, pool *lbv1beta1.LoadBalancerPool, monitorID string) load_balancers.PoolUpdateParams {
 	p := load_balancers.PoolUpdateParams{
 		AccountID: cloudflare.F(accountID),
 		Name:      cloudflare.F(pool.Name),
@@ -613,7 +576,7 @@ func buildPoolUpdateParams(accountID string, pool *saasv1beta1.LoadBalancerPool,
 
 // poolDrifted compares the CF pool state to the CRD spec and reports true
 // if the two diverge on any operator-managed field.
-func poolDrifted(cf *load_balancers.Pool, pool *saasv1beta1.LoadBalancerPool, monitorID string) bool {
+func poolDrifted(cf *load_balancers.Pool, pool *lbv1beta1.LoadBalancerPool, monitorID string) bool {
 	if cf.Name != pool.Name {
 		return true
 	}
@@ -647,7 +610,7 @@ func poolDrifted(cf *load_balancers.Pool, pool *saasv1beta1.LoadBalancerPool, mo
 
 // originsDrifted returns true if the observed CF origins differ from the
 // CRD spec on any field the operator manages.
-func originsDrifted(cf []load_balancers.Origin, spec []saasv1beta1.LoadBalancerPoolOrigin) bool {
+func originsDrifted(cf []load_balancers.Origin, spec []lbv1beta1.LoadBalancerPoolOrigin) bool {
 	if len(cf) != len(spec) {
 		return true
 	}

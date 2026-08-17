@@ -35,6 +35,49 @@ rules:
   - patch
   - update
 - apiGroups:
+  - loadbalancing.cf-edge.io
+  resources:
+  - accounts
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - loadbalancing.cf-edge.io
+  resources:
+  - accounts/status
+  - loadbalancermonitors/status
+  - loadbalancerpools/status
+  - loadbalancers/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - loadbalancing.cf-edge.io
+  resources:
+  - loadbalancermonitors
+  - loadbalancerpools
+  - loadbalancers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - loadbalancing.cf-edge.io
+  resources:
+  - loadbalancermonitors/finalizers
+  - loadbalancerpools/finalizers
+  - loadbalancers/finalizers
+  verbs:
+  - update
+- apiGroups:
   - saas.cf-edge.io
   resources:
   - customhostnames
@@ -48,33 +91,13 @@ rules:
   - saas.cf-edge.io
   resources:
   - customhostnames/finalizers
-  - loadbalancermonitors/finalizers
-  - loadbalancerpools/finalizers
-  - loadbalancers/finalizers
   verbs:
   - update
 - apiGroups:
   - saas.cf-edge.io
   resources:
   - customhostnames/status
-  - loadbalancermonitors/status
-  - loadbalancerpools/status
-  - loadbalancers/status
   verbs:
   - get
   - patch
   - update
-- apiGroups:
-  - saas.cf-edge.io
-  resources:
-  - loadbalancermonitors
-  - loadbalancerpools
-  - loadbalancers
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch

@@ -38,6 +38,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	domainsv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/domains/v1beta1"
+	loadbalancingv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/loadbalancing/v1beta1"
 	saasv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1beta1"
 	"github.com/mrozentsvayg/cf-edge-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
@@ -53,6 +54,7 @@ func init() {
 
 	utilruntime.Must(domainsv1beta1.AddToScheme(scheme))
 	utilruntime.Must(saasv1beta1.AddToScheme(scheme))
+	utilruntime.Must(loadbalancingv1beta1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -379,6 +381,16 @@ func main() {
 		CFAPIBulkMaxRetries:  cfAPIBulkMaxRetries,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Zone")
+		os.Exit(1)
+	}
+	if err := (&controller.AccountReconciler{
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		OperatorNamespace: operatorNamespace,
+		CFAPITimeout:      cfAPITimeout,
+		CFAPIMaxRetries:   cfAPIMaxRetries,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "Account")
 		os.Exit(1)
 	}
 	if err := (&controller.LoadBalancerMonitorReconciler{

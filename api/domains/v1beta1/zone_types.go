@@ -55,14 +55,6 @@ type ZoneStatus struct {
 	// +optional
 	Name string `json:"name,omitempty"`
 
-	// AccountID is the Cloudflare account that owns this zone, populated from
-	// the API on zone init. Downstream account-scoped resources (LoadBalancer
-	// Monitors and Pools) reference a Zone as their AccountRef and read this
-	// field to resolve the CF account for their API calls, avoiding a separate
-	// Account CRD or an ambient --account-id operator flag.
-	// +optional
-	AccountID string `json:"accountID,omitempty"`
-
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -72,7 +64,6 @@ type ZoneStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Zone",type=string,JSONPath=`.status.name`
-// +kubebuilder:printcolumn:name="Account",type=string,JSONPath=`.status.accountID`,priority=1
 // +kubebuilder:printcolumn:name="Initialized",type=string,JSONPath=`.status.conditions[?(@.type=="Initialized")].status`
 
 // Zone is the Schema for the zones API

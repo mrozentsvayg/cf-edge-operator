@@ -29,14 +29,10 @@ import (
 // CF-side identity, so charts must ensure names are unique across the fleet
 // (e.g. by prefixing with the service / namespace).
 type LoadBalancerMonitorSpec struct {
-	// AccountRef references the Zone whose credentialsRef + accountID the
-	// controller uses to talk to Cloudflare. Monitors are account-scoped in
-	// CF, so we reuse Zone as the credential and account carrier rather than
-	// introducing a separate Account CRD. The Zone's accountID (looked up
-	// from the CF API on Zone reconcile) provides the account ID for the
-	// monitor's CF path.
+	// AccountRef references the Account supplying the Cloudflare account ID
+	// and API credentials. Monitors are account-scoped in Cloudflare.
 	// +kubebuilder:validation:Required
-	AccountRef ZoneRef `json:"accountRef"`
+	AccountRef AccountRef `json:"accountRef"`
 
 	// Type is the protocol to use for the health check.
 	// +kubebuilder:validation:Enum=http;https;tcp;udp_icmp;icmp_ping;smtp

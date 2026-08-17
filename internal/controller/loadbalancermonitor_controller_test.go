@@ -17,7 +17,7 @@ import (
 
 	"github.com/cloudflare/cloudflare-go/v6/load_balancers"
 
-	saasv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1beta1"
+	lbv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/loadbalancing/v1beta1"
 )
 
 // Focused unit tests for the pure functions in loadbalancermonitor_controller.
@@ -26,15 +26,15 @@ import (
 // detection, param translation) so regressions surface at `go test` speed
 // without needing a running control plane.
 
-func newMonitorCR(name, ns string, spec saasv1beta1.LoadBalancerMonitorSpec) *saasv1beta1.LoadBalancerMonitor {
-	return &saasv1beta1.LoadBalancerMonitor{
+func newMonitorCR(name, ns string, spec lbv1beta1.LoadBalancerMonitorSpec) *lbv1beta1.LoadBalancerMonitor {
+	return &lbv1beta1.LoadBalancerMonitor{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 		Spec:       spec,
 	}
 }
 
 func TestMonitorMarker_UsesNamespaceAndName(t *testing.T) {
-	mon := newMonitorCR("http-health", "ns", saasv1beta1.LoadBalancerMonitorSpec{})
+	mon := newMonitorCR("http-health", "ns", lbv1beta1.LoadBalancerMonitorSpec{})
 	got := monitorMarker(mon)
 	want := "[cf-edge-operator:ns/http-health]"
 	if got != want {
@@ -56,7 +56,7 @@ func TestBuildMonitorDescription_PreservesUserPrefix(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			mon := newMonitorCR("name", "ns", saasv1beta1.LoadBalancerMonitorSpec{
+			mon := newMonitorCR("name", "ns", lbv1beta1.LoadBalancerMonitorSpec{
 				Description: tc.userDsc,
 			})
 			if got := buildMonitorDescription(mon); got != tc.want {
@@ -107,7 +107,7 @@ func TestMonitorDrifted_SpecFieldsCompareOnlyWhenSet(t *testing.T) {
 		ExpectedCodes: "200",
 		Interval:      60,
 	}
-	mon := newMonitorCR("m", "ns", saasv1beta1.LoadBalancerMonitorSpec{
+	mon := newMonitorCR("m", "ns", lbv1beta1.LoadBalancerMonitorSpec{
 		// Only method is managed; all other CR-side spec fields are zero.
 		Method: "GET",
 	})
@@ -125,7 +125,7 @@ func TestMonitorDrifted_SpecFieldsCompareOnlyWhenSet(t *testing.T) {
 }
 
 func TestMonitorDrifted_MarkerLossIsAlwaysDrift(t *testing.T) {
-	mon := newMonitorCR("m", "ns", saasv1beta1.LoadBalancerMonitorSpec{})
+	mon := newMonitorCR("m", "ns", lbv1beta1.LoadBalancerMonitorSpec{})
 	cf := &load_balancers.Monitor{
 		Description: "user edited via dashboard", // marker stripped
 	}
@@ -138,7 +138,7 @@ func TestBuildMonitorNewParams_OnlyEmitsSetFields(t *testing.T) {
 	// The CF SDK's param.Field distinguishes "set" from "not set". A field
 	// left unset omits from the JSON body, which is what we want when the
 	// CR spec field is zero -- CF applies its own defaults.
-	mon := newMonitorCR("m", "ns", saasv1beta1.LoadBalancerMonitorSpec{
+	mon := newMonitorCR("m", "ns", lbv1beta1.LoadBalancerMonitorSpec{
 		Method: "POST",
 		Path:   "/",
 	})
@@ -160,7 +160,7 @@ func TestBuildMonitorNewParams_OnlyEmitsSetFields(t *testing.T) {
 }
 
 func TestBuildMonitorNewParams_HeaderIsPreserved(t *testing.T) {
-	mon := newMonitorCR("m", "ns", saasv1beta1.LoadBalancerMonitorSpec{
+	mon := newMonitorCR("m", "ns", lbv1beta1.LoadBalancerMonitorSpec{
 		Header: map[string][]string{
 			"Content-Type": {"application/json"},
 			"Accept":       {"application/json"},

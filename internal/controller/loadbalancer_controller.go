@@ -25,6 +25,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -45,7 +46,7 @@ import (
 	"github.com/cloudflare/cloudflare-go/v6/option"
 
 	domainsv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/domains/v1beta1"
-	saasv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1beta1"
+	lbv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/loadbalancing/v1beta1"
 )
 
 const (
@@ -65,25 +66,14 @@ const (
 // account-scoped; the LB's DefaultPoolRefs / FallbackPoolRef / RegionPools
 // etc. reference LoadBalancerPool CRs by name.
 //
-// Pool-name resolution has two modes:
-//
-//  1. Local CR present: look up the LoadBalancerPool CR (same-cluster) and
-//     read its Status.ID. Fast, no CF API round-trip.
-//  2. Cross-cluster (peer-region) pool: local CR is absent. Fall back to a
-//     CF-side pool-list-by-name lookup in the account.
-//
-// This dual-mode resolution is what enables the multi-region pattern: each
-// region's cluster owns its own LoadBalancerPool CR, and the parent-region
-// cluster owns the LoadBalancer that stitches them together.
-//
-// If a referenced pool can't be resolved anywhere, behavior depends on
-// spec.minimumPools:
-//   - unset (nil): fail-hard. The LB reconcile errors and requeues; the CF
-//     LB isn't created until all pools resolve.
-//   - set to N: partial. The LB is reconciled with whatever pools resolve,
-//     provided at least N of the total refs resolve. Missing pools are
-//     recorded on status.unresolvedPoolRefs; they get added on the next
-//     reconcile once the corresponding pool appears in CF.
+// All pools are managed by this operator, so every pool ref resolves from a
+// local LoadBalancerPool CR (read its Status.ID). Resolution is best-effort:
+// a ref whose CR is absent or not yet provisioned is dropped from the CF LB
+// config and recorded on status for observability, so a single unready pool
+// doesn't block the whole endpoint. The LB->Pool watch re-triggers the LB as
+// each pool becomes ready, so it converges to the full set. Cloudflare's hard
+// minimum -- a resolvable fallback pool plus at least one default pool -- is
+// still required before the LB is written.
 type LoadBalancerReconciler struct {
 	client.Client
 	Scheme            *runtime.Scheme
@@ -98,15 +88,17 @@ type LoadBalancerReconciler struct {
 	CFBaseURL         string
 }
 
-// +kubebuilder:rbac:groups=saas.cf-edge.io,resources=loadbalancers,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=saas.cf-edge.io,resources=loadbalancers/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=saas.cf-edge.io,resources=loadbalancers/finalizers,verbs=update
-// +kubebuilder:rbac:groups=saas.cf-edge.io,resources=loadbalancerpools,verbs=get;list;watch
+// +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=loadbalancers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=loadbalancers/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=loadbalancers/finalizers,verbs=update
+// +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=loadbalancerpools,verbs=get;list;watch
+// +kubebuilder:rbac:groups=domains.cf-edge.io,resources=zones,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 func (r *LoadBalancerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	var lb saasv1beta1.LoadBalancer
+	var lb lbv1beta1.LoadBalancer
 	if err := r.Get(ctx, req.NamespacedName, &lb); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -157,29 +149,22 @@ func (r *LoadBalancerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Resolve all referenced pools before touching CF. Failed resolutions
-	// are collected on Status.UnresolvedPoolRefs; the fail-hard vs partial
-	// decision keys off spec.minimumPools.
-	resolved, err := r.resolveAllPools(ctx, zi, &lb)
+	// Resolve referenced pools from local Pool CRs (best-effort: unresolved
+	// refs are recorded and dropped, not fatal). The LB->Pool watch re-fires
+	// this reconcile as each pool becomes ready.
+	resolved, err := r.resolveAllPools(ctx, &lb)
 	if err != nil {
 		return ctrl.Result{}, r.setError(ctx, &lb, "PoolResolutionError", err.Error())
 	}
 	lb.Status.ResolvedDefaultPoolIDs = resolved.defaultIDs
 	lb.Status.ResolvedFallbackPoolID = resolved.fallbackID
-	lb.Status.UnresolvedPoolRefs = resolved.unresolved
 
-	if !resolved.satisfiesMinimum(lb.Spec.MinimumPools) {
-		msg := fmt.Sprintf("Unresolved pool refs: %v; minimumPools=%v not met",
-			resolved.unresolved, describeMinimum(lb.Spec.MinimumPools))
-		return ctrl.Result{}, r.setError(ctx, &lb, "WaitingForPools", msg)
-	}
-
-	// CF requires a non-empty fallback pool independent of MinimumPools.
-	// A partial-mode resolution may satisfy MinimumPools with only default
-	// pools resolving while the fallback ref is still unresolved; guard
-	// against calling CF with an empty FallbackPool in that case.
+	// CF requires a non-empty fallback pool (and at least one default pool,
+	// which resolveAllPools guarantees by promoting the fallback when every
+	// default ref is unresolved). Until the fallback resolves there is no
+	// valid LB to write, so wait for it.
 	if resolved.fallbackID == "" {
-		msg := fmt.Sprintf("Fallback pool %q not yet resolved (required by CF)",
+		msg := fmt.Sprintf("Fallback pool %q not yet resolved (required by Cloudflare)",
 			lb.Spec.FallbackPoolRef.Name)
 		return ctrl.Result{}, r.setError(ctx, &lb, "WaitingForFallbackPool", msg)
 	}
@@ -187,7 +172,7 @@ func (r *LoadBalancerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	return r.reconcileCloudflareState(ctx, zi, &lb, resolved)
 }
 
-func (r *LoadBalancerReconciler) reconcileCloudflareState(ctx context.Context, zi *zoneInfo, lb *saasv1beta1.LoadBalancer, resolved *resolvedPools) (ctrl.Result, error) {
+func (r *LoadBalancerReconciler) reconcileCloudflareState(ctx context.Context, zi *zoneInfo, lb *lbv1beta1.LoadBalancer, resolved *resolvedPools) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	mgmt := effectiveManagementPolicy(lb.Spec.ManagementPolicy, r.ManagementPolicy)
 
@@ -243,7 +228,7 @@ func (r *LoadBalancerReconciler) reconcileCloudflareState(ctx context.Context, z
 	return r.markReady(ctx, lb, resolved)
 }
 
-func (r *LoadBalancerReconciler) handleCreate(ctx context.Context, zi *zoneInfo, lb *saasv1beta1.LoadBalancer, resolved *resolvedPools) (ctrl.Result, error) {
+func (r *LoadBalancerReconciler) handleCreate(ctx context.Context, zi *zoneInfo, lb *lbv1beta1.LoadBalancer, resolved *resolvedPools) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	if r.DryRun {
@@ -281,7 +266,7 @@ func (r *LoadBalancerReconciler) handleCreate(ctx context.Context, zi *zoneInfo,
 	return r.markReady(ctx, lb, resolved)
 }
 
-func (r *LoadBalancerReconciler) editLoadBalancer(ctx context.Context, zi *zoneInfo, lb *saasv1beta1.LoadBalancer, cfID string, resolved *resolvedPools) (*load_balancers.LoadBalancer, error) {
+func (r *LoadBalancerReconciler) editLoadBalancer(ctx context.Context, zi *zoneInfo, lb *lbv1beta1.LoadBalancer, cfID string, resolved *resolvedPools) (*load_balancers.LoadBalancer, error) {
 	log := logf.FromContext(ctx)
 	params := buildLBUpdateParams(zi.ID, lb, resolved)
 	var resp *load_balancers.LoadBalancer
@@ -302,7 +287,7 @@ func (r *LoadBalancerReconciler) editLoadBalancer(ctx context.Context, zi *zoneI
 	return resp, nil
 }
 
-func (r *LoadBalancerReconciler) handleDelete(ctx context.Context, zi *zoneInfo, lb *saasv1beta1.LoadBalancer) (ctrl.Result, error) {
+func (r *LoadBalancerReconciler) handleDelete(ctx context.Context, zi *zoneInfo, lb *lbv1beta1.LoadBalancer) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	if r.DryRun {
@@ -387,7 +372,7 @@ func (r *LoadBalancerReconciler) findLoadBalancerByHostname(ctx context.Context,
 
 // buildZoneClient is the LoadBalancer's analog of the CustomHostname's
 // buildCloudflareClient. Zone-scoped: we only need the CF zone ID + creds.
-func (r *LoadBalancerReconciler) buildZoneClient(ctx context.Context, lb *saasv1beta1.LoadBalancer) (*zoneInfo, error) {
+func (r *LoadBalancerReconciler) buildZoneClient(ctx context.Context, lb *lbv1beta1.LoadBalancer) (*zoneInfo, error) {
 	zoneNS := lb.Spec.ZoneRef.Namespace
 	if zoneNS == "" {
 		zoneNS = r.OperatorNamespace
@@ -426,21 +411,22 @@ func (r *LoadBalancerReconciler) buildZoneClient(ctx context.Context, lb *saasv1
 	}, nil
 }
 
-func (r *LoadBalancerReconciler) markReady(ctx context.Context, lb *saasv1beta1.LoadBalancer, resolved *resolvedPools) (ctrl.Result, error) {
+func (r *LoadBalancerReconciler) markReady(ctx context.Context, lb *lbv1beta1.LoadBalancer, resolved *resolvedPools) (ctrl.Result, error) {
 	lb.Status.ConsecutiveErrors = 0
 	msg := "LoadBalancer is synchronized with Cloudflare"
 	if len(resolved.unresolved) > 0 {
-		msg = fmt.Sprintf("LoadBalancer synchronized in partial mode; %d unresolved pool ref(s)", len(resolved.unresolved))
+		msg = fmt.Sprintf("LoadBalancer synchronized; degraded: %d pool ref(s) unresolved %v",
+			len(resolved.unresolved), resolved.unresolved)
 	}
 	return ctrl.Result{}, r.setCondition(ctx, lb, metav1.ConditionTrue, "Reconciled", msg)
 }
 
-func (r *LoadBalancerReconciler) setError(ctx context.Context, lb *saasv1beta1.LoadBalancer, reason, message string) error {
+func (r *LoadBalancerReconciler) setError(ctx context.Context, lb *lbv1beta1.LoadBalancer, reason, message string) error {
 	lb.Status.ConsecutiveErrors++
 	return r.setCondition(ctx, lb, metav1.ConditionFalse, reason, message)
 }
 
-func (r *LoadBalancerReconciler) setCondition(ctx context.Context, lb *saasv1beta1.LoadBalancer, status metav1.ConditionStatus, reason, message string) error {
+func (r *LoadBalancerReconciler) setCondition(ctx context.Context, lb *lbv1beta1.LoadBalancer, status metav1.ConditionStatus, reason, message string) error {
 	apimeta.SetStatusCondition(&lb.Status.Conditions, metav1.Condition{
 		Type:               conditionReady,
 		Status:             status,
@@ -463,14 +449,13 @@ func (r *LoadBalancerReconciler) paceWrite() {
 // ---- SetupWithManager --------------------------------------------------
 
 // SetupWithManager wires the LB controller and watches LoadBalancerPool
-// status changes so an LB waiting on peer-pool resolution wakes up
-// automatically when a pool comes online (either locally as a CR or
-// eventually in CF via cross-cluster).
+// status changes so an LB waiting on a pool wakes up automatically when that
+// pool's Status.ID lands.
 func (r *LoadBalancerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&saasv1beta1.LoadBalancer{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&lbv1beta1.LoadBalancer{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(
-			&saasv1beta1.LoadBalancerPool{},
+			&lbv1beta1.LoadBalancerPool{},
 			handler.EnqueueRequestsFromMapFunc(r.mapPoolToLBs),
 		).
 		Named("loadbalancer").
@@ -483,17 +468,14 @@ func (r *LoadBalancerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// mapPoolToLBs enqueues every LoadBalancer that references the given pool.
-// Cross-cluster peer pools (referenced-by-name with no local CR) don't
-// trigger this hook (no local event); those LBs re-poll on the standard
-// reconcile interval and rely on the CF-side pool-list lookup during
-// resolution to pick up the peer pool's CF ID.
+// mapPoolToLBs enqueues every LoadBalancer that references the given pool, so
+// an LB waiting on that pool re-reconciles as soon as its Status.ID lands.
 func (r *LoadBalancerReconciler) mapPoolToLBs(ctx context.Context, obj client.Object) []reconcile.Request {
-	pool, ok := obj.(*saasv1beta1.LoadBalancerPool)
+	pool, ok := obj.(*lbv1beta1.LoadBalancerPool)
 	if !ok {
 		return nil
 	}
-	var lbs saasv1beta1.LoadBalancerList
+	var lbs lbv1beta1.LoadBalancerList
 	if err := r.List(ctx, &lbs); err != nil {
 		return nil
 	}
@@ -512,7 +494,7 @@ func (r *LoadBalancerReconciler) mapPoolToLBs(ctx context.Context, obj client.Ob
 // the given pool name. Namespaces on refs are not compared; a pool name
 // collision across namespaces would already require chart-level coordination
 // to avoid CF-side conflicts (see spec doc).
-func lbReferencesPool(lb *saasv1beta1.LoadBalancer, poolName string) bool {
+func lbReferencesPool(lb *lbv1beta1.LoadBalancer, poolName string) bool {
 	if lb.Spec.FallbackPoolRef.Name == poolName {
 		return true
 	}
@@ -548,129 +530,56 @@ func lbReferencesPool(lb *saasv1beta1.LoadBalancer, poolName string) bool {
 // ---- Pool ref resolution ----------------------------------------------
 
 // resolvedPools bundles the outcome of a pool-ref resolution pass across
-// every reference slot on an LB spec. All lists here are CF-side pool IDs
-// (except unresolved, which is the ref names we couldn't resolve).
+// every reference slot on an LB spec. All lists here are CF-side pool IDs;
+// unresolved holds the ref names that had no ready Pool CR (surfaced for
+// observability -- not a hard failure; see resolve).
 type resolvedPools struct {
-	defaultIDs  []string
-	fallbackID  string
-	regionIDs   map[string][]string
-	countryIDs  map[string][]string
-	popIDs      map[string][]string
-	unresolved  []string
-	totalRefs   int
-	resolvedNum int
+	defaultIDs []string
+	fallbackID string
+	regionIDs  map[string][]string
+	countryIDs map[string][]string
+	popIDs     map[string][]string
+	unresolved []string
 }
 
-// satisfiesMinimum returns true when the current resolution satisfies the
-// LB's minimumPools policy. Nil minimumPools => require all (fail-hard).
-func (rp *resolvedPools) satisfiesMinimum(min *int32) bool {
-	if min == nil {
-		return len(rp.unresolved) == 0
-	}
-	return rp.resolvedNum >= int(*min)
-}
-
-// describeMinimum renders the minimumPools policy for status messages.
-func describeMinimum(min *int32) string {
-	if min == nil {
-		return "all (fail-hard)"
-	}
-	return fmt.Sprintf(">=%d (partial)", *min)
-}
-
-// poolResolver resolves LoadBalancerPool references using a two-mode
-// strategy: local same-cluster CR (authoritative) → CF pool-list fallback
-// (peer clusters). The peer list is fetched at most once per resolver
-// instance and cached, so an LB with N unresolved-locally refs makes at
-// most 1 additional CF list call.
+// poolResolver resolves LoadBalancerPool references from local Pool CRs. All
+// pools are managed by this (single-owner) operator, so every ref is a local
+// CR -- there is no cross-cluster / CF-list fallback.
 type poolResolver struct {
 	r  *LoadBalancerReconciler
-	zi *zoneInfo
-	lb *saasv1beta1.LoadBalancer
-
-	peerCache      map[string]string // name -> CF pool ID
-	peerListLoaded bool
-	peerListErr    error
+	lb *lbv1beta1.LoadBalancer
 }
 
-// loadPeerList fetches the CF account's pool list once and caches by name.
-// Safe to call repeatedly; a prior error is remembered and re-surfaced
-// (callers can treat any peer-list load failure as fatal for this
-// reconcile, since it means we can't safely resolve peer-owned refs).
-func (pr *poolResolver) loadPeerList(ctx context.Context) {
-	if pr.peerListLoaded {
-		return
-	}
-	pr.peerListLoaded = true
-	start := time.Now()
-	accountID, err := pr.r.zoneAccountID(ctx, pr.lb)
-	if err != nil {
-		pr.peerListErr = err
-		recordCFCall(cfResourceLoadBalancerPool, cfOpList, start, &pr.peerListErr)
-		return
-	}
-	pager := pr.zi.Client.LoadBalancers.Pools.ListAutoPaging(ctx, load_balancers.PoolListParams{
-		AccountID: cloudflare.F(accountID),
-	})
-	for pager.Next() {
-		p := pager.Current()
-		if _, seen := pr.peerCache[p.Name]; !seen {
-			pr.peerCache[p.Name] = p.ID
-		}
-	}
-	if err := pager.Err(); err != nil {
-		pr.peerListErr = err
-		recordCFCall(cfResourceLoadBalancerPool, cfOpList, start, &pr.peerListErr)
-		return
-	}
-	var noErr error
-	recordCFCall(cfResourceLoadBalancerPool, cfOpList, start, &noErr)
-}
-
-// resolve resolves a single pool reference. Returns (id, err). A nil err
-// with id=="" means the ref couldn't be resolved via either path — the
-// caller decides whether that is fatal or partial. A pre-existing local
-// CR without a Status.ID (not yet reconciled) is treated as unresolved:
-// falling back to CF-list in that case risks adopting a stale orphan
-// pool that was left over from a prior reconcile.
-func (pr *poolResolver) resolve(ctx context.Context, ref saasv1beta1.LoadBalancerPoolRef, out *resolvedPools) (string, error) {
-	out.totalRefs++
+// resolve resolves a single pool ref to its CF pool ID via the local Pool CR.
+// Returns ("", nil) and records the ref in out.unresolved when the CR is
+// absent (NotFound) or not yet provisioned (Status.ID empty) -- best-effort,
+// so the LB is still reconciled with whatever pools are ready. A transient
+// Get error (not NotFound) is propagated so a live pool is never dropped from
+// the LB due to an API blip (shrink-safety).
+func (pr *poolResolver) resolve(ctx context.Context, ref lbv1beta1.LoadBalancerPoolRef, out *resolvedPools) (string, error) {
 	ns := ref.Namespace
 	if ns == "" {
 		ns = pr.lb.Namespace
 	}
-	var pool saasv1beta1.LoadBalancerPool
-	err := pr.r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ns}, &pool)
-	if err == nil {
-		// Local CR exists: it is the authoritative source. If it isn't
-		// ready (no Status.ID yet), treat as unresolved rather than
-		// falling back to CF's list, to avoid adopting an orphan.
-		if pool.Status.ID != "" {
-			out.resolvedNum++
-			return pool.Status.ID, nil
+	var pool lbv1beta1.LoadBalancerPool
+	if err := pr.r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ns}, &pool); err != nil {
+		if apierrors.IsNotFound(err) {
+			out.unresolved = append(out.unresolved, ref.Name)
+			return "", nil
 		}
+		return "", err
+	}
+	if pool.Status.ID == "" {
 		out.unresolved = append(out.unresolved, ref.Name)
 		return "", nil
 	}
-	// Local CR not found → peer-cluster case. Try CF-side list.
-	pr.loadPeerList(ctx)
-	if pr.peerListErr != nil {
-		return "", pr.peerListErr
-	}
-	if id, ok := pr.peerCache[ref.Name]; ok && id != "" {
-		out.resolvedNum++
-		return id, nil
-	}
-	out.unresolved = append(out.unresolved, ref.Name)
-	return "", nil
+	return pool.Status.ID, nil
 }
 
-// resolveRefList resolves an ordered list of refs, preserving positional
-// stability by inserting the empty string ("") for unresolved refs. The
-// caller strips trailing/embedded empties as appropriate for the target
-// CF field (default_pools is required non-empty; region/country/pop
-// pools tolerate an empty list per region).
-func (pr *poolResolver) resolveRefList(ctx context.Context, refs []saasv1beta1.LoadBalancerPoolRef, out *resolvedPools) ([]string, error) {
+// resolveRefList resolves an ordered list of refs, dropping unresolved ones
+// (best-effort). Resolved IDs keep the CR's ref order so successive reconciles
+// produce byte-identical CF payloads for the same input.
+func (pr *poolResolver) resolveRefList(ctx context.Context, refs []lbv1beta1.LoadBalancerPoolRef, out *resolvedPools) ([]string, error) {
 	ids := make([]string, 0, len(refs))
 	for _, ref := range refs {
 		id, err := pr.resolve(ctx, ref, out)
@@ -687,7 +596,7 @@ func (pr *poolResolver) resolveRefList(ctx context.Context, refs []saasv1beta1.L
 // sortedKeys returns the keys of m in ascending order. Used to make CF
 // payload construction deterministic across reconciles so drift checks
 // don't flip-flop.
-func sortedKeys(m map[string][]saasv1beta1.LoadBalancerPoolRef) []string {
+func sortedKeys(m map[string][]lbv1beta1.LoadBalancerPoolRef) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -699,7 +608,7 @@ func sortedKeys(m map[string][]saasv1beta1.LoadBalancerPoolRef) []string {
 // resolveKeyedPools resolves a map of pool refs (region/country/pop),
 // iterating in sorted key order so successive reconciles produce the
 // same output for identical input.
-func (pr *poolResolver) resolveKeyedPools(ctx context.Context, in map[string][]saasv1beta1.LoadBalancerPoolRef, out *resolvedPools) (map[string][]string, error) {
+func (pr *poolResolver) resolveKeyedPools(ctx context.Context, in map[string][]lbv1beta1.LoadBalancerPoolRef, out *resolvedPools) (map[string][]string, error) {
 	result := map[string][]string{}
 	for _, k := range sortedKeys(in) {
 		ids, err := pr.resolveRefList(ctx, in[k], out)
@@ -713,18 +622,12 @@ func (pr *poolResolver) resolveKeyedPools(ctx context.Context, in map[string][]s
 	return result, nil
 }
 
-// resolveAllPools resolves every pool reference on the LB spec.
-//
-// Resolution strategy per ref:
-//  1. Look up the local LoadBalancerPool CR (same-cluster) if it exists
-//     AND has Status.ID populated.
-//  2. Fall back to a CF pool-list-by-name lookup if the CR isn't found
-//     locally (i.e. it's owned by a peer cluster).
-//
-// Iteration is ordered (slices) or sorted (maps) so successive
-// reconciles produce byte-identical CF payloads for the same input.
-func (r *LoadBalancerReconciler) resolveAllPools(ctx context.Context, zi *zoneInfo, lb *saasv1beta1.LoadBalancer) (*resolvedPools, error) {
-	pr := &poolResolver{r: r, zi: zi, lb: lb, peerCache: map[string]string{}}
+// resolveAllPools resolves every pool reference on the LB spec from local Pool
+// CRs (best-effort: unresolved refs are recorded and dropped, not fatal).
+// Iteration is ordered (slices) or key-sorted (maps) so successive reconciles
+// produce byte-identical CF payloads for the same input.
+func (r *LoadBalancerReconciler) resolveAllPools(ctx context.Context, lb *lbv1beta1.LoadBalancer) (*resolvedPools, error) {
+	pr := &poolResolver{r: r, lb: lb}
 	out := &resolvedPools{}
 
 	defaultIDs, err := pr.resolveRefList(ctx, lb.Spec.DefaultPoolRefs, out)
@@ -749,35 +652,14 @@ func (r *LoadBalancerReconciler) resolveAllPools(ctx context.Context, zi *zoneIn
 		return nil, err
 	}
 
-	// Guarantee at least one entry in defaultIDs — CF's default_pools
-	// field is required non-empty. If every default ref failed to
-	// resolve but the fallback did, promote fallback into defaults so
-	// the LB can still be created / updated in partial mode. This is
-	// preferable to failing the reconcile outright, because the fallback
-	// pool represents the "last-resort" region and is a sensible default.
+	// CF requires default_pools to be non-empty. If every default ref is
+	// unresolved but the fallback resolved, promote the fallback into
+	// defaults so the LB still comes up (best-effort) rather than failing.
 	if len(out.defaultIDs) == 0 && out.fallbackID != "" {
 		out.defaultIDs = []string{out.fallbackID}
 	}
 
 	return out, nil
-}
-
-// zoneAccountID reads the Zone CR's status.accountID (populated by the
-// Zone controller). Extracted here so pool listing works even when the
-// LB CR itself doesn't hold the account (LBs are zone-scoped).
-func (r *LoadBalancerReconciler) zoneAccountID(ctx context.Context, lb *saasv1beta1.LoadBalancer) (string, error) {
-	zoneNS := lb.Spec.ZoneRef.Namespace
-	if zoneNS == "" {
-		zoneNS = r.OperatorNamespace
-	}
-	var zone domainsv1beta1.Zone
-	if err := r.Get(ctx, types.NamespacedName{Name: lb.Spec.ZoneRef.Name, Namespace: zoneNS}, &zone); err != nil {
-		return "", err
-	}
-	if zone.Status.AccountID == "" {
-		return "", fmt.Errorf("zone %q status.accountID not yet populated", zone.Name)
-	}
-	return zone.Status.AccountID, nil
 }
 
 // ---- CF param builders + drift detection -------------------------------
@@ -811,7 +693,7 @@ func mapListsEqual(a, b map[string][]string) bool {
 	return true
 }
 
-func buildLBNewParams(zoneID string, lb *saasv1beta1.LoadBalancer, resolved *resolvedPools) load_balancers.LoadBalancerNewParams {
+func buildLBNewParams(zoneID string, lb *lbv1beta1.LoadBalancer, resolved *resolvedPools) load_balancers.LoadBalancerNewParams {
 	p := load_balancers.LoadBalancerNewParams{
 		ZoneID:       cloudflare.F(zoneID),
 		Name:         cloudflare.F(lb.Spec.Hostname),
@@ -847,7 +729,7 @@ func buildLBNewParams(zoneID string, lb *saasv1beta1.LoadBalancer, resolved *res
 	return p
 }
 
-func buildLBUpdateParams(zoneID string, lb *saasv1beta1.LoadBalancer, resolved *resolvedPools) load_balancers.LoadBalancerUpdateParams {
+func buildLBUpdateParams(zoneID string, lb *lbv1beta1.LoadBalancer, resolved *resolvedPools) load_balancers.LoadBalancerUpdateParams {
 	p := load_balancers.LoadBalancerUpdateParams{
 		ZoneID:       cloudflare.F(zoneID),
 		Name:         cloudflare.F(lb.Spec.Hostname),
@@ -886,7 +768,7 @@ func buildLBUpdateParams(zoneID string, lb *saasv1beta1.LoadBalancer, resolved *
 // lbDrifted reports whether the CF-observed LB diverges from the CR spec
 // on any operator-managed field. Pool references drift on resolved-ID
 // mismatch, not on CR-name mismatch, since CF stores IDs.
-func lbDrifted(cf *load_balancers.LoadBalancer, lb *saasv1beta1.LoadBalancer, resolved *resolvedPools) bool {
+func lbDrifted(cf *load_balancers.LoadBalancer, lb *lbv1beta1.LoadBalancer, resolved *resolvedPools) bool {
 	if cf.Name != lb.Spec.Hostname {
 		return true
 	}

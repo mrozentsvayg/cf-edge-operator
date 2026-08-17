@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: loadbalancerpools.saas.cf-edge.io
+  name: loadbalancerpools.loadbalancing.cf-edge.io
 spec:
-  group: saas.cf-edge.io
+  group: loadbalancing.cf-edge.io
   names:
     kind: LoadBalancerPool
     listKind: LoadBalancerPoolList
@@ -63,24 +63,24 @@ spec:
               LoadBalancerPoolSpec defines the desired state of a Cloudflare
               LoadBalancerPool.
 
-              Pools are Cloudflare account-scoped resources; the CR's AccountRef reuses
-              the Zone CR as its account carrier (see LoadBalancerMonitorSpec doc for
-              rationale). CR names are used verbatim as the CF-side pool name, so charts
-              must ensure names are unique across the fleet (typically by prefixing with
-              the service / namespace, e.g. "web-us-pool").
+              Pools are Cloudflare account-scoped resources; the CR's AccountRef points at
+              an Account (Cloudflare account ID + credentials). CR names are used verbatim
+              as the CF-side pool name, so charts must ensure names are unique across the
+              fleet (typically by prefixing with the service / namespace, e.g. "web-us-pool").
             properties:
               accountRef:
                 description: |-
-                  AccountRef references the Zone whose credentialsRef + status.accountID
-                  the controller uses to talk to Cloudflare. See
-                  LoadBalancerMonitorSpec.AccountRef for the rationale.
+                  AccountRef references the Account supplying the Cloudflare account ID
+                  and API credentials. Pools are account-scoped in Cloudflare.
                 properties:
                   name:
-                    description: Name of the Zone resource
+                    description: Name of the Account resource.
+                    minLength: 1
                     type: string
                   namespace:
-                    description: Namespace of the Zone resource. Defaults to the operator
-                      namespace if omitted.
+                    description: |-
+                      Namespace of the Account resource. Defaults to the operator namespace
+                      if omitted.
                     type: string
                 required:
                 - name

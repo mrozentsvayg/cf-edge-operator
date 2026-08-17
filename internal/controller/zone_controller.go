@@ -150,14 +150,8 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 // needsInit returns true if the zone requires initialization (zone GET to resolve
 // the zone name from Cloudflare). This happens on first reconcile, after operator
 // restart with empty status, or after a spec change (e.g., credentialsRef rotation).
-// Also re-fires when Status.AccountID is missing so pre-existing Zone CRs (created
-// before AccountID was added to status) get their account ID backfilled on the
-// next reconcile without requiring manual intervention.
 func (r *ZoneReconciler) needsInit(zone *domainsv1beta1.Zone) bool {
 	if zone.Status.Name == "" {
-		return true
-	}
-	if zone.Status.AccountID == "" {
 		return true
 	}
 	cond := meta.FindStatusCondition(zone.Status.Conditions, conditionInitialized)
@@ -206,17 +200,12 @@ func (r *ZoneReconciler) initializeZone(ctx context.Context, zone *domainsv1beta
 	}
 
 	zone.Status.Name = zoneDetails.Name
-	// AccountID is the account that owns this zone, exposed on status so
-	// downstream account-scoped resources (LoadBalancerMonitor,
-	// LoadBalancerPool) can resolve their CF account without a separate
-	// Account CRD or an ambient --account-id flag.
-	zone.Status.AccountID = zoneDetails.Account.ID
 	if err := r.setInitialized(ctx, zone, "ZoneInitialized",
 		fmt.Sprintf("Zone credentials validated, zone: %s", zoneDetails.Name)); err != nil {
 		return nil, err
 	}
 	zoneInitialized.WithLabelValues(zone.Name).Set(1)
-	log.Info("zone - initialized", "zone", zoneDetails.Name, "zoneID", zone.Spec.ID, "accountID", zoneDetails.Account.ID)
+	log.Info("zone - initialized", "zone", zoneDetails.Name, "zoneID", zone.Spec.ID)
 	return cf, nil
 }
 
@@ -226,7 +215,7 @@ func (r *ZoneReconciler) initializeZone(ctx context.Context, zone *domainsv1beta
 func (r *ZoneReconciler) fetchAPIToken(ctx context.Context, zone *domainsv1beta1.Zone) (string, error) {
 	key := zone.Spec.CredentialsRef.Key
 	if key == "" {
-		key = defaultAPITokenKey
+		key = "apiToken"
 	}
 	var secret corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{

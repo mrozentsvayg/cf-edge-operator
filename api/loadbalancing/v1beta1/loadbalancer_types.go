@@ -24,20 +24,14 @@ import (
 //
 // Load Balancers are Cloudflare zone-scoped: the Hostname becomes a DNS
 // record in the ZoneRef zone that CF geo-steers to healthy origin pools.
-// CR names are used verbatim as the CF-side LB name (which is the hostname
-// itself for public LBs), so charts must ensure names are unique per zone.
+// The CR name is a Kubernetes identifier; the CF-side LB is named after the
+// Hostname, so charts must ensure hostnames are unique per zone.
 //
-// Pool references are by-name across the whole CF account, so this CR can
-// reference LoadBalancerPool CRs that live in a different namespace or even
-// a different cluster (as long as both clusters point at the same CF
-// account). The controller resolves peer pool names by:
-//  1. Look up the local LoadBalancerPool CR (same-cluster) if it exists.
-//  2. Fall back to a CF pool-list-by-name lookup if the CR isn't found
-//     locally (i.e. it's owned by a peer cluster).
-//
-// This is what enables the multi-region pattern: each region's cluster owns
-// its own LoadBalancerPool CR; the parent region owns the LoadBalancer CR
-// that stitches them together.
+// DefaultPoolRefs / FallbackPoolRef / RegionPools etc. reference
+// LoadBalancerPool CRs by name; the controller resolves each to its CF pool
+// ID from the referenced Pool CR's Status.ID. For the multi-region pattern,
+// the regional Pool CRs and this LoadBalancer are managed together by one
+// (control-cluster) operator, so every ref is a local CR.
 type LoadBalancerSpec struct {
 	// ZoneRef references the Zone hosting the LB's DNS name. The Zone
 	// provides both the CF zone ID (for the LB API call) and the CF API
@@ -54,9 +48,8 @@ type LoadBalancerSpec struct {
 	Hostname string `json:"hostname"`
 
 	// DefaultPoolRefs is the ordered list of pool references CF uses when no
-	// region_pools / country_pools / pop_pools rule matches. Pool references
-	// are resolved to CF pool IDs at reconcile time (see the CRD-level doc
-	// for cross-cluster resolution semantics).
+	// region_pools / country_pools / pop_pools rule matches. Each ref is
+	// resolved to a CF pool ID from the referenced Pool CR's Status.ID.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
 	DefaultPoolRefs []LoadBalancerPoolRef `json:"defaultPoolRefs"`
@@ -123,22 +116,6 @@ type LoadBalancerSpec struct {
 	// +optional
 	SessionAffinity string `json:"sessionAffinity,omitempty"`
 
-	// MinimumPools controls behavior when some referenced pools can't be
-	// resolved (e.g., peer cluster hasn't yet reconciled). Interpretation:
-	//   - unset (nil): fail-hard. LB reconcile errors if any pool ref is
-	//     unresolvable; requeues until all pools exist.
-	//   - set to N: partial. LB is created with whatever pools resolve, as
-	//     long as at least N of the total (default + fallback) resolve.
-	//     Missing pools are omitted from the CF LB config; they get added
-	//     on the next reconcile after they appear in CF.
-	// The partial mode trades slightly less-precise routing for faster
-	// bootstrap: a new multi-region service can bring its global endpoint
-	// up as soon as one region's pool exists, and other regions light up
-	// as they come online.
-	// +kubebuilder:validation:Minimum=1
-	// +optional
-	MinimumPools *int32 `json:"minimumPools,omitempty"`
-
 	// Description is a human-readable description shown in the CF dashboard.
 	// +kubebuilder:validation:MaxLength=1024
 	// +optional
@@ -157,27 +134,16 @@ type LoadBalancerSpec struct {
 	DeletePolicy string `json:"deletePolicy,omitempty"`
 }
 
-// LoadBalancerPoolRef references a LoadBalancerPool by name.
-//
-// If Namespace is set, the controller looks up a local LoadBalancerPool CR
-// at that (Name, Namespace) and reads its Status.ID for the CF pool ID.
-//
-// If Namespace is unset, the controller first tries a local same-namespace
-// LoadBalancerPool CR lookup. On miss (which is expected for peer-cluster
-// pools), it falls back to a CF-side pool-list-by-name resolution.
-//
-// The cross-cluster fallback is what enables the multi-region pattern
-// (parent-region LB references peer-region pools created by peer-region
-// clusters). See the LoadBalancer CRD-level doc.
+// LoadBalancerPoolRef references a LoadBalancerPool CR by name. The controller
+// resolves it to a CF pool ID by reading that Pool CR's Status.ID.
 type LoadBalancerPoolRef struct {
-	// Name of the LoadBalancerPool (which is also the CF pool name).
+	// Name of the LoadBalancerPool CR (which is also the CF pool name).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 
-	// Namespace of the local LoadBalancerPool CR, when Name is
-	// same-cluster. Omit for cross-cluster peer pools; the controller
-	// resolves via CF API by name.
+	// Namespace of the LoadBalancerPool CR. Defaults to this LoadBalancer's
+	// namespace if omitted.
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 }
@@ -197,13 +163,6 @@ type LoadBalancerStatus struct {
 	// ResolvedFallbackPoolID is the CF pool ID for spec.fallbackPoolRef.
 	// +optional
 	ResolvedFallbackPoolID string `json:"resolvedFallbackPoolID,omitempty"`
-
-	// UnresolvedPoolRefs lists pool ref names the controller couldn't
-	// resolve on the last reconcile. Under fail-hard mode this triggers a
-	// requeue; under partial mode (spec.minimumPools set) these are
-	// dropped from the CF LB config until they appear.
-	// +optional
-	UnresolvedPoolRefs []string `json:"unresolvedPoolRefs,omitempty"`
 
 	// CreateCount tracks how many times this LB has been (re)created in
 	// Cloudflare. Values greater than 1 indicate external deletions occurred.
@@ -228,7 +187,6 @@ type LoadBalancerStatus struct {
 // +kubebuilder:printcolumn:name="Pools",type=integer,JSONPath=`.spec.defaultPoolRefs.length()`
 // +kubebuilder:printcolumn:name="CF ID",type=string,JSONPath=`.status.id`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
-// +kubebuilder:printcolumn:name="Unresolved",type=integer,JSONPath=`.status.unresolvedPoolRefs.length()`,priority=1
 // +kubebuilder:printcolumn:name="Creates",type=integer,JSONPath=`.status.createCount`
 // +kubebuilder:printcolumn:name="Errors",type=integer,JSONPath=`.status.consecutiveErrors`
 

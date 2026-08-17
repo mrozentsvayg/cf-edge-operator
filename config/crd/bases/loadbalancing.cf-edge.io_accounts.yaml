@@ -4,19 +4,22 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: zones.domains.cf-edge.io
+  name: accounts.loadbalancing.cf-edge.io
 spec:
-  group: domains.cf-edge.io
+  group: loadbalancing.cf-edge.io
   names:
-    kind: Zone
-    listKind: ZoneList
-    plural: zones
-    singular: zone
+    kind: Account
+    listKind: AccountList
+    plural: accounts
+    singular: account
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .spec.id
+      name: Account ID
+      type: string
     - jsonPath: .status.name
-      name: Zone
+      name: Account
       type: string
     - jsonPath: .status.conditions[?(@.type=="Initialized")].status
       name: Initialized
@@ -24,7 +27,9 @@ spec:
     name: v1beta1
     schema:
       openAPIV3Schema:
-        description: Zone is the Schema for the zones API
+        description: |-
+          Account is the Schema for the accounts API. It supplies the Cloudflare
+          account ID and credentials for account-scoped Load Balancing resources.
         properties:
           apiVersion:
             description: |-
@@ -44,32 +49,40 @@ spec:
           metadata:
             type: object
           spec:
-            description: ZoneSpec defines the desired state of Zone
+            description: |-
+              AccountSpec defines the desired state of an Account.
+
+              An Account carries the Cloudflare account ID and API credentials used by
+              account-scoped resources (LoadBalancerPool, LoadBalancerMonitor). It is the
+              account-scope analog of a Zone: account-scoped resources reference an Account
+              via AccountRef, the same way zone-scoped resources reference a Zone.
             properties:
               credentialsRef:
                 description: |-
                   CredentialsRef references the secret containing the Cloudflare API token.
-                  The secret must be in the same namespace as the Zone resource.
+                  The token needs account-scoped Load Balancing permissions. The secret
+                  must be in the same namespace as the Account resource.
                 properties:
                   key:
                     default: apiToken
-                    description: Key within the secret containing the API token
+                    description: Key within the secret containing the API token.
                     minLength: 1
                     type: string
                   name:
-                    description: Name of the secret
+                    description: Name of the secret.
                     type: string
                 required:
                 - name
                 type: object
               id:
                 description: |-
-                  ID is the Cloudflare zone ID (32-character hex string).
-                  Immutable -- changing it would redirect all associated CustomHostname CRs to a different zone.
+                  ID is the Cloudflare account ID (32-character hex string).
+                  Immutable -- changing it would repoint all referencing resources at a
+                  different Cloudflare account.
                 pattern: ^[0-9a-f]{32}$
                 type: string
                 x-kubernetes-validations:
-                - message: zone ID is immutable
+                - message: account ID is immutable
                   rule: self == oldSelf
             required:
             - credentialsRef
@@ -77,8 +90,8 @@ spec:
             type: object
           status:
             description: |-
-              ZoneStatus defines the observed state of Zone.
-              NOTE: No top-level ObservedGeneration -- it's set per-condition in setInitialized().
+              AccountStatus defines the observed state of an Account.
+              NOTE: No top-level ObservedGeneration -- it's set per-condition.
             properties:
               conditions:
                 items:
@@ -140,8 +153,8 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               name:
-                description: Name is the Cloudflare zone name (e.g. example.com),
-                  populated from the API
+                description: Name is the Cloudflare account name, populated from the
+                  API on init.
                 type: string
             type: object
         required:

@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: loadbalancermonitors.saas.cf-edge.io
+  name: loadbalancermonitors.loadbalancing.cf-edge.io
 spec:
-  group: saas.cf-edge.io
+  group: loadbalancing.cf-edge.io
   names:
     kind: LoadBalancerMonitor
     listKind: LoadBalancerMonitorList
@@ -72,19 +72,17 @@ spec:
             properties:
               accountRef:
                 description: |-
-                  AccountRef references the Zone whose credentialsRef + accountID the
-                  controller uses to talk to Cloudflare. Monitors are account-scoped in
-                  CF, so we reuse Zone as the credential and account carrier rather than
-                  introducing a separate Account CRD. The Zone's accountID (looked up
-                  from the CF API on Zone reconcile) provides the account ID for the
-                  monitor's CF path.
+                  AccountRef references the Account supplying the Cloudflare account ID
+                  and API credentials. Monitors are account-scoped in Cloudflare.
                 properties:
                   name:
-                    description: Name of the Zone resource
+                    description: Name of the Account resource.
+                    minLength: 1
                     type: string
                   namespace:
-                    description: Namespace of the Zone resource. Defaults to the operator
-                      namespace if omitted.
+                    description: |-
+                      Namespace of the Account resource. Defaults to the operator namespace
+                      if omitted.
                     type: string
                 required:
                 - name

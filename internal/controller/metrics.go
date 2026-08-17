@@ -20,6 +20,7 @@ const (
 	cfResourceLoadBalancerMon  = "loadbalancermonitor"
 	cfResourceLoadBalancerPool = "loadbalancerpool"
 	cfResourceLoadBalancer     = "loadbalancer"
+	cfResourceAccount          = "account"
 
 	cfOpGet      = "get"
 	cfOpList     = "list"
@@ -181,6 +182,9 @@ func init() {
 			cfAPIRetriesTotal.WithLabelValues(res, op)
 		}
 	}
+	// Account is validated with a single get.
+	cfAPICallDuration.WithLabelValues(cfResourceAccount, cfOpGet)
+	cfAPIRetriesTotal.WithLabelValues(cfResourceAccount, cfOpGet)
 }
 
 // recordCFCall records duration and any error for a Cloudflare API call.

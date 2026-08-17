@@ -17,78 +17,35 @@ import (
 
 	"github.com/cloudflare/cloudflare-go/v6/load_balancers"
 
-	saasv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1beta1"
+	lbv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/loadbalancing/v1beta1"
 )
 
 // newLBCR builds a LoadBalancer CR with fixed metadata (Name: "global",
 // Namespace: "ns"). Tests only vary the spec, so keeping the metadata
 // hard-coded matches how the helper is actually used.
-func newLBCR(spec saasv1beta1.LoadBalancerSpec) *saasv1beta1.LoadBalancer {
-	return &saasv1beta1.LoadBalancer{
+func newLBCR(spec lbv1beta1.LoadBalancerSpec) *lbv1beta1.LoadBalancer {
+	return &lbv1beta1.LoadBalancer{
 		ObjectMeta: metav1.ObjectMeta{Name: "global", Namespace: "ns"},
 		Spec:       spec,
 	}
 }
 
-// int32Val returns a pointer to a fresh int32 with the supplied value. Used
-// in table tests to concisely spell *int32 literals.
-func int32Val(v int32) *int32 {
-	p := new(int32)
-	*p = v
-	return p
-}
-
-func TestResolvedPools_SatisfiesMinimum(t *testing.T) {
-	cases := []struct {
-		name    string
-		rp      resolvedPools
-		minimum *int32
-		want    bool
-	}{
-		{"nil min, no unresolved -> ok",
-			resolvedPools{unresolved: nil}, nil, true},
-		{"nil min, some unresolved -> fail",
-			resolvedPools{unresolved: []string{"peer"}}, nil, false},
-		{"min=1, 1 resolved -> ok",
-			resolvedPools{resolvedNum: 1, totalRefs: 2, unresolved: []string{"peer"}}, int32Val(1), true},
-		{"min=2, 1 resolved -> fail",
-			resolvedPools{resolvedNum: 1, totalRefs: 2, unresolved: []string{"peer"}}, int32Val(2), false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.rp.satisfiesMinimum(tc.minimum); got != tc.want {
-				t.Fatalf("got %v want %v", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestDescribeMinimum(t *testing.T) {
-	if describeMinimum(nil) != "all (fail-hard)" {
-		t.Errorf("nil min: %q", describeMinimum(nil))
-	}
-	m := int32(2)
-	if describeMinimum(&m) != ">=2 (partial)" {
-		t.Errorf("min=2: %q", describeMinimum(&m))
-	}
-}
-
 func TestLBReferencesPool(t *testing.T) {
-	lb := &saasv1beta1.LoadBalancer{
-		Spec: saasv1beta1.LoadBalancerSpec{
-			DefaultPoolRefs: []saasv1beta1.LoadBalancerPoolRef{
+	lb := &lbv1beta1.LoadBalancer{
+		Spec: lbv1beta1.LoadBalancerSpec{
+			DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{
 				{Name: "us-pool"},
 				{Name: "apac-pool"},
 			},
-			FallbackPoolRef: saasv1beta1.LoadBalancerPoolRef{Name: "us-pool"},
-			RegionPools: map[string][]saasv1beta1.LoadBalancerPoolRef{
+			FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "us-pool"},
+			RegionPools: map[string][]lbv1beta1.LoadBalancerPoolRef{
 				"WNAM": {{Name: "us-pool"}},
 				"APAC": {{Name: "apac-pool"}, {Name: "backup-pool"}},
 			},
-			CountryPools: map[string][]saasv1beta1.LoadBalancerPoolRef{
+			CountryPools: map[string][]lbv1beta1.LoadBalancerPoolRef{
 				"JP": {{Name: "jp-pool"}},
 			},
-			PopPools: map[string][]saasv1beta1.LoadBalancerPoolRef{
+			PopPools: map[string][]lbv1beta1.LoadBalancerPoolRef{
 				"NRT": {{Name: "nrt-pool"}},
 			},
 		},
@@ -151,7 +108,7 @@ func TestStringSlicesEqual(t *testing.T) {
 }
 
 func TestLBDrifted_NameChange(t *testing.T) {
-	lb := newLBCR(saasv1beta1.LoadBalancerSpec{
+	lb := newLBCR(lbv1beta1.LoadBalancerSpec{
 		Hostname: "lb.example.com",
 	})
 	resolved := &resolvedPools{defaultIDs: []string{"a"}, fallbackID: "a"}
@@ -167,7 +124,7 @@ func TestLBDrifted_NameChange(t *testing.T) {
 }
 
 func TestLBDrifted_ResolvedPoolIDChange(t *testing.T) {
-	lb := newLBCR(saasv1beta1.LoadBalancerSpec{
+	lb := newLBCR(lbv1beta1.LoadBalancerSpec{
 		Hostname: "lb.example.com",
 	})
 	// resolved.defaultIDs is what we WOULD write to CF now; cf.DefaultPools
@@ -187,7 +144,7 @@ func TestLBDrifted_ResolvedPoolIDChange(t *testing.T) {
 func TestLBDrifted_ProxiedDefaultsMatch(t *testing.T) {
 	// CRD default for Proxied is true (via pointer default). If the spec
 	// omits it and CF reports true, that must not count as drift.
-	lb := newLBCR(saasv1beta1.LoadBalancerSpec{
+	lb := newLBCR(lbv1beta1.LoadBalancerSpec{
 		Hostname: "lb.example.com",
 	})
 	resolved := &resolvedPools{defaultIDs: []string{"a"}, fallbackID: "a"}
@@ -203,7 +160,7 @@ func TestLBDrifted_ProxiedDefaultsMatch(t *testing.T) {
 }
 
 func TestLBDrifted_UnmanagedFieldsIgnored(t *testing.T) {
-	lb := newLBCR(saasv1beta1.LoadBalancerSpec{
+	lb := newLBCR(lbv1beta1.LoadBalancerSpec{
 		Hostname: "lb.example.com",
 	})
 	resolved := &resolvedPools{defaultIDs: []string{"a"}, fallbackID: "a"}
@@ -221,7 +178,7 @@ func TestLBDrifted_UnmanagedFieldsIgnored(t *testing.T) {
 }
 
 func TestLBDrifted_SteeringPolicyChange(t *testing.T) {
-	lb := newLBCR(saasv1beta1.LoadBalancerSpec{
+	lb := newLBCR(lbv1beta1.LoadBalancerSpec{
 		Hostname:       "lb.example.com",
 		SteeringPolicy: "dynamic_latency",
 	})
@@ -239,7 +196,7 @@ func TestLBDrifted_SteeringPolicyChange(t *testing.T) {
 }
 
 func TestLBDrifted_RegionPoolsChange(t *testing.T) {
-	lb := newLBCR(saasv1beta1.LoadBalancerSpec{
+	lb := newLBCR(lbv1beta1.LoadBalancerSpec{
 		Hostname: "lb.example.com",
 	})
 	resolved := &resolvedPools{

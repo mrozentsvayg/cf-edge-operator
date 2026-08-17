@@ -23,19 +23,17 @@ import (
 // LoadBalancerPoolSpec defines the desired state of a Cloudflare
 // LoadBalancerPool.
 //
-// Pools are Cloudflare account-scoped resources; the CR's AccountRef reuses
-// the Zone CR as its account carrier (see LoadBalancerMonitorSpec doc for
-// rationale). CR names are used verbatim as the CF-side pool name, so charts
-// must ensure names are unique across the fleet (typically by prefixing with
-// the service / namespace, e.g. "web-us-pool").
+// Pools are Cloudflare account-scoped resources; the CR's AccountRef points at
+// an Account (Cloudflare account ID + credentials). CR names are used verbatim
+// as the CF-side pool name, so charts must ensure names are unique across the
+// fleet (typically by prefixing with the service / namespace, e.g. "web-us-pool").
 //
 // +kubebuilder:validation:XValidation:rule="!has(self.latitude) == !has(self.longitude)",message="latitude and longitude must be set together (both or neither)"
 type LoadBalancerPoolSpec struct {
-	// AccountRef references the Zone whose credentialsRef + status.accountID
-	// the controller uses to talk to Cloudflare. See
-	// LoadBalancerMonitorSpec.AccountRef for the rationale.
+	// AccountRef references the Account supplying the Cloudflare account ID
+	// and API credentials. Pools are account-scoped in Cloudflare.
 	// +kubebuilder:validation:Required
-	AccountRef ZoneRef `json:"accountRef"`
+	AccountRef AccountRef `json:"accountRef"`
 
 	// Origins is the set of backend endpoints this pool balances traffic
 	// across. Each origin has its own health status tracked by CF using the

@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: loadbalancers.saas.cf-edge.io
+  name: loadbalancers.loadbalancing.cf-edge.io
 spec:
-  group: saas.cf-edge.io
+  group: loadbalancing.cf-edge.io
   names:
     kind: LoadBalancer
     listKind: LoadBalancerList
@@ -30,10 +30,6 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
-    - jsonPath: .status.unresolvedPoolRefs.length()
-      name: Unresolved
-      priority: 1
-      type: integer
     - jsonPath: .status.createCount
       name: Creates
       type: integer
@@ -68,48 +64,31 @@ spec:
 
               Load Balancers are Cloudflare zone-scoped: the Hostname becomes a DNS
               record in the ZoneRef zone that CF geo-steers to healthy origin pools.
-              CR names are used verbatim as the CF-side LB name (which is the hostname
-              itself for public LBs), so charts must ensure names are unique per zone.
+              The CR name is a Kubernetes identifier; the CF-side LB is named after the
+              Hostname, so charts must ensure hostnames are unique per zone.
 
-              Pool references are by-name across the whole CF account, so this CR can
-              reference LoadBalancerPool CRs that live in a different namespace or even
-              a different cluster (as long as both clusters point at the same CF
-              account). The controller resolves peer pool names by:
-               1. Look up the local LoadBalancerPool CR (same-cluster) if it exists.
-               2. Fall back to a CF pool-list-by-name lookup if the CR isn't found
-                  locally (i.e. it's owned by a peer cluster).
-
-              This is what enables the multi-region pattern: each region's cluster owns
-              its own LoadBalancerPool CR; the parent region owns the LoadBalancer CR
-              that stitches them together.
+              DefaultPoolRefs / FallbackPoolRef / RegionPools etc. reference
+              LoadBalancerPool CRs by name; the controller resolves each to its CF pool
+              ID from the referenced Pool CR's Status.ID. For the multi-region pattern,
+              the regional Pool CRs and this LoadBalancer are managed together by one
+              (control-cluster) operator, so every ref is a local CR.
             properties:
               countryPools:
                 additionalProperties:
                   items:
                     description: |-
-                      LoadBalancerPoolRef references a LoadBalancerPool by name.
-
-                      If Namespace is set, the controller looks up a local LoadBalancerPool CR
-                      at that (Name, Namespace) and reads its Status.ID for the CF pool ID.
-
-                      If Namespace is unset, the controller first tries a local same-namespace
-                      LoadBalancerPool CR lookup. On miss (which is expected for peer-cluster
-                      pools), it falls back to a CF-side pool-list-by-name resolution.
-
-                      The cross-cluster fallback is what enables the multi-region pattern
-                      (parent-region LB references peer-region pools created by peer-region
-                      clusters). See the LoadBalancer CRD-level doc.
+                      LoadBalancerPoolRef references a LoadBalancerPool CR by name. The controller
+                      resolves it to a CF pool ID by reading that Pool CR's Status.ID.
                     properties:
                       name:
-                        description: Name of the LoadBalancerPool (which is also the
-                          CF pool name).
+                        description: Name of the LoadBalancerPool CR (which is also
+                          the CF pool name).
                         minLength: 1
                         type: string
                       namespace:
                         description: |-
-                          Namespace of the local LoadBalancerPool CR, when Name is
-                          same-cluster. Omit for cross-cluster peer pools; the controller
-                          resolves via CF API by name.
+                          Namespace of the LoadBalancerPool CR. Defaults to this LoadBalancer's
+                          namespace if omitted.
                         type: string
                     required:
                     - name
@@ -123,34 +102,22 @@ spec:
               defaultPoolRefs:
                 description: |-
                   DefaultPoolRefs is the ordered list of pool references CF uses when no
-                  region_pools / country_pools / pop_pools rule matches. Pool references
-                  are resolved to CF pool IDs at reconcile time (see the CRD-level doc
-                  for cross-cluster resolution semantics).
+                  region_pools / country_pools / pop_pools rule matches. Each ref is
+                  resolved to a CF pool ID from the referenced Pool CR's Status.ID.
                 items:
                   description: |-
-                    LoadBalancerPoolRef references a LoadBalancerPool by name.
-
-                    If Namespace is set, the controller looks up a local LoadBalancerPool CR
-                    at that (Name, Namespace) and reads its Status.ID for the CF pool ID.
-
-                    If Namespace is unset, the controller first tries a local same-namespace
-                    LoadBalancerPool CR lookup. On miss (which is expected for peer-cluster
-                    pools), it falls back to a CF-side pool-list-by-name resolution.
-
-                    The cross-cluster fallback is what enables the multi-region pattern
-                    (parent-region LB references peer-region pools created by peer-region
-                    clusters). See the LoadBalancer CRD-level doc.
+                    LoadBalancerPoolRef references a LoadBalancerPool CR by name. The controller
+                    resolves it to a CF pool ID by reading that Pool CR's Status.ID.
                   properties:
                     name:
-                      description: Name of the LoadBalancerPool (which is also the
-                        CF pool name).
+                      description: Name of the LoadBalancerPool CR (which is also
+                        the CF pool name).
                       minLength: 1
                       type: string
                     namespace:
                       description: |-
-                        Namespace of the local LoadBalancerPool CR, when Name is
-                        same-cluster. Omit for cross-cluster peer pools; the controller
-                        resolves via CF API by name.
+                        Namespace of the LoadBalancerPool CR. Defaults to this LoadBalancer's
+                        namespace if omitted.
                       type: string
                   required:
                   - name
@@ -177,15 +144,14 @@ spec:
                   is unhealthy. Required by CF, so we require it here.
                 properties:
                   name:
-                    description: Name of the LoadBalancerPool (which is also the CF
-                      pool name).
+                    description: Name of the LoadBalancerPool CR (which is also the
+                      CF pool name).
                     minLength: 1
                     type: string
                   namespace:
                     description: |-
-                      Namespace of the local LoadBalancerPool CR, when Name is
-                      same-cluster. Omit for cross-cluster peer pools; the controller
-                      resolves via CF API by name.
+                      Namespace of the LoadBalancerPool CR. Defaults to this LoadBalancer's
+                      namespace if omitted.
                     type: string
                 required:
                 - name
@@ -209,50 +175,22 @@ spec:
                 - create
                 - observe
                 type: string
-              minimumPools:
-                description: |-
-                  MinimumPools controls behavior when some referenced pools can't be
-                  resolved (e.g., peer cluster hasn't yet reconciled). Interpretation:
-                    - unset (nil): fail-hard. LB reconcile errors if any pool ref is
-                      unresolvable; requeues until all pools exist.
-                    - set to N: partial. LB is created with whatever pools resolve, as
-                      long as at least N of the total (default + fallback) resolve.
-                      Missing pools are omitted from the CF LB config; they get added
-                      on the next reconcile after they appear in CF.
-                  The partial mode trades slightly less-precise routing for faster
-                  bootstrap: a new multi-region service can bring its global endpoint
-                  up as soon as one region's pool exists, and other regions light up
-                  as they come online.
-                format: int32
-                minimum: 1
-                type: integer
               popPools:
                 additionalProperties:
                   items:
                     description: |-
-                      LoadBalancerPoolRef references a LoadBalancerPool by name.
-
-                      If Namespace is set, the controller looks up a local LoadBalancerPool CR
-                      at that (Name, Namespace) and reads its Status.ID for the CF pool ID.
-
-                      If Namespace is unset, the controller first tries a local same-namespace
-                      LoadBalancerPool CR lookup. On miss (which is expected for peer-cluster
-                      pools), it falls back to a CF-side pool-list-by-name resolution.
-
-                      The cross-cluster fallback is what enables the multi-region pattern
-                      (parent-region LB references peer-region pools created by peer-region
-                      clusters). See the LoadBalancer CRD-level doc.
+                      LoadBalancerPoolRef references a LoadBalancerPool CR by name. The controller
+                      resolves it to a CF pool ID by reading that Pool CR's Status.ID.
                     properties:
                       name:
-                        description: Name of the LoadBalancerPool (which is also the
-                          CF pool name).
+                        description: Name of the LoadBalancerPool CR (which is also
+                          the CF pool name).
                         minLength: 1
                         type: string
                       namespace:
                         description: |-
-                          Namespace of the local LoadBalancerPool CR, when Name is
-                          same-cluster. Omit for cross-cluster peer pools; the controller
-                          resolves via CF API by name.
+                          Namespace of the LoadBalancerPool CR. Defaults to this LoadBalancer's
+                          namespace if omitted.
                         type: string
                     required:
                     - name
@@ -274,29 +212,18 @@ spec:
                 additionalProperties:
                   items:
                     description: |-
-                      LoadBalancerPoolRef references a LoadBalancerPool by name.
-
-                      If Namespace is set, the controller looks up a local LoadBalancerPool CR
-                      at that (Name, Namespace) and reads its Status.ID for the CF pool ID.
-
-                      If Namespace is unset, the controller first tries a local same-namespace
-                      LoadBalancerPool CR lookup. On miss (which is expected for peer-cluster
-                      pools), it falls back to a CF-side pool-list-by-name resolution.
-
-                      The cross-cluster fallback is what enables the multi-region pattern
-                      (parent-region LB references peer-region pools created by peer-region
-                      clusters). See the LoadBalancer CRD-level doc.
+                      LoadBalancerPoolRef references a LoadBalancerPool CR by name. The controller
+                      resolves it to a CF pool ID by reading that Pool CR's Status.ID.
                     properties:
                       name:
-                        description: Name of the LoadBalancerPool (which is also the
-                          CF pool name).
+                        description: Name of the LoadBalancerPool CR (which is also
+                          the CF pool name).
                         minLength: 1
                         type: string
                       namespace:
                         description: |-
-                          Namespace of the local LoadBalancerPool CR, when Name is
-                          same-cluster. Omit for cross-cluster peer pools; the controller
-                          resolves via CF API by name.
+                          Namespace of the LoadBalancerPool CR. Defaults to this LoadBalancer's
+                          namespace if omitted.
                         type: string
                     required:
                     - name
@@ -358,11 +285,13 @@ spec:
                   credentials.
                 properties:
                   name:
-                    description: Name of the Zone resource
+                    description: Name of the Zone resource.
+                    minLength: 1
                     type: string
                   namespace:
-                    description: Namespace of the Zone resource. Defaults to the operator
-                      namespace if omitted.
+                    description: |-
+                      Namespace of the Zone resource. Defaults to the operator namespace
+                      if omitted.
                     type: string
                 required:
                 - name
@@ -462,15 +391,6 @@ spec:
               resolvedFallbackPoolID:
                 description: ResolvedFallbackPoolID is the CF pool ID for spec.fallbackPoolRef.
                 type: string
-              unresolvedPoolRefs:
-                description: |-
-                  UnresolvedPoolRefs lists pool ref names the controller couldn't
-                  resolve on the last reconcile. Under fail-hard mode this triggers a
-                  requeue; under partial mode (spec.minimumPools set) these are
-                  dropped from the CF LB config until they appear.
-                items:
-                  type: string
-                type: array
             type: object
         required:
         - spec
