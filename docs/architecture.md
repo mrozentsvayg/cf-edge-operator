@@ -118,9 +118,9 @@ See [operations.md](operations.md#cf-api-timeout-and-retry-budget) for timeout/r
 
 ```
 CustomHostname CR (app namespace)
-  └─ zoneRef -> Zone CR (operator namespace)
-                 └─ credentialsRef -> Secret (operator namespace)
-                                      └─ apiToken -> Cloudflare API
+  `- zoneRef -> Zone CR (operator namespace)
+                `- credentialsRef -> Secret (operator namespace)
+                                     `- apiToken -> Cloudflare API
 ```
 
 App namespaces never hold Cloudflare credentials.
