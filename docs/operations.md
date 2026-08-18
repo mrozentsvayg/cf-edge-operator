@@ -165,38 +165,107 @@ podDisruptionBudget:
 
 ## Uninstallation
 
-**Important:** Delete CRs before removing the operator. The operator must be running to process finalizers and clean up Cloudflare resources. Removing the operator first leaves CRs stuck with finalizers that can only be removed manually.
+**Important -- delete in dependency order.** A resource CR's finalizer is released
+only after the operator has deleted the backing Cloudflare resource, and that
+requires three things to still be present: the operator itself, the CR's
+referenced config CR (Zone for CustomHostname/LoadBalancer, Account for
+LoadBalancerPool/LoadBalancerMonitor), and that config's credentials Secret --
+the operator builds a Cloudflare client from the Zone/Account + Secret. So delete
+the resource CRs *first*, then their Zone/Account CRs, the Secret, and finally the
+operator. Removing any of those before the resource CRs leaves the CRs stuck in
+`Terminating` -- see [CR stuck in Terminating](#cr-stuck-in-terminating).
+
+The `loadbalancing.cf-edge.io` CRs (LoadBalancer, LoadBalancerPool,
+LoadBalancerMonitor, Account) exist only on a control cluster
+(`controlPlane.enabled=true`); the `--ignore-not-found` flags below are no-ops
+elsewhere.
 
 ### Helm
 
 ```bash
-# 1. Delete all CustomHostname CRs (operator removes finalizers + deletes from CF)
+# 1. Delete resource CRs first (operator removes finalizers + deletes from CF)
+kubectl delete loadbalancers,loadbalancerpools,loadbalancermonitors --all -A --ignore-not-found
 kubectl delete customhostnames --all -A
 
-# 2. Delete all Zone CRs
+# 2. Delete the config CRs they reference (now that no dependents remain)
+kubectl delete accounts --all -A --ignore-not-found
 kubectl delete zones --all -A
 
-# 3. Uninstall the operator
+# 3. Uninstall the operator. This also removes the load-balancing CRDs, which are
+#    chart-templated (control-plane only); the base Zone/CustomHostname CRDs are
+#    install-only and survive.
 helm uninstall cf-edge-operator
 
-# 4. Delete CRDs (Helm does not remove CRDs on uninstall)
+# 4. Delete the remaining base CRDs
 kubectl delete -f charts/cf-edge-operator/crds/
 ```
 
 ### Kustomize
 
 ```bash
-# 1. Delete all CustomHostname CRs first
+# 1. Delete resource CRs first
+kubectl delete loadbalancers,loadbalancerpools,loadbalancermonitors --all -A --ignore-not-found
 kubectl delete customhostnames --all -A
 
-# 2. Delete all Zone CRs
+# 2. Delete the config CRs they reference
+kubectl delete accounts --all -A --ignore-not-found
 kubectl delete zones --all -A
 
 # 3. Remove operator, CRDs, RBAC, and namespace
 make undeploy
 ```
 
-**Do not run `make undeploy` before deleting CRs.** It removes CRDs, which triggers cascading deletion of all CRs. CRs with finalizers will block CRD deletion because the operator (already removed) cannot process them. Recovery requires manually patching finalizers off each stuck CR.
+**Do not run `make undeploy` (or `helm uninstall`) before deleting the resource CRs.**
+Removing the operator or CRDs first triggers cascading deletion of all CRs, but
+CRs with finalizers cannot be processed once the operator is gone, so they block
+CRD deletion. Recovery then requires manually patching finalizers off each stuck
+CR.
+
+### GitOps pruning
+
+When an app that bundles both resource CRs and their Zone/Account/Secret is
+pruned, deletion order is not guaranteed. If your GitOps tool supports deletion
+ordering, put the operator, Zone/Account CRs, and the Secret in an *earlier* wave
+than the resource CRs so they finalize while their credentials are still
+reachable (with ArgoCD, `argocd.argoproj.io/sync-wave`). If they do wedge, the
+recovery below is non-destructive.
+
+---
+
+## Troubleshooting
+
+### CR stuck in Terminating
+
+A CustomHostname, LoadBalancer, LoadBalancerPool, or LoadBalancerMonitor CR sits
+in `Terminating` and its finalizer never clears.
+
+**Cause.** Releasing the finalizer requires the operator to delete the backing
+Cloudflare resource first (for `deletePolicy: always`/`own-only`), which needs a
+Cloudflare client. The client can't be built if any of these was removed before
+the CR:
+
+- the operator itself (nothing is reconciling the CR),
+- the referenced Zone/Account CR, or
+- the credentials Secret.
+
+This is intentional: the operator will not release a CR while its Cloudflare
+resource may still exist, so a CR is never removed out from under a live
+Cloudflare resource. (`deletePolicy: never` and `managementPolicy: observe`
+release the finalizer without a client and are never affected.)
+
+**Recovery (non-destructive, self-healing).** Restore whatever was removed --
+re-apply the Zone/Account CR, re-create the Secret, or re-deploy the operator.
+The stuck CR is still being retried (controller-runtime backoff, capped at 30s),
+so on the next attempt it builds a client, deletes the Cloudflare resource, and
+clears its own finalizer. No manual finalizer editing is needed.
+
+**Last resort.** If the Cloudflare resource is already gone and you just need the
+CR removed, strip the finalizer manually (this leaves any surviving Cloudflare
+resource orphaned):
+
+```bash
+kubectl patch <kind> <name> -n <ns> --type=merge -p '{"metadata":{"finalizers":[]}}'
+```
 
 ---
 
