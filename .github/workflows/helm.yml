@@ -93,7 +93,24 @@ jobs:
           echo "$out" | grep -q "\-\-zap-log-level"             && { echo "FAIL: zapLogLevel should be absent by default"; exit 1; }
           echo "$out" | grep -q "export-logs"                  && { echo "FAIL: podLabels should be absent by default"; exit 1; }
 
+          # controlPlane gating: default (disabled) omits the flag, LB RBAC, and LB CRDs.
+          def=$(helm template test charts/cf-edge-operator/ --include-crds)
+          echo "$def" | grep -q "\-\-enable-loadbalancer"      && { echo "FAIL: --enable-loadbalancer present by default"; exit 1; }
+          echo "$def" | grep -q "loadbalancing.cf-edge.io"     && { echo "FAIL: loadbalancing RBAC/CRDs present by default"; exit 1; }
+          # controlPlane.enabled=true adds the flag, LB RBAC, and all four LB CRDs.
+          cp=$(helm template test charts/cf-edge-operator/ --include-crds --set controlPlane.enabled=true)
+          echo "$cp" | grep -q "\-\-enable-loadbalancer"       || { echo "FAIL: --enable-loadbalancer absent when controlPlane enabled"; exit 1; }
+          echo "$cp" | grep -q "resources: \[accounts\]"       || { echo "FAIL: LB RBAC absent when controlPlane enabled"; exit 1; }
+          n=$(echo "$cp" | grep -cE "name: (accounts|loadbalancers|loadbalancerpools|loadbalancermonitors)\.loadbalancing\.cf-edge\.io")
+          [ "$n" = "4" ] || { echo "FAIL: expected 4 loadbalancing CRDs when controlPlane enabled, got $n"; exit 1; }
+
           echo "All flag rendering tests passed"
 
       - name: Verify chart CRDs match generated CRDs
-        run: diff -q config/crd/bases/ charts/cf-edge-operator/crds/
+        run: |
+          # CRDs are split: crds/ (domains, saas -- always installed) and
+          # crds-optional/ (loadbalancing -- gated by controlPlane.enabled). Their
+          # union must byte-match the generated bases.
+          tmp=$(mktemp -d)
+          cp charts/cf-edge-operator/crds/*.yaml charts/cf-edge-operator/crds-optional/*.yaml "$tmp"/
+          diff -rq config/crd/bases/ "$tmp"/

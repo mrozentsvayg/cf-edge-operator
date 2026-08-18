@@ -36,6 +36,15 @@ deletePolicy: "always"
 # Dry-run mode: log what would happen without writing to Cloudflare.
 dryRun: false
 
+# Control-plane role: enable the load-balancing controllers (Account,
+# LoadBalancer, LoadBalancerPool, LoadBalancerMonitor). Load balancing is a
+# single-owner role -- exactly one cluster (the control cluster) should set this
+# true; all others leave it false. When false, the load-balancing CRDs, RBAC,
+# controllers, and metric series are all omitted, so per-cluster deployments are
+# byte-identical to a chart without the feature.
+controlPlane:
+  enabled: false
+
 # How often the zone controller bulk-lists Cloudflare custom hostnames to detect
 # external drift (manual dashboard changes, other automation). Lower values reduce
 # the window in which external changes go undetected.

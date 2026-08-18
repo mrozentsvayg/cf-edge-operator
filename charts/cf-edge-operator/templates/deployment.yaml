@@ -54,6 +54,9 @@ spec:
         {{- if ne (lower (toString .Values.dryRun)) "false" }}
         - --dry-run
         {{- end }}
+        {{- if .Values.controlPlane.enabled }}
+        - --enable-loadbalancer
+        {{- end }}
         {{- if ne (lower (toString .Values.leaderElect)) "false" }}
         - --leader-elect
         {{- end }}

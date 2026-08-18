@@ -110,6 +110,7 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 helm-validate: ## Lint and template-render Helm chart with all optional features enabled
 	helm lint charts/cf-edge-operator/
 	helm template test charts/cf-edge-operator/ \
+		--set controlPlane.enabled=true \
 		--set podDisruptionBudget.enabled=true \
 		--set serviceMonitor.enabled=true \
 		--set serviceMonitor.namespace=monitoring \
@@ -120,8 +121,14 @@ helm-validate: ## Lint and template-render Helm chart with all optional features
 
 .PHONY: helm-crd-diff
 helm-crd-diff: ## Verify chart CRDs match generated CRDs
-	@diff -q config/crd/bases/ charts/cf-edge-operator/crds/ || \
-		(echo "ERROR: Chart CRDs differ from generated CRDs. Run: cp config/crd/bases/*.yaml charts/cf-edge-operator/crds/" && exit 1)
+	@# CRDs are split across two dirs: crds/ (domains, saas -- always installed by
+	@# Helm) and crds-optional/ (loadbalancing -- gated by controlPlane.enabled and
+	@# emitted via templates/crds-loadbalancing.yaml). Their union must byte-match
+	@# the generated bases.
+	@set -e; tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+		cp charts/cf-edge-operator/crds/*.yaml charts/cf-edge-operator/crds-optional/*.yaml "$$tmp"/; \
+		diff -rq config/crd/bases/ "$$tmp"/ || \
+			{ echo "ERROR: Chart CRDs differ from generated CRDs. Copy each config/crd/bases/*.yaml into charts/cf-edge-operator/crds/ (domains, saas) or crds-optional/ (loadbalancing)."; exit 1; }
 	@echo "CRD files are in sync"
 
 ##@ Build

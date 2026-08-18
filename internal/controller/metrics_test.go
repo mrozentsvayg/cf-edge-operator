@@ -125,6 +125,14 @@ func TestCFCreateGuarded_AbandonsWhenFindErrors(t *testing.T) {
 	}
 }
 
+func TestPreInitLoadBalancerMetrics(t *testing.T) {
+	// Exercised only via main() behind --enable-loadbalancer, so cover it here.
+	// It must not panic (all vectors are registered in init()) and must be safe
+	// to call more than once (WithLabelValues is idempotent).
+	PreInitLoadBalancerMetrics()
+	PreInitLoadBalancerMetrics()
+}
+
 func TestCFCreateGuarded_No429Retry(t *testing.T) {
 	ctx := context.Background()
 	findCalls := 0

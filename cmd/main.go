@@ -80,6 +80,7 @@ func main() {
 	var managementPolicy string
 	var deletePolicy string
 	var dryRun bool
+	var enableLoadBalancer bool
 	var driftInterval time.Duration
 	var driftBuffer int
 	var cfAPITimeout time.Duration
@@ -118,6 +119,13 @@ func main() {
 			"Per-CR spec.deletePolicy overrides this default.")
 	flag.BoolVar(&dryRun, "dry-run", false,
 		"If set, skip all Cloudflare write operations and log what would happen instead.")
+	flag.BoolVar(&enableLoadBalancer, "enable-loadbalancer", false,
+		"Enable the load-balancing controllers (Account, LoadBalancer, LoadBalancerPool, "+
+			"LoadBalancerMonitor). Off by default: load balancing is a single-owner control-plane "+
+			"role, so only the control cluster runs these controllers. When off, none of the "+
+			"controllers start and their metric series are not pre-initialized (per-cluster "+
+			"deployments stay unchanged). Requires the load-balancing CRDs and RBAC to be present "+
+			"(chart: controlPlane.enabled=true).")
 	flag.DurationVar(&driftInterval, "drift-interval", time.Minute,
 		"How often the zone controller bulk-lists Cloudflare custom hostnames to detect external drift, "+
 			"and how often the load-balancing controllers (Account, LoadBalancer, LoadBalancerPool, "+
@@ -178,6 +186,7 @@ func main() {
 		"managementPolicy", managementPolicy,
 		"deletePolicy", deletePolicy,
 		"dryRun", dryRun,
+		"enableLoadBalancer", enableLoadBalancer,
 		"driftInterval", driftInterval,
 		"driftBuffer", driftBuffer,
 		"cfAPITimeout", cfAPITimeout,
@@ -385,64 +394,73 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "Zone")
 		os.Exit(1)
 	}
-	if err := (&controller.AccountReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
-		OperatorNamespace: operatorNamespace,
-		CFAPITimeout:      cfAPITimeout,
-		CFAPIMaxRetries:   cfAPIMaxRetries,
-		RequeueInterval:   driftInterval,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "Account")
-		os.Exit(1)
-	}
-	if err := (&controller.LoadBalancerMonitorReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
-		OperatorNamespace: operatorNamespace,
-		ManagementPolicy:  managementPolicy,
-		DeletePolicy:      deletePolicy,
-		DryRun:            dryRun,
-		CFAPITimeout:      cfAPITimeout,
-		CFAPIWriteTimeout: cfAPIWriteTimeout,
-		CFAPIMaxRetries:   cfAPIMaxRetries,
-		CFAPIWriteDelay:   cfAPIWriteDelay,
-		RequeueInterval:   driftInterval,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "LoadBalancerMonitor")
-		os.Exit(1)
-	}
-	if err := (&controller.LoadBalancerPoolReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
-		OperatorNamespace: operatorNamespace,
-		ManagementPolicy:  managementPolicy,
-		DeletePolicy:      deletePolicy,
-		DryRun:            dryRun,
-		CFAPITimeout:      cfAPITimeout,
-		CFAPIWriteTimeout: cfAPIWriteTimeout,
-		CFAPIMaxRetries:   cfAPIMaxRetries,
-		CFAPIWriteDelay:   cfAPIWriteDelay,
-		RequeueInterval:   driftInterval,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "LoadBalancerPool")
-		os.Exit(1)
-	}
-	if err := (&controller.LoadBalancerReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
-		OperatorNamespace: operatorNamespace,
-		ManagementPolicy:  managementPolicy,
-		DeletePolicy:      deletePolicy,
-		DryRun:            dryRun,
-		CFAPITimeout:      cfAPITimeout,
-		CFAPIWriteTimeout: cfAPIWriteTimeout,
-		CFAPIMaxRetries:   cfAPIMaxRetries,
-		CFAPIWriteDelay:   cfAPIWriteDelay,
-		RequeueInterval:   driftInterval,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "LoadBalancer")
-		os.Exit(1)
+	// Load-balancing controllers are opt-in (single-owner control-plane role).
+	// When disabled, none of them start and their metric series are not
+	// pre-initialized, so per-cluster deployments are unaffected. driftInterval
+	// is validated > 0 above, so RequeueInterval (the LB self-requeue cadence)
+	// is always positive here.
+	if enableLoadBalancer {
+		setupLog.Info("Load-balancing controllers enabled")
+		controller.PreInitLoadBalancerMetrics()
+		if err := (&controller.AccountReconciler{
+			Client:            mgr.GetClient(),
+			Scheme:            mgr.GetScheme(),
+			OperatorNamespace: operatorNamespace,
+			CFAPITimeout:      cfAPITimeout,
+			CFAPIMaxRetries:   cfAPIMaxRetries,
+			RequeueInterval:   driftInterval,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "Failed to create controller", "controller", "Account")
+			os.Exit(1)
+		}
+		if err := (&controller.LoadBalancerMonitorReconciler{
+			Client:            mgr.GetClient(),
+			Scheme:            mgr.GetScheme(),
+			OperatorNamespace: operatorNamespace,
+			ManagementPolicy:  managementPolicy,
+			DeletePolicy:      deletePolicy,
+			DryRun:            dryRun,
+			CFAPITimeout:      cfAPITimeout,
+			CFAPIWriteTimeout: cfAPIWriteTimeout,
+			CFAPIMaxRetries:   cfAPIMaxRetries,
+			CFAPIWriteDelay:   cfAPIWriteDelay,
+			RequeueInterval:   driftInterval,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "Failed to create controller", "controller", "LoadBalancerMonitor")
+			os.Exit(1)
+		}
+		if err := (&controller.LoadBalancerPoolReconciler{
+			Client:            mgr.GetClient(),
+			Scheme:            mgr.GetScheme(),
+			OperatorNamespace: operatorNamespace,
+			ManagementPolicy:  managementPolicy,
+			DeletePolicy:      deletePolicy,
+			DryRun:            dryRun,
+			CFAPITimeout:      cfAPITimeout,
+			CFAPIWriteTimeout: cfAPIWriteTimeout,
+			CFAPIMaxRetries:   cfAPIMaxRetries,
+			CFAPIWriteDelay:   cfAPIWriteDelay,
+			RequeueInterval:   driftInterval,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "Failed to create controller", "controller", "LoadBalancerPool")
+			os.Exit(1)
+		}
+		if err := (&controller.LoadBalancerReconciler{
+			Client:            mgr.GetClient(),
+			Scheme:            mgr.GetScheme(),
+			OperatorNamespace: operatorNamespace,
+			ManagementPolicy:  managementPolicy,
+			DeletePolicy:      deletePolicy,
+			DryRun:            dryRun,
+			CFAPITimeout:      cfAPITimeout,
+			CFAPIWriteTimeout: cfAPIWriteTimeout,
+			CFAPIMaxRetries:   cfAPIMaxRetries,
+			CFAPIWriteDelay:   cfAPIWriteDelay,
+			RequeueInterval:   driftInterval,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "Failed to create controller", "controller", "LoadBalancer")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 

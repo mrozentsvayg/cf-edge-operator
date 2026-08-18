@@ -167,10 +167,19 @@ func init() {
 		cfAPIRetriesTotal.WithLabelValues(cfResourceCustomHostname, op)
 	}
 	cfAPIRetriesTotal.WithLabelValues(cfResourceZone, cfOpGet)
+	// NOTE: LoadBalancer-family series are NOT pre-initialized here -- they are
+	// gated behind --enable-loadbalancer via PreInitLoadBalancerMetrics so that
+	// per-cluster deployments (load balancing disabled) expose the exact same
+	// metric series as before the feature existed.
+}
 
-	// LoadBalancer family (monitor, pool, loadbalancer) share the same
-	// operation set as customhostname. Pre-initialize all series so
-	// dashboards can plot from t=0 without a "no data" gap.
+// PreInitLoadBalancerMetrics pre-initializes the load-balancing metric series
+// (LoadBalancer / LoadBalancerPool / LoadBalancerMonitor / Account) so
+// dashboards can plot from t=0 without a "no data" gap. Called from main only
+// when --enable-loadbalancer is set; the metric vectors themselves are already
+// registered in init(). Kept out of init() so a per-cluster operator (load
+// balancing disabled) never surfaces these series.
+func PreInitLoadBalancerMetrics() {
 	for _, res := range []string{cfResourceLoadBalancerMon, cfResourceLoadBalancerPool, cfResourceLoadBalancer} {
 		for _, op := range []string{cfOpList, cfOpGet, cfOpCreate, cfOpUpdate, cfOpDelete} {
 			cfAPICallDuration.WithLabelValues(res, op)
