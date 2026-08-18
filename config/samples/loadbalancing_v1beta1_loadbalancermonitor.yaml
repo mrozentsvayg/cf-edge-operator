@@ -1,12 +1,11 @@
-apiVersion: saas.cf-edge.io/v1beta1
+apiVersion: loadbalancing.cf-edge.io/v1beta1
 kind: LoadBalancerMonitor
 metadata:
   name: http-health
   namespace: default
 spec:
-  # Zone CR whose credentials + status.accountID this monitor should use.
-  # LoadBalancer resources are account-scoped in Cloudflare; we reuse the
-  # Zone CR as the account carrier rather than introducing a new Account CRD.
+  # Account CR supplying the Cloudflare account ID + credentials. Monitors are
+  # account-scoped in Cloudflare.
   accountRef:
     name: example-com
     # namespace: defaults to the operator namespace if omitted

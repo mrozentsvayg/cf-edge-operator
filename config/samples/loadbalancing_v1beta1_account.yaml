@@ -1,0 +1,16 @@
+apiVersion: loadbalancing.cf-edge.io/v1beta1
+kind: Account
+metadata:
+  # Referenced by account-scoped resources (LoadBalancerPool, LoadBalancerMonitor)
+  # via spec.accountRef. Cloudflare load balancing is account-scoped, so pools and
+  # monitors point at an Account rather than a Zone.
+  name: example-com
+  namespace: default
+spec:
+  # Cloudflare account ID (32-char hex). Immutable.
+  id: "0123456789abcdef0123456789abcdef"
+  # Secret holding the Cloudflare API token (account-scoped Load Balancing perms).
+  # Must be in the same namespace as this Account.
+  credentialsRef:
+    name: cf-secret
+    # key: apiToken   # default

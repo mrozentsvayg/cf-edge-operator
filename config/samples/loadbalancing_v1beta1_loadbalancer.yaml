@@ -1,0 +1,34 @@
+apiVersion: loadbalancing.cf-edge.io/v1beta1
+kind: LoadBalancer
+metadata:
+  # CR name is a k8s identifier only; the CF-side LB is named after
+  # spec.hostname (which is also the DNS record).
+  name: web-global
+  namespace: default
+spec:
+  zoneRef:
+    name: example-com
+  hostname: lb.example.com
+
+  # Single-owner model: the LoadBalancer and every LoadBalancerPool it
+  # references are managed by one (control-cluster) operator, so each pool ref
+  # resolves from a local LoadBalancerPool CR (by name -> that CR's status.id).
+  defaultPoolRefs:
+    - name: web-us-pool
+    - name: web-apac-pool
+  fallbackPoolRef:
+    name: web-us-pool
+
+  # dynamic_latency: CF picks the pool with lowest observed RTT from the
+  # client's PoP. Requires health checks on origins (via the pools'
+  # monitorRef). Fails over automatically to the next pool in the list
+  # when the closest one goes unhealthy.
+  steeringPolicy: dynamic_latency
+
+  # Resolution is best-effort: a pool ref whose CR is absent or not yet ready
+  # is dropped and surfaced on the Ready condition (the LB->Pool watch re-drives
+  # as pools become ready). Cloudflare still requires a resolvable fallback pool
+  # plus at least one default pool before the LB is written.
+
+  # proxied: true    # CF proxy on; required for most LB features
+  # ttl:             # DNS TTL for non-proxied LBs only

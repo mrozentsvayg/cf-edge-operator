@@ -1,9 +1,9 @@
-apiVersion: saas.cf-edge.io/v1beta1
+apiVersion: loadbalancing.cf-edge.io/v1beta1
 kind: LoadBalancerPool
 metadata:
   # CR name is used verbatim as the CF pool name (account-scoped). Use a
-  # deterministic naming convention across clusters so a LoadBalancer in
-  # one cluster can reference peer pools by predictable names.
+  # deterministic naming convention so LoadBalancer pool refs stay readable;
+  # all pools referenced by a LoadBalancer are managed by the same operator.
   name: web-us-pool
   namespace: default
 spec:
@@ -13,8 +13,8 @@ spec:
     - name: us-primary
       address: origin-us.example.com
       # weight: "1.0"    # optional; only meaningful with multiple origins
-      # header:          # optional Host header override
-      #   Host: ["us.example.com"]
+      # header:          # optional; Cloudflare supports only the Host override
+      #   host: ["us.example.com"]
   monitorRef:
     name: http-health   # LoadBalancerMonitor CR name
     # namespace: defaults to this pool's namespace
