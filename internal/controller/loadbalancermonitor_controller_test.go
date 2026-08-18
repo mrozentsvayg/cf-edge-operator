@@ -26,15 +26,17 @@ import (
 // detection, param translation) so regressions surface at `go test` speed
 // without needing a running control plane.
 
-func newMonitorCR(name, ns string, spec lbv1beta1.LoadBalancerMonitorSpec) *lbv1beta1.LoadBalancerMonitor {
+// newMonitorCR builds a LoadBalancerMonitor CR in namespace "ns"; tests only
+// vary the name and spec (mirrors newPoolCR / newLBCR which hard-code metadata).
+func newMonitorCR(name string, spec lbv1beta1.LoadBalancerMonitorSpec) *lbv1beta1.LoadBalancerMonitor {
 	return &lbv1beta1.LoadBalancerMonitor{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns"},
 		Spec:       spec,
 	}
 }
 
 func TestMonitorMarker_UsesNamespaceAndName(t *testing.T) {
-	mon := newMonitorCR("http-health", "ns", lbv1beta1.LoadBalancerMonitorSpec{})
+	mon := newMonitorCR("http-health", lbv1beta1.LoadBalancerMonitorSpec{})
 	got := monitorMarker(mon)
 	want := "[cf-edge-operator:ns/http-health]"
 	if got != want {
@@ -56,7 +58,7 @@ func TestBuildMonitorDescription_PreservesUserPrefix(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			mon := newMonitorCR("name", "ns", lbv1beta1.LoadBalancerMonitorSpec{
+			mon := newMonitorCR("name", lbv1beta1.LoadBalancerMonitorSpec{
 				Description: tc.userDsc,
 			})
 			if got := buildMonitorDescription(mon); got != tc.want {
@@ -107,7 +109,7 @@ func TestMonitorDrifted_SpecFieldsCompareOnlyWhenSet(t *testing.T) {
 		ExpectedCodes: "200",
 		Interval:      60,
 	}
-	mon := newMonitorCR("m", "ns", lbv1beta1.LoadBalancerMonitorSpec{
+	mon := newMonitorCR("m", lbv1beta1.LoadBalancerMonitorSpec{
 		// Only method is managed; all other CR-side spec fields are zero.
 		Method: "GET",
 	})
@@ -125,7 +127,7 @@ func TestMonitorDrifted_SpecFieldsCompareOnlyWhenSet(t *testing.T) {
 }
 
 func TestMonitorDrifted_MarkerLossIsAlwaysDrift(t *testing.T) {
-	mon := newMonitorCR("m", "ns", lbv1beta1.LoadBalancerMonitorSpec{})
+	mon := newMonitorCR("m", lbv1beta1.LoadBalancerMonitorSpec{})
 	cf := &load_balancers.Monitor{
 		Description: "user edited via dashboard", // marker stripped
 	}
@@ -138,7 +140,7 @@ func TestBuildMonitorNewParams_OnlyEmitsSetFields(t *testing.T) {
 	// The CF SDK's param.Field distinguishes "set" from "not set". A field
 	// left unset omits from the JSON body, which is what we want when the
 	// CR spec field is zero -- CF applies its own defaults.
-	mon := newMonitorCR("m", "ns", lbv1beta1.LoadBalancerMonitorSpec{
+	mon := newMonitorCR("m", lbv1beta1.LoadBalancerMonitorSpec{
 		Method: "POST",
 		Path:   "/",
 	})
@@ -159,8 +161,36 @@ func TestBuildMonitorNewParams_OnlyEmitsSetFields(t *testing.T) {
 	}
 }
 
+func TestBuildMonitorParams_BoolsAlwaysSent(t *testing.T) {
+	// followRedirects / allowInsecure must always be emitted (even when false)
+	// so the value written matches monitorDrifted's unconditional comparison.
+	// Emitting only-when-true would drift-loop forever when the CR sets false
+	// but CF has true.
+	monFalse := newMonitorCR("m", lbv1beta1.LoadBalancerMonitorSpec{})
+	np := buildMonitorNewParams("acct", monFalse)
+	if !np.FollowRedirects.Present || np.FollowRedirects.Value {
+		t.Errorf("New: FollowRedirects must be present and false; present=%v value=%v", np.FollowRedirects.Present, np.FollowRedirects.Value)
+	}
+	if !np.AllowInsecure.Present || np.AllowInsecure.Value {
+		t.Errorf("New: AllowInsecure must be present and false; present=%v value=%v", np.AllowInsecure.Present, np.AllowInsecure.Value)
+	}
+	up := buildMonitorUpdateParams("acct", monFalse)
+	if !up.FollowRedirects.Present || up.FollowRedirects.Value {
+		t.Errorf("Update: FollowRedirects must be present and false; present=%v value=%v", up.FollowRedirects.Present, up.FollowRedirects.Value)
+	}
+	if !up.AllowInsecure.Present || up.AllowInsecure.Value {
+		t.Errorf("Update: AllowInsecure must be present and false; present=%v value=%v", up.AllowInsecure.Present, up.AllowInsecure.Value)
+	}
+
+	monTrue := newMonitorCR("m", lbv1beta1.LoadBalancerMonitorSpec{FollowRedirects: true, AllowInsecure: true})
+	np = buildMonitorNewParams("acct", monTrue)
+	if !np.FollowRedirects.Value || !np.AllowInsecure.Value {
+		t.Errorf("New: true bools must round-trip; followRedirects=%v allowInsecure=%v", np.FollowRedirects.Value, np.AllowInsecure.Value)
+	}
+}
+
 func TestBuildMonitorNewParams_HeaderIsPreserved(t *testing.T) {
-	mon := newMonitorCR("m", "ns", lbv1beta1.LoadBalancerMonitorSpec{
+	mon := newMonitorCR("m", lbv1beta1.LoadBalancerMonitorSpec{
 		Header: map[string][]string{
 			"Content-Type": {"application/json"},
 			"Accept":       {"application/json"},

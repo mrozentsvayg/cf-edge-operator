@@ -236,6 +236,55 @@ func cfRetry(ctx context.Context, resource, operation string, maxRetries int, fn
 	return maxRetries + 1, err
 }
 
+// cfCreateGuarded creates a Cloudflare resource with a duplicate-safe retry.
+// Cloudflare load-balancer pools and monitors have no server-side name
+// uniqueness, so a create that succeeds on Cloudflare but whose response times
+// out on the client would be duplicated by a blind retry (cfRetry). Before each
+// retry this re-lists via find and adopts any resource the prior attempt may
+// have created, instead of creating a second one.
+//
+//   - find returns (resource, nil) if a matching resource exists, (nil, nil) if
+//     none exists, or (nil, err) if existence can't be determined.
+//   - create performs the Cloudflare create call (and should record metrics via
+//     recordCFCall internally, mirroring cfRetry's contract).
+//
+// Returns the resource, whether it was adopted (recovered via find rather than
+// freshly created), the number of create attempts made (1 = no retry), and any
+// error. If find errors during a retry, the retry is abandoned -- returning the
+// original create error rather than risking a duplicate; the next reconcile
+// re-lists and adopts. Skips retry on 429, matching cfRetry.
+func cfCreateGuarded[T any](
+	ctx context.Context, resource string, maxRetries int,
+	find func() (*T, error), create func() (*T, error),
+) (result *T, adopted bool, attempts int, err error) {
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			if ctx.Err() != nil {
+				return nil, false, attempt, err
+			}
+			existing, findErr := find()
+			if findErr != nil {
+				// Can't confirm whether the prior attempt landed on Cloudflare;
+				// abandon the retry to avoid a duplicate.
+				return nil, false, attempt, err
+			}
+			if existing != nil {
+				return existing, true, attempt, nil
+			}
+			cfAPIRetriesTotal.WithLabelValues(resource, cfOpCreate).Inc()
+		}
+		result, err = create()
+		if err == nil {
+			return result, false, attempt + 1, nil
+		}
+		var cfErr *cloudflare.Error
+		if errors.As(err, &cfErr) && cfErr.StatusCode == 429 {
+			return nil, false, attempt + 1, err
+		}
+	}
+	return nil, false, maxRetries + 1, err
+}
+
 // sslProvisioningTTL is how long the SSL provisioning gauge stays in /metrics after
 // being set. Long enough for GMP to scrape it (60s interval), short enough to avoid
 // unbounded cardinality growth from the per-hostname label.

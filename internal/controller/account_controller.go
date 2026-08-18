@@ -56,6 +56,10 @@ type AccountReconciler struct {
 	CFAPITimeout      time.Duration
 	CFAPIMaxRetries   int
 	CFBaseURL         string
+	// RequeueInterval is how often a reconciled Account re-validates its
+	// credentials and retries after a transient validation failure. Mirrors the
+	// Zone controller's periodic re-validation; set from --drift-interval.
+	RequeueInterval time.Duration
 }
 
 // +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=accounts,verbs=get;list;watch;update;patch
@@ -73,7 +77,7 @@ func (r *AccountReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	cf, err := cfClientFromSecret(ctx, r.Client, account.Spec.CredentialsRef, account.Namespace, r.CFAPITimeout, r.CFBaseURL)
 	if err != nil {
 		log.Error(err, "account - client initialization failed", "account", account.Name)
-		return ctrl.Result{}, r.setInitialized(ctx, &account, metav1.ConditionFalse, "CredentialsError", err.Error())
+		return r.setInitialized(ctx, &account, metav1.ConditionFalse, "CredentialsError", err.Error())
 	}
 
 	// Validate the credentials can reach the account, and record its name.
@@ -90,16 +94,20 @@ func (r *AccountReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	})
 	if err != nil {
 		log.Error(err, "account - validation failed", "account", account.Name, "attempts", attempts)
-		return ctrl.Result{}, r.setInitialized(ctx, &account, metav1.ConditionFalse, "ValidationFailed", err.Error())
+		return r.setInitialized(ctx, &account, metav1.ConditionFalse, "ValidationFailed", err.Error())
 	}
 
 	account.Status.Name = name
 	log.Info("account - initialized", "account", account.Name, "accountID", account.Spec.ID, "name", name)
-	return ctrl.Result{}, r.setInitialized(ctx, &account, metav1.ConditionTrue, "AccountValidated",
+	return r.setInitialized(ctx, &account, metav1.ConditionTrue, "AccountValidated",
 		fmt.Sprintf("Account credentials validated (%s)", name))
 }
 
-func (r *AccountReconciler) setInitialized(ctx context.Context, account *lbv1beta1.Account, status metav1.ConditionStatus, reason, message string) error {
+// setInitialized records the Account's validation outcome and schedules a
+// periodic re-validation via RequeueInterval so revoked credentials or account
+// changes surface without waiting for a spec change (mirrors the Zone
+// controller's periodic re-drive).
+func (r *AccountReconciler) setInitialized(ctx context.Context, account *lbv1beta1.Account, status metav1.ConditionStatus, reason, message string) (ctrl.Result, error) {
 	apimeta.SetStatusCondition(&account.Status.Conditions, metav1.Condition{
 		Type:               conditionInitialized,
 		Status:             status,
@@ -108,9 +116,9 @@ func (r *AccountReconciler) setInitialized(ctx context.Context, account *lbv1bet
 		ObservedGeneration: account.Generation,
 	})
 	if err := r.Status().Update(ctx, account); err != nil {
-		return fmt.Errorf("failed to update account status: %w", err)
+		return ctrl.Result{}, fmt.Errorf("failed to update account status: %w", err)
 	}
-	return nil
+	return ctrl.Result{RequeueAfter: r.RequeueInterval}, nil
 }
 
 // cfClientFromSecret builds a Cloudflare API client from a credentials secret.

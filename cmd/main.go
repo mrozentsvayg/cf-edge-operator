@@ -119,7 +119,9 @@ func main() {
 	flag.BoolVar(&dryRun, "dry-run", false,
 		"If set, skip all Cloudflare write operations and log what would happen instead.")
 	flag.DurationVar(&driftInterval, "drift-interval", time.Minute,
-		"How often the zone controller bulk-lists Cloudflare custom hostnames to detect external drift. "+
+		"How often the zone controller bulk-lists Cloudflare custom hostnames to detect external drift, "+
+			"and how often the load-balancing controllers (Account, LoadBalancer, LoadBalancerPool, "+
+			"LoadBalancerMonitor) self-requeue to re-check external drift and retry transient errors. "+
 			"Lower values reduce the window in which external changes go undetected.")
 	flag.IntVar(&driftBuffer, "drift-buffer", 1024,
 		"Buffer size of the internal channel used to enqueue drifted CustomHostname CRs. "+
@@ -389,6 +391,7 @@ func main() {
 		OperatorNamespace: operatorNamespace,
 		CFAPITimeout:      cfAPITimeout,
 		CFAPIMaxRetries:   cfAPIMaxRetries,
+		RequeueInterval:   driftInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Account")
 		os.Exit(1)
@@ -404,6 +407,7 @@ func main() {
 		CFAPIWriteTimeout: cfAPIWriteTimeout,
 		CFAPIMaxRetries:   cfAPIMaxRetries,
 		CFAPIWriteDelay:   cfAPIWriteDelay,
+		RequeueInterval:   driftInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "LoadBalancerMonitor")
 		os.Exit(1)
@@ -419,6 +423,7 @@ func main() {
 		CFAPIWriteTimeout: cfAPIWriteTimeout,
 		CFAPIMaxRetries:   cfAPIMaxRetries,
 		CFAPIWriteDelay:   cfAPIWriteDelay,
+		RequeueInterval:   driftInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "LoadBalancerPool")
 		os.Exit(1)
@@ -434,6 +439,7 @@ func main() {
 		CFAPIWriteTimeout: cfAPIWriteTimeout,
 		CFAPIMaxRetries:   cfAPIMaxRetries,
 		CFAPIWriteDelay:   cfAPIWriteDelay,
+		RequeueInterval:   driftInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "LoadBalancer")
 		os.Exit(1)

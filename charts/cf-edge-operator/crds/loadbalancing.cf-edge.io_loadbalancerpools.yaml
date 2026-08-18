@@ -24,8 +24,8 @@ spec:
     - jsonPath: .status.id
       name: CF ID
       type: string
-    - jsonPath: .status.healthy
-      name: Healthy
+    - jsonPath: .status.enabled
+      name: Enabled
       type: boolean
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
@@ -192,13 +192,21 @@ spec:
                         Defaults to true.
                       type: boolean
                     header:
-                      additionalProperties:
-                        items:
-                          type: string
-                        type: array
                       description: |-
-                        Header sets per-origin request headers CF sends when routing traffic
-                        or health-checking. The Host header is the common use case.
+                        Header overrides request headers Cloudflare sends to this origin when
+                        routing traffic or health-checking. Cloudflare currently supports
+                        overriding only the Host header, so this is a typed field rather than a
+                        free-form map (an arbitrary map would silently drop unsupported keys).
+                      properties:
+                        host:
+                          description: |-
+                            Host overrides the Host header Cloudflare sends to this origin. Commonly
+                            set when multiple origins share an address and are distinguished by
+                            hostname. Cloudflare supports one Host override per origin, expressed as a
+                            list. An empty or omitted list clears the override.
+                          items:
+                            type: string
+                          type: array
                       type: object
                     name:
                       description: |-
@@ -303,16 +311,18 @@ spec:
                   Cloudflare. Values greater than 1 indicate external deletions occurred.
                 format: int32
                 type: integer
-              healthy:
+              enabled:
                 description: |-
-                  Healthy is the last observed pool-level health status from CF's
-                  health-check state.
+                  Enabled is the pool's administrative enabled state as last observed from
+                  Cloudflare. This reflects whether the pool is eligible to receive traffic,
+                  NOT per-origin health -- Cloudflare exposes origin health via a separate
+                  endpoint the operator does not currently poll.
                 type: boolean
               id:
                 description: |-
                   ID is the Cloudflare-assigned pool ID, used for updates and deletes.
-                  Also read by LoadBalancer controllers to resolve peer pool references
-                  to CF pool IDs.
+                  Also read by the LoadBalancer controller to resolve this pool's refs
+                  (spec.defaultPoolRefs etc.) to CF pool IDs.
                 type: string
               monitorID:
                 description: |-

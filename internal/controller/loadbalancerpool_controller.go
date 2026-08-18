@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -46,20 +47,20 @@ import (
 )
 
 const (
-	finalizerNameLBPool = "saas.cf-edge.io/loadbalancerpool"
+	finalizerNameLBPool = "loadbalancing.cf-edge.io/loadbalancerpool"
 )
 
 // LoadBalancerPoolReconciler reconciles a LoadBalancerPool object.
 //
-// Pools are Cloudflare account-scoped. The CR references a Zone as its
-// account credential carrier (see LoadBalancerMonitorSpec.AccountRef doc)
-// and optionally a LoadBalancerMonitor whose CF ID gets threaded into the
-// pool's monitor field. If the referenced monitor isn't yet ready
-// (status.ID empty), the pool reconcile requeues.
+// Pools are Cloudflare account-scoped. The CR references an Account (via
+// spec.accountRef) for the account ID + credentials, and optionally a
+// LoadBalancerMonitor whose CF ID gets threaded into the pool's monitor field.
+// If the referenced monitor isn't ready yet (CR absent or status.ID empty), the
+// pool waits (WaitingForMonitor) and the monitor->pool watch re-drives it.
 //
-// CR name is used verbatim as the CF pool "name" tag; ensure uniqueness at
-// the chart layer. Cross-CR-lookup by name is used both here (for monitor
-// resolution) and in the LoadBalancer controller (for peer-pool resolution).
+// CR name is used verbatim as the CF pool "name" tag; ensure uniqueness at the
+// chart layer. The CR name is also how the LoadBalancer controller resolves
+// this pool's refs to a CF pool ID (via status.ID).
 type LoadBalancerPoolReconciler struct {
 	client.Client
 	Scheme            *runtime.Scheme
@@ -72,6 +73,11 @@ type LoadBalancerPoolReconciler struct {
 	CFAPIMaxRetries   int
 	CFAPIWriteDelay   time.Duration
 	CFBaseURL         string
+	// RequeueInterval is how often a reconciled pool re-reconciles to re-check
+	// for external Cloudflare drift and to retry after transient errors. There
+	// is no Zone-style coordinator for pools, so the controller self-requeues.
+	// Set from --drift-interval.
+	RequeueInterval time.Duration
 }
 
 // +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=loadbalancerpools,verbs=get;list;watch;create;update;patch;delete
@@ -123,7 +129,7 @@ func (r *LoadBalancerPoolReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	ai, err := r.buildAccountClient(ctx, &pool)
 	if err != nil {
 		log.Error(err, "loadbalancerpool - client initialization failed")
-		return ctrl.Result{}, r.setError(ctx, &pool, "AccountError", err.Error())
+		return r.setError(ctx, &pool, "AccountError", err.Error())
 	}
 
 	if !controllerutil.ContainsFinalizer(&pool, finalizerNameLBPool) {
@@ -140,14 +146,15 @@ func (r *LoadBalancerPoolReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// requeue on the next monitor status change (watch-driven).
 	monitorID, err := r.resolveMonitorID(ctx, &pool)
 	if err != nil {
-		return ctrl.Result{}, r.setError(ctx, &pool, "MonitorRefError", err.Error())
+		return r.setError(ctx, &pool, "MonitorRefError", err.Error())
 	}
 	pool.Status.MonitorID = monitorID
 	if pool.Spec.MonitorRef != nil && monitorID == "" {
 		// Monitor CR exists but hasn't reconciled yet, or doesn't exist. Set
 		// condition and requeue; the LoadBalancerMonitor watch handler will
-		// re-enqueue us once the monitor comes online.
-		return ctrl.Result{}, r.setCondition(ctx, &pool, metav1.ConditionFalse,
+		// re-enqueue us once the monitor comes online, backed by the periodic
+		// self-requeue.
+		return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, &pool, metav1.ConditionFalse,
 			"WaitingForMonitor",
 			fmt.Sprintf("Monitor %q not ready yet", pool.Spec.MonitorRef.Name))
 	}
@@ -167,14 +174,14 @@ func (r *LoadBalancerPoolReconciler) reconcileCloudflareState(ctx context.Contex
 	})
 	if err != nil {
 		log.Error(err, "loadbalancerpool - lookup failed", "name", pool.Name, "attempts", attempts)
-		return ctrl.Result{}, r.setError(ctx, pool, "LookupFailed", err.Error())
+		return r.setError(ctx, pool, "LookupFailed", err.Error())
 	}
 
 	if existing == nil {
 		if mgmt == ManagementPolicyObserve {
 			log.Info("loadbalancerpool - not creating (managementPolicy=observe)", "name", pool.Name)
 			pool.Status.ConsecutiveErrors = 0
-			return ctrl.Result{}, r.setCondition(ctx, pool, metav1.ConditionFalse,
+			return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, pool, metav1.ConditionFalse,
 				"WaitingForExternal", "Pool not yet provisioned in Cloudflare")
 		}
 		return r.handleCreate(ctx, ai, pool, monitorID)
@@ -190,7 +197,7 @@ func (r *LoadBalancerPoolReconciler) reconcileCloudflareState(ctx context.Contex
 		operationsTotal.WithLabelValues(cfResourceLoadBalancerPool, cfOpAdopt).Inc()
 		pool.Status.ID = existing.ID
 	}
-	pool.Status.Healthy = poolHealthyFromCF(existing)
+	pool.Status.Enabled = poolEnabledFromCF(existing)
 
 	if poolDrifted(existing, pool, monitorID) {
 		if mgmt != ManagementPolicyManage {
@@ -202,10 +209,10 @@ func (r *LoadBalancerPoolReconciler) reconcileCloudflareState(ctx context.Contex
 			log.Info("loadbalancerpool - updating, drift detected", "name", pool.Name)
 			updated, updErr := r.editPool(ctx, ai, pool, existing.ID, monitorID)
 			if updErr != nil {
-				return ctrl.Result{}, r.setError(ctx, pool, "UpdateFailed", updErr.Error())
+				return r.setError(ctx, pool, "UpdateFailed", updErr.Error())
 			}
 			existing = updated
-			pool.Status.Healthy = poolHealthyFromCF(existing)
+			pool.Status.Enabled = poolEnabledFromCF(existing)
 		}
 	}
 
@@ -217,37 +224,43 @@ func (r *LoadBalancerPoolReconciler) handleCreate(ctx context.Context, ai *accou
 
 	if r.DryRun {
 		log.Info("loadbalancerpool - not creating (dry-run)", "name", pool.Name)
-		return ctrl.Result{}, r.setCondition(ctx, pool, metav1.ConditionFalse, "DryRun", "not creating (dry-run)")
+		return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, pool, metav1.ConditionFalse, "DryRun", "not creating (dry-run)")
 	}
 
 	params := buildPoolNewParams(ai.AccountID, pool, monitorID)
-	var resp *load_balancers.Pool
-	attempts, err := cfRetry(ctx, cfResourceLoadBalancerPool, cfOpCreate, r.CFAPIMaxRetries, func() error {
-		start := time.Now()
-		var callErr error
-		resp, callErr = ai.Client.LoadBalancers.Pools.New(ctx, params,
-			option.WithRequestTimeout(r.CFAPIWriteTimeout))
-		recordCFCall(cfResourceLoadBalancerPool, cfOpCreate, start, &callErr)
-		return callErr
-	})
+	// Guard against duplicate creates: CF pools have no name uniqueness, so a
+	// timed-out-but-succeeded create must be adopted on retry, not re-created.
+	resp, adopted, attempts, err := cfCreateGuarded(ctx, cfResourceLoadBalancerPool, r.CFAPIMaxRetries,
+		func() (*load_balancers.Pool, error) { return r.findPoolByCRName(ctx, ai, pool) },
+		func() (*load_balancers.Pool, error) {
+			start := time.Now()
+			p, callErr := ai.Client.LoadBalancers.Pools.New(ctx, params,
+				option.WithRequestTimeout(r.CFAPIWriteTimeout))
+			recordCFCall(cfResourceLoadBalancerPool, cfOpCreate, start, &callErr)
+			return p, callErr
+		})
 	if err != nil {
 		log.Error(err, "loadbalancerpool - create failed", "name", pool.Name, "attempts", attempts)
-		return ctrl.Result{}, r.setError(ctx, pool, "CreateFailed", err.Error())
+		return r.setError(ctx, pool, "CreateFailed", err.Error())
 	}
 	isRecreation := pool.Status.CreateCount > 0
 	op := cfOpCreate
+	verb := "created"
 	if isRecreation {
 		op = cfOpRecreate
-		log.Info("loadbalancerpool - recreated", "name", pool.Name, "id", resp.ID)
+		verb = "recreated"
+	}
+	if adopted {
+		log.Info(fmt.Sprintf("loadbalancerpool - %s (recovered timed-out create)", verb), "name", pool.Name, "id", resp.ID)
 	} else {
-		log.Info("loadbalancerpool - created", "name", pool.Name, "id", resp.ID)
+		log.Info(fmt.Sprintf("loadbalancerpool - %s", verb), "name", pool.Name, "id", resp.ID)
 	}
 	operationsTotal.WithLabelValues(cfResourceLoadBalancerPool, op).Inc()
 	r.paceWrite()
 
 	pool.Status.ID = resp.ID
 	pool.Status.CreateCount++
-	pool.Status.Healthy = poolHealthyFromCF(resp)
+	pool.Status.Enabled = poolEnabledFromCF(resp)
 	return r.markReady(ctx, pool)
 }
 
@@ -356,8 +369,10 @@ func (r *LoadBalancerPoolReconciler) findPoolByCRName(ctx context.Context, ai *a
 
 // resolveMonitorID resolves spec.monitorRef to the referenced monitor's
 // status.ID. Returns "" if MonitorRef is unset (pool has no monitor).
-// Returns "" + nil error if the monitor CR exists but isn't ready yet
-// (status.ID empty) -- the caller treats this as "requeue and wait".
+// Returns "" + nil error when the monitor CR doesn't exist yet (NotFound) or
+// exists but isn't ready (status.ID empty) -- both are soft "wait for the
+// monitor" states the caller surfaces as WaitingForMonitor, not hard errors.
+// A non-NotFound Get error is returned so it surfaces as a reconcile error.
 func (r *LoadBalancerPoolReconciler) resolveMonitorID(ctx context.Context, pool *lbv1beta1.LoadBalancerPool) (string, error) {
 	if pool.Spec.MonitorRef == nil {
 		return "", nil
@@ -368,6 +383,9 @@ func (r *LoadBalancerPoolReconciler) resolveMonitorID(ctx context.Context, pool 
 	}
 	var mon lbv1beta1.LoadBalancerMonitor
 	if err := r.Get(ctx, types.NamespacedName{Name: pool.Spec.MonitorRef.Name, Namespace: ns}, &mon); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", nil
+		}
 		return "", fmt.Errorf("resolve monitor %q in ns %q: %w", pool.Spec.MonitorRef.Name, ns, err)
 	}
 	return mon.Status.ID, nil
@@ -379,12 +397,14 @@ func (r *LoadBalancerPoolReconciler) buildAccountClient(ctx context.Context, poo
 
 func (r *LoadBalancerPoolReconciler) markReady(ctx context.Context, pool *lbv1beta1.LoadBalancerPool) (ctrl.Result, error) {
 	pool.Status.ConsecutiveErrors = 0
-	return ctrl.Result{}, r.setCondition(ctx, pool, metav1.ConditionTrue, "Reconciled", "Pool is synchronized with Cloudflare")
+	return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, pool, metav1.ConditionTrue, "Reconciled", "Pool is synchronized with Cloudflare")
 }
 
-func (r *LoadBalancerPoolReconciler) setError(ctx context.Context, pool *lbv1beta1.LoadBalancerPool, reason, message string) error {
+// setError records a reconcile failure and schedules a self-requeue so the pool
+// re-reconciles after RequeueInterval even without a spec change or watch event.
+func (r *LoadBalancerPoolReconciler) setError(ctx context.Context, pool *lbv1beta1.LoadBalancerPool, reason, message string) (ctrl.Result, error) {
 	pool.Status.ConsecutiveErrors++
-	return r.setCondition(ctx, pool, metav1.ConditionFalse, reason, message)
+	return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, pool, metav1.ConditionFalse, reason, message)
 }
 
 func (r *LoadBalancerPoolReconciler) setCondition(ctx context.Context, pool *lbv1beta1.LoadBalancerPool, status metav1.ConditionStatus, reason, message string) error {
@@ -465,13 +485,13 @@ func (r *LoadBalancerPoolReconciler) mapMonitorToPools(ctx context.Context, obj 
 
 // ---- Helpers -----------------------------------------------------------
 
-// poolHealthyFromCF derives the pool-level health signal we surface on
-// status.healthy from a CF Pool response. CF only exposes per-origin health
-// via a separate PoolHealth endpoint; the Pool struct itself doesn't carry
-// a rollup health flag. For status.healthy we surface pool.Enabled as a
-// coarse "is this pool eligible to receive traffic" proxy. If deep health
-// is needed later, extend this to call PoolHealth and combine.
-func poolHealthyFromCF(cf *load_balancers.Pool) bool {
+// poolEnabledFromCF reports the pool's administrative enabled state from a CF
+// Pool response, surfaced on status.enabled. CF exposes per-origin health only
+// via a separate PoolHealth endpoint; the Pool struct itself carries no rollup
+// health flag, so we surface the enabled flag (is this pool eligible to receive
+// traffic) rather than pretending to report health. If deep health is needed
+// later, add a distinct status field sourced from PoolHealth.
+func poolEnabledFromCF(cf *load_balancers.Pool) bool {
 	if cf == nil {
 		return false
 	}
@@ -496,9 +516,13 @@ func buildOriginParams(origins []lbv1beta1.LoadBalancerPoolOrigin) []load_balanc
 				op.Weight = cloudflare.F(w)
 			}
 		}
-		if len(o.Header) > 0 {
+		// Header is managed only when set (non-nil). When managed, always send
+		// the Host list -- even if empty (which clears the override) -- so the
+		// value written matches what originsDrifted compares against. Cloudflare
+		// supports only the Host header override per origin.
+		if o.Header != nil {
 			op.Header = cloudflare.F(load_balancers.HeaderParam{
-				Host: cloudflare.F(o.Header["Host"]),
+				Host: cloudflare.F(append([]string{}, o.Header.Host...)),
 			})
 		}
 		out = append(out, op)
@@ -599,9 +623,7 @@ func poolDrifted(cf *load_balancers.Pool, pool *lbv1beta1.LoadBalancerPool, moni
 	if pool.Spec.Description != "" && cf.Description != pool.Spec.Description {
 		return true
 	}
-	// Compare origins by (name, address, enabled, weight) tuple. Header
-	// comparison isn't done here yet -- header shape has a strict Host-only
-	// mapping and drift detection would need to unwrap CF's HeaderParam.
+	// Compare origins by (name, address, enabled, weight, header) tuple.
 	if originsDrifted(cf.Origins, pool.Spec.Origins) {
 		return true
 	}
@@ -632,6 +654,11 @@ func originsDrifted(cf []load_balancers.Origin, spec []lbv1beta1.LoadBalancerPoo
 			if err == nil && c.Weight != wantW {
 				return true
 			}
+		}
+		// Header is managed only when set (non-nil); when managed we send and
+		// compare the Host list. cf.Header.Host is []string (CF's Host alias).
+		if s.Header != nil && !stringSlicesEqual(c.Header.Host, s.Header.Host) {
+			return true
 		}
 	}
 	return false

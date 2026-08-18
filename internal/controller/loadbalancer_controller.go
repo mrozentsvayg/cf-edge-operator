@@ -50,7 +50,7 @@ import (
 )
 
 const (
-	finalizerNameLB = "saas.cf-edge.io/loadbalancer"
+	finalizerNameLB = "loadbalancing.cf-edge.io/loadbalancer"
 
 	// defaultAPITokenKey is the fallback key name inside a Zone's
 	// credentialsRef secret when the CR doesn't set it explicitly.
@@ -86,6 +86,12 @@ type LoadBalancerReconciler struct {
 	CFAPIMaxRetries   int
 	CFAPIWriteDelay   time.Duration
 	CFBaseURL         string
+	// RequeueInterval is how often a reconciled LoadBalancer re-reconciles to
+	// re-check for external Cloudflare drift and to retry after transient
+	// errors. Unlike CustomHostname there is no Zone-style coordinator driving
+	// periodic re-checks, so each controller self-requeues. Set from
+	// --drift-interval.
+	RequeueInterval time.Duration
 }
 
 // +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=loadbalancers,verbs=get;list;watch;create;update;patch;delete
@@ -137,7 +143,7 @@ func (r *LoadBalancerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	zi, err := r.buildZoneClient(ctx, &lb)
 	if err != nil {
 		log.Error(err, "loadbalancer - client initialization failed")
-		return ctrl.Result{}, r.setError(ctx, &lb, "ZoneError", err.Error())
+		return r.setError(ctx, &lb, "ZoneError", err.Error())
 	}
 
 	if !controllerutil.ContainsFinalizer(&lb, finalizerNameLB) {
@@ -154,7 +160,7 @@ func (r *LoadBalancerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// this reconcile as each pool becomes ready.
 	resolved, err := r.resolveAllPools(ctx, &lb)
 	if err != nil {
-		return ctrl.Result{}, r.setError(ctx, &lb, "PoolResolutionError", err.Error())
+		return r.setError(ctx, &lb, "PoolResolutionError", err.Error())
 	}
 	lb.Status.ResolvedDefaultPoolIDs = resolved.defaultIDs
 	lb.Status.ResolvedFallbackPoolID = resolved.fallbackID
@@ -162,11 +168,14 @@ func (r *LoadBalancerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// CF requires a non-empty fallback pool (and at least one default pool,
 	// which resolveAllPools guarantees by promoting the fallback when every
 	// default ref is unresolved). Until the fallback resolves there is no
-	// valid LB to write, so wait for it.
+	// valid LB to write, so wait for it. This is a wait-for-dependency state,
+	// not a reconcile error (mirrors WaitingForMonitor): the pool->LB watch
+	// re-drives when the fallback pool becomes ready, backed by the periodic
+	// self-requeue.
 	if resolved.fallbackID == "" {
 		msg := fmt.Sprintf("Fallback pool %q not yet resolved (required by Cloudflare)",
 			lb.Spec.FallbackPoolRef.Name)
-		return ctrl.Result{}, r.setError(ctx, &lb, "WaitingForFallbackPool", msg)
+		return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, &lb, metav1.ConditionFalse, "WaitingForFallbackPool", msg)
 	}
 
 	return r.reconcileCloudflareState(ctx, zi, &lb, resolved)
@@ -184,14 +193,14 @@ func (r *LoadBalancerReconciler) reconcileCloudflareState(ctx context.Context, z
 	})
 	if err != nil {
 		log.Error(err, "loadbalancer - lookup failed", "hostname", lb.Spec.Hostname, "attempts", attempts)
-		return ctrl.Result{}, r.setError(ctx, lb, "LookupFailed", err.Error())
+		return r.setError(ctx, lb, "LookupFailed", err.Error())
 	}
 
 	if existing == nil {
 		if mgmt == ManagementPolicyObserve {
 			log.Info("loadbalancer - not creating (managementPolicy=observe)", "hostname", lb.Spec.Hostname)
 			lb.Status.ConsecutiveErrors = 0
-			return ctrl.Result{}, r.setCondition(ctx, lb, metav1.ConditionFalse,
+			return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, lb, metav1.ConditionFalse,
 				"WaitingForExternal", "LoadBalancer not yet provisioned in Cloudflare")
 		}
 		return r.handleCreate(ctx, zi, lb, resolved)
@@ -218,7 +227,7 @@ func (r *LoadBalancerReconciler) reconcileCloudflareState(ctx context.Context, z
 			log.Info("loadbalancer - updating, drift detected", "hostname", lb.Spec.Hostname)
 			updated, updErr := r.editLoadBalancer(ctx, zi, lb, existing.ID, resolved)
 			if updErr != nil {
-				return ctrl.Result{}, r.setError(ctx, lb, "UpdateFailed", updErr.Error())
+				return r.setError(ctx, lb, "UpdateFailed", updErr.Error())
 			}
 			existing = updated
 		}
@@ -233,7 +242,7 @@ func (r *LoadBalancerReconciler) handleCreate(ctx context.Context, zi *zoneInfo,
 
 	if r.DryRun {
 		log.Info("loadbalancer - not creating (dry-run)", "hostname", lb.Spec.Hostname)
-		return ctrl.Result{}, r.setCondition(ctx, lb, metav1.ConditionFalse, "DryRun", "not creating (dry-run)")
+		return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, lb, metav1.ConditionFalse, "DryRun", "not creating (dry-run)")
 	}
 
 	params := buildLBNewParams(zi.ID, lb, resolved)
@@ -248,7 +257,7 @@ func (r *LoadBalancerReconciler) handleCreate(ctx context.Context, zi *zoneInfo,
 	})
 	if err != nil {
 		log.Error(err, "loadbalancer - create failed", "hostname", lb.Spec.Hostname, "attempts", attempts)
-		return ctrl.Result{}, r.setError(ctx, lb, "CreateFailed", err.Error())
+		return r.setError(ctx, lb, "CreateFailed", err.Error())
 	}
 	isRecreation := lb.Status.CreateCount > 0
 	op := cfOpCreate
@@ -418,12 +427,14 @@ func (r *LoadBalancerReconciler) markReady(ctx context.Context, lb *lbv1beta1.Lo
 		msg = fmt.Sprintf("LoadBalancer synchronized; degraded: %d pool ref(s) unresolved %v",
 			len(resolved.unresolved), resolved.unresolved)
 	}
-	return ctrl.Result{}, r.setCondition(ctx, lb, metav1.ConditionTrue, "Reconciled", msg)
+	return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, lb, metav1.ConditionTrue, "Reconciled", msg)
 }
 
-func (r *LoadBalancerReconciler) setError(ctx context.Context, lb *lbv1beta1.LoadBalancer, reason, message string) error {
+// setError records a reconcile failure and schedules a self-requeue so the LB
+// re-reconciles after RequeueInterval even without a spec change or watch event.
+func (r *LoadBalancerReconciler) setError(ctx context.Context, lb *lbv1beta1.LoadBalancer, reason, message string) (ctrl.Result, error) {
 	lb.Status.ConsecutiveErrors++
-	return r.setCondition(ctx, lb, metav1.ConditionFalse, reason, message)
+	return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, lb, metav1.ConditionFalse, reason, message)
 }
 
 func (r *LoadBalancerReconciler) setCondition(ctx context.Context, lb *lbv1beta1.LoadBalancer, status metav1.ConditionStatus, reason, message string) error {

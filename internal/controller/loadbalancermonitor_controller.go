@@ -48,15 +48,15 @@ import (
 const (
 	// finalizerNameLBMonitor is the finalizer key for LoadBalancerMonitor CRs.
 	// Matches the pattern used by CustomHostname (finalizerName).
-	finalizerNameLBMonitor = "saas.cf-edge.io/loadbalancermonitor"
+	finalizerNameLBMonitor = "loadbalancing.cf-edge.io/loadbalancermonitor"
 )
 
 // LoadBalancerMonitorReconciler reconciles a LoadBalancerMonitor object.
 //
-// Monitors are Cloudflare account-scoped resources; the CR references a Zone
-// as its account carrier (see LoadBalancerMonitorSpec.AccountRef doc). The
-// controller resolves the Zone to (a) CF API credentials and (b) the account
-// ID, then talks to the CF Load Balancer Monitors API under that account.
+// Monitors are Cloudflare account-scoped resources; the CR references an Account
+// (via spec.accountRef) that supplies the CF account ID and API credentials.
+// The controller then talks to the CF Load Balancer Monitors API under that
+// account.
 //
 // The controller name-scopes each monitor: the CR's metadata.name is used
 // verbatim as the CF-side monitor description (the CF monitor doesn't have a
@@ -83,6 +83,11 @@ type LoadBalancerMonitorReconciler struct {
 	CFAPIWriteDelay time.Duration
 	// CFBaseURL overrides the CF API base URL (test hook).
 	CFBaseURL string
+	// RequeueInterval is how often a reconciled monitor re-reconciles to
+	// re-check for external Cloudflare drift and to retry after transient
+	// errors. There is no Zone-style coordinator for monitors, so the
+	// controller self-requeues. Set from --drift-interval.
+	RequeueInterval time.Duration
 }
 
 // accountInfo bundles a CF client with the account ID it should act against.
@@ -145,7 +150,7 @@ func (r *LoadBalancerMonitorReconciler) Reconcile(ctx context.Context, req ctrl.
 	ai, err := r.buildAccountClient(ctx, &mon)
 	if err != nil {
 		log.Error(err, "loadbalancermonitor - client initialization failed")
-		return ctrl.Result{}, r.setError(ctx, &mon, "AccountError", err.Error())
+		return r.setError(ctx, &mon, "AccountError", err.Error())
 	}
 
 	if !controllerutil.ContainsFinalizer(&mon, finalizerNameLBMonitor) {
@@ -176,14 +181,14 @@ func (r *LoadBalancerMonitorReconciler) reconcileCloudflareState(ctx context.Con
 	})
 	if err != nil {
 		log.Error(err, "loadbalancermonitor - lookup failed", "name", mon.Name, "attempts", attempts)
-		return ctrl.Result{}, r.setError(ctx, mon, "LookupFailed", err.Error())
+		return r.setError(ctx, mon, "LookupFailed", err.Error())
 	}
 
 	if existing == nil {
 		if mgmt == ManagementPolicyObserve {
 			log.Info("loadbalancermonitor - not creating (managementPolicy=observe)", "name", mon.Name)
 			mon.Status.ConsecutiveErrors = 0
-			return ctrl.Result{}, r.setCondition(ctx, mon, metav1.ConditionFalse,
+			return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, mon, metav1.ConditionFalse,
 				"WaitingForExternal", "Monitor not yet provisioned in Cloudflare")
 		}
 		return r.handleCreate(ctx, ai, mon)
@@ -212,7 +217,7 @@ func (r *LoadBalancerMonitorReconciler) reconcileCloudflareState(ctx context.Con
 			log.Info("loadbalancermonitor - updating, drift detected", "name", mon.Name)
 			updated, updErr := r.editMonitor(ctx, ai, mon, existing.ID)
 			if updErr != nil {
-				return ctrl.Result{}, r.setError(ctx, mon, "UpdateFailed", updErr.Error())
+				return r.setError(ctx, mon, "UpdateFailed", updErr.Error())
 			}
 			existing = updated
 		}
@@ -231,31 +236,38 @@ func (r *LoadBalancerMonitorReconciler) handleCreate(ctx context.Context, ai *ac
 
 	if r.DryRun {
 		log.Info("loadbalancermonitor - not creating (dry-run)", "name", mon.Name)
-		return ctrl.Result{}, r.setCondition(ctx, mon, metav1.ConditionFalse, "DryRun", "not creating (dry-run)")
+		return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, mon, metav1.ConditionFalse, "DryRun", "not creating (dry-run)")
 	}
 
 	params := buildMonitorNewParams(ai.AccountID, mon)
-	var resp *load_balancers.Monitor
-	attempts, err := cfRetry(ctx, cfResourceLoadBalancerMon, cfOpCreate, r.CFAPIMaxRetries, func() error {
-		start := time.Now()
-		var callErr error
-		resp, callErr = ai.Client.LoadBalancers.Monitors.New(ctx, params,
-			option.WithRequestTimeout(r.CFAPIWriteTimeout))
-		recordCFCall(cfResourceLoadBalancerMon, cfOpCreate, start, &callErr)
-		return callErr
-	})
+	// Guard against duplicate creates: CF monitors have no name uniqueness, so a
+	// timed-out-but-succeeded create must be adopted on retry (found by marker),
+	// not re-created.
+	resp, adopted, attempts, err := cfCreateGuarded(ctx, cfResourceLoadBalancerMon, r.CFAPIMaxRetries,
+		func() (*load_balancers.Monitor, error) { return r.findMonitorByCRName(ctx, ai, mon) },
+		func() (*load_balancers.Monitor, error) {
+			start := time.Now()
+			m, callErr := ai.Client.LoadBalancers.Monitors.New(ctx, params,
+				option.WithRequestTimeout(r.CFAPIWriteTimeout))
+			recordCFCall(cfResourceLoadBalancerMon, cfOpCreate, start, &callErr)
+			return m, callErr
+		})
 	if err != nil {
 		log.Error(err, "loadbalancermonitor - create failed", "name", mon.Name, "attempts", attempts)
-		return ctrl.Result{}, r.setError(ctx, mon, "CreateFailed", err.Error())
+		return r.setError(ctx, mon, "CreateFailed", err.Error())
 	}
 
 	isRecreation := mon.Status.CreateCount > 0
 	op := cfOpCreate
+	verb := "created"
 	if isRecreation {
 		op = cfOpRecreate
-		log.Info("loadbalancermonitor - recreated", "name", mon.Name, "id", resp.ID)
+		verb = "recreated"
+	}
+	if adopted {
+		log.Info(fmt.Sprintf("loadbalancermonitor - %s (recovered timed-out create)", verb), "name", mon.Name, "id", resp.ID)
 	} else {
-		log.Info("loadbalancermonitor - created", "name", mon.Name, "id", resp.ID)
+		log.Info(fmt.Sprintf("loadbalancermonitor - %s", verb), "name", mon.Name, "id", resp.ID)
 	}
 	operationsTotal.WithLabelValues(cfResourceLoadBalancerMon, op).Inc()
 	r.paceWrite()
@@ -410,12 +422,14 @@ func buildAccountClientFromRef(ctx context.Context, c client.Client, operatorNS 
 
 func (r *LoadBalancerMonitorReconciler) markReady(ctx context.Context, mon *lbv1beta1.LoadBalancerMonitor) (ctrl.Result, error) {
 	mon.Status.ConsecutiveErrors = 0
-	return ctrl.Result{}, r.setCondition(ctx, mon, metav1.ConditionTrue, "Reconciled", "Monitor is synchronized with Cloudflare")
+	return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, mon, metav1.ConditionTrue, "Reconciled", "Monitor is synchronized with Cloudflare")
 }
 
-func (r *LoadBalancerMonitorReconciler) setError(ctx context.Context, mon *lbv1beta1.LoadBalancerMonitor, reason, message string) error {
+// setError records a reconcile failure and schedules a self-requeue so the
+// monitor re-reconciles after RequeueInterval even without a spec change.
+func (r *LoadBalancerMonitorReconciler) setError(ctx context.Context, mon *lbv1beta1.LoadBalancerMonitor, reason, message string) (ctrl.Result, error) {
 	mon.Status.ConsecutiveErrors++
-	return r.setCondition(ctx, mon, metav1.ConditionFalse, reason, message)
+	return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, mon, metav1.ConditionFalse, reason, message)
 }
 
 func (r *LoadBalancerMonitorReconciler) setCondition(ctx context.Context, mon *lbv1beta1.LoadBalancerMonitor, status metav1.ConditionStatus, reason, message string) error {
@@ -513,12 +527,13 @@ func buildMonitorNewParams(accountID string, mon *lbv1beta1.LoadBalancerMonitor)
 	if mon.Spec.ExpectedBody != "" {
 		p.ExpectedBody = cloudflare.F(mon.Spec.ExpectedBody)
 	}
-	if mon.Spec.FollowRedirects {
-		p.FollowRedirects = cloudflare.F(mon.Spec.FollowRedirects)
-	}
-	if mon.Spec.AllowInsecure {
-		p.AllowInsecure = cloudflare.F(mon.Spec.AllowInsecure)
-	}
+	// FollowRedirects / AllowInsecure are plain bools with a well-defined false
+	// default: always send them so the value we write matches what monitorDrifted
+	// compares against. Emitting them only when true would drift-loop forever
+	// when the CR sets false but CF has true (drift detected, but the corrective
+	// update omits the field, so CF never changes).
+	p.FollowRedirects = cloudflare.F(mon.Spec.FollowRedirects)
+	p.AllowInsecure = cloudflare.F(mon.Spec.AllowInsecure)
 	if mon.Spec.Interval > 0 {
 		p.Interval = cloudflare.F(int64(mon.Spec.Interval))
 	}
@@ -570,12 +585,9 @@ func buildMonitorUpdateParams(accountID string, mon *lbv1beta1.LoadBalancerMonit
 	if mon.Spec.ExpectedBody != "" {
 		p.ExpectedBody = cloudflare.F(mon.Spec.ExpectedBody)
 	}
-	if mon.Spec.FollowRedirects {
-		p.FollowRedirects = cloudflare.F(mon.Spec.FollowRedirects)
-	}
-	if mon.Spec.AllowInsecure {
-		p.AllowInsecure = cloudflare.F(mon.Spec.AllowInsecure)
-	}
+	// Always sent -- see buildMonitorNewParams (avoids a bool drift-loop).
+	p.FollowRedirects = cloudflare.F(mon.Spec.FollowRedirects)
+	p.AllowInsecure = cloudflare.F(mon.Spec.AllowInsecure)
 	if mon.Spec.Interval > 0 {
 		p.Interval = cloudflare.F(int64(mon.Spec.Interval))
 	}

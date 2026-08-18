@@ -152,9 +152,8 @@ type LoadBalancerMonitorSpec struct {
 // LoadBalancerMonitorStatus is the observed state of a LoadBalancerMonitor.
 type LoadBalancerMonitorStatus struct {
 	// ID is the Cloudflare-assigned monitor ID, used for updates and deletes.
-	// Also exported to pool controllers via the poolMonitorField index so a
-	// LoadBalancerPool.spec.monitorRef can resolve to a CF monitor ID without
-	// an extra CF API round-trip.
+	// Read by the LoadBalancerPool controller so a pool's spec.monitorRef can
+	// resolve to a CF monitor ID without an extra CF API round-trip.
 	// +optional
 	ID string `json:"id,omitempty"`
 

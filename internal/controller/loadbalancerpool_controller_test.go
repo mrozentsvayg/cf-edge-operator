@@ -11,9 +11,13 @@ You may obtain a copy of the License at
 package controller
 
 import (
+	"context"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/cloudflare/cloudflare-go/v6/load_balancers"
 
@@ -30,15 +34,80 @@ func newPoolCR(spec lbv1beta1.LoadBalancerPoolSpec) *lbv1beta1.LoadBalancerPool 
 	}
 }
 
-func TestPoolHealthyFromCF(t *testing.T) {
-	if poolHealthyFromCF(nil) {
-		t.Fatal("nil pool must not be healthy")
+func TestResolveMonitorID(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = lbv1beta1.AddToScheme(scheme)
+	ctx := context.Background()
+
+	makeReconciler := func(objs ...client.Object) *LoadBalancerPoolReconciler {
+		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+		return &LoadBalancerPoolReconciler{Client: c, Scheme: scheme}
 	}
-	if poolHealthyFromCF(&load_balancers.Pool{Enabled: false}) {
-		t.Fatal("disabled pool must not be healthy")
+
+	t.Run("no monitorRef -> empty, no error", func(t *testing.T) {
+		r := makeReconciler()
+		id, err := r.resolveMonitorID(ctx, newPoolCR(lbv1beta1.LoadBalancerPoolSpec{}))
+		if err != nil || id != "" {
+			t.Fatalf("got id=%q err=%v", id, err)
+		}
+	})
+
+	t.Run("monitor CR missing (NotFound) -> empty, no error (soft wait)", func(t *testing.T) {
+		r := makeReconciler()
+		pool := newPoolCR(lbv1beta1.LoadBalancerPoolSpec{
+			MonitorRef: &lbv1beta1.LoadBalancerMonitorRef{Name: "ghost"},
+		})
+		id, err := r.resolveMonitorID(ctx, pool)
+		if err != nil {
+			t.Fatalf("NotFound must be a soft wait, not an error; got %v", err)
+		}
+		if id != "" {
+			t.Fatalf("id=%q want empty", id)
+		}
+	})
+
+	t.Run("monitor exists but not ready -> empty, no error", func(t *testing.T) {
+		mon := &lbv1beta1.LoadBalancerMonitor{
+			ObjectMeta: metav1.ObjectMeta{Name: "mon", Namespace: "default"},
+		}
+		r := makeReconciler(mon)
+		pool := newPoolCR(lbv1beta1.LoadBalancerPoolSpec{
+			MonitorRef: &lbv1beta1.LoadBalancerMonitorRef{Name: "mon"},
+		})
+		id, err := r.resolveMonitorID(ctx, pool)
+		if err != nil || id != "" {
+			t.Fatalf("got id=%q err=%v", id, err)
+		}
+	})
+
+	t.Run("monitor ready -> returns status.ID", func(t *testing.T) {
+		mon := &lbv1beta1.LoadBalancerMonitor{
+			ObjectMeta: metav1.ObjectMeta{Name: "mon", Namespace: "default"},
+			Status:     lbv1beta1.LoadBalancerMonitorStatus{ID: "cf-mon-123"},
+		}
+		r := makeReconciler(mon)
+		pool := newPoolCR(lbv1beta1.LoadBalancerPoolSpec{
+			MonitorRef: &lbv1beta1.LoadBalancerMonitorRef{Name: "mon"},
+		})
+		id, err := r.resolveMonitorID(ctx, pool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if id != "cf-mon-123" {
+			t.Fatalf("id=%q want cf-mon-123", id)
+		}
+	})
+}
+
+func TestPoolEnabledFromCF(t *testing.T) {
+	if poolEnabledFromCF(nil) {
+		t.Fatal("nil pool must not be enabled")
 	}
-	if !poolHealthyFromCF(&load_balancers.Pool{Enabled: true}) {
-		t.Fatal("enabled pool should be healthy")
+	if poolEnabledFromCF(&load_balancers.Pool{Enabled: false}) {
+		t.Fatal("disabled pool must not report enabled")
+	}
+	if !poolEnabledFromCF(&load_balancers.Pool{Enabled: true}) {
+		t.Fatal("enabled pool should report enabled")
 	}
 }
 
@@ -175,5 +244,53 @@ func TestOriginsDrifted_WeightUnparseableIsIgnored(t *testing.T) {
 	spec := []lbv1beta1.LoadBalancerPoolOrigin{{Name: "a", Address: "1.1.1.1", Weight: "not-a-number"}}
 	if originsDrifted(cf, spec) {
 		t.Fatal("unparseable weight should not drift (guard-only behavior)")
+	}
+}
+
+func TestBuildOriginParams_HostHeader(t *testing.T) {
+	origins := []lbv1beta1.LoadBalancerPoolOrigin{
+		{Name: "no-header", Address: "1.1.1.1"},
+		{Name: "with-host", Address: "2.2.2.2", Header: &lbv1beta1.LoadBalancerOriginHeader{Host: []string{"api.internal"}}},
+	}
+	out := buildOriginParams(origins)
+	// Header is unmanaged (nil spec) -> not sent.
+	if out[0].Header.Present {
+		t.Error("origin[0] Header should be absent when spec.Header is nil")
+	}
+	// Header set -> sent with the Host list preserved.
+	if !out[1].Header.Present {
+		t.Fatal("origin[1] Header should be present when spec.Header is set")
+	}
+	host := out[1].Header.Value.Host
+	if !host.Present || len(host.Value) != 1 || host.Value[0] != "api.internal" {
+		t.Errorf("origin[1] Host header lost in translation: present=%v value=%v", host.Present, host.Value)
+	}
+}
+
+func TestOriginsDrifted_HostHeader(t *testing.T) {
+	cfWithHost := []load_balancers.Origin{
+		{Name: "a", Address: "1.1.1.1", Enabled: true, Header: load_balancers.Header{Host: []string{"api.internal"}}},
+	}
+
+	// Managed header matches -> no drift.
+	specMatch := []lbv1beta1.LoadBalancerPoolOrigin{
+		{Name: "a", Address: "1.1.1.1", Header: &lbv1beta1.LoadBalancerOriginHeader{Host: []string{"api.internal"}}},
+	}
+	if originsDrifted(cfWithHost, specMatch) {
+		t.Fatal("matching Host header should not drift")
+	}
+
+	// Managed header differs -> drift.
+	specDiff := []lbv1beta1.LoadBalancerPoolOrigin{
+		{Name: "a", Address: "1.1.1.1", Header: &lbv1beta1.LoadBalancerOriginHeader{Host: []string{"other.internal"}}},
+	}
+	if !originsDrifted(cfWithHost, specDiff) {
+		t.Fatal("differing Host header should drift")
+	}
+
+	// Unmanaged header (nil spec.Header) -> CF's header is ignored.
+	specUnmanaged := []lbv1beta1.LoadBalancerPoolOrigin{{Name: "a", Address: "1.1.1.1"}}
+	if originsDrifted(cfWithHost, specUnmanaged) {
+		t.Fatal("unmanaged header (nil spec) should not drift")
 	}
 }

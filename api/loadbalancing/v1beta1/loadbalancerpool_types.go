@@ -140,10 +140,23 @@ type LoadBalancerPoolOrigin struct {
 	// +optional
 	Weight string `json:"weight,omitempty"`
 
-	// Header sets per-origin request headers CF sends when routing traffic
-	// or health-checking. The Host header is the common use case.
+	// Header overrides request headers Cloudflare sends to this origin when
+	// routing traffic or health-checking. Cloudflare currently supports
+	// overriding only the Host header, so this is a typed field rather than a
+	// free-form map (an arbitrary map would silently drop unsupported keys).
 	// +optional
-	Header map[string][]string `json:"header,omitempty"`
+	Header *LoadBalancerOriginHeader `json:"header,omitempty"`
+}
+
+// LoadBalancerOriginHeader configures the per-origin request headers Cloudflare
+// sends to an origin. Only the Host header is supported by Cloudflare.
+type LoadBalancerOriginHeader struct {
+	// Host overrides the Host header Cloudflare sends to this origin. Commonly
+	// set when multiple origins share an address and are distinguished by
+	// hostname. Cloudflare supports one Host override per origin, expressed as a
+	// list. An empty or omitted list clears the override.
+	// +optional
+	Host []string `json:"host,omitempty"`
 }
 
 // LoadBalancerMonitorRef references a LoadBalancerMonitor CR whose Status.ID
@@ -162,15 +175,17 @@ type LoadBalancerMonitorRef struct {
 // LoadBalancerPoolStatus is the observed state of a LoadBalancerPool.
 type LoadBalancerPoolStatus struct {
 	// ID is the Cloudflare-assigned pool ID, used for updates and deletes.
-	// Also read by LoadBalancer controllers to resolve peer pool references
-	// to CF pool IDs.
+	// Also read by the LoadBalancer controller to resolve this pool's refs
+	// (spec.defaultPoolRefs etc.) to CF pool IDs.
 	// +optional
 	ID string `json:"id,omitempty"`
 
-	// Healthy is the last observed pool-level health status from CF's
-	// health-check state.
+	// Enabled is the pool's administrative enabled state as last observed from
+	// Cloudflare. This reflects whether the pool is eligible to receive traffic,
+	// NOT per-origin health -- Cloudflare exposes origin health via a separate
+	// endpoint the operator does not currently poll.
 	// +optional
-	Healthy bool `json:"healthy,omitempty"`
+	Enabled bool `json:"enabled,omitempty"`
 
 	// MonitorID is the resolved CF monitor ID from spec.monitorRef. Empty
 	// when monitorRef is unset or the referenced monitor CR isn't ready.
@@ -198,7 +213,7 @@ type LoadBalancerPoolStatus struct {
 // +kubebuilder:printcolumn:name="Origins",type=integer,JSONPath=`.spec.origins.length()`
 // +kubebuilder:printcolumn:name="Monitor",type=string,JSONPath=`.spec.monitorRef.name`
 // +kubebuilder:printcolumn:name="CF ID",type=string,JSONPath=`.status.id`
-// +kubebuilder:printcolumn:name="Healthy",type=boolean,JSONPath=`.status.healthy`
+// +kubebuilder:printcolumn:name="Enabled",type=boolean,JSONPath=`.status.enabled`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Creates",type=integer,JSONPath=`.status.createCount`
 // +kubebuilder:printcolumn:name="Errors",type=integer,JSONPath=`.status.consecutiveErrors`
