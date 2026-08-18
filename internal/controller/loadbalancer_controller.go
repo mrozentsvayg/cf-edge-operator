@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -469,6 +470,7 @@ func (r *LoadBalancerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&lbv1beta1.LoadBalancerPool{},
 			handler.EnqueueRequestsFromMapFunc(r.mapPoolToLBs),
+			builder.WithPredicates(statusIDChangedPredicate(func(p *lbv1beta1.LoadBalancerPool) string { return p.Status.ID })),
 		).
 		Named("loadbalancer").
 		WithOptions(controller.Options{
@@ -478,6 +480,31 @@ func (r *LoadBalancerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			),
 		}).
 		Complete(r)
+}
+
+// statusIDChangedPredicate filters a cross-object watch so a dependent only
+// re-reconciles when a referenced resource's CF ID (Status.ID) lands, changes,
+// or the object is created/deleted -- not on every status write. Dependents
+// reference their upstreams purely by CF ID (an LB by its pools' IDs, a pool by
+// its monitor's ID), so status-only churn (condition flips, error-counter
+// bumps) on the referenced object is irrelevant to them. Without this filter,
+// each such write wakes every referencing object and triggers a full CF list,
+// multiplying API calls by the fan-in on every drift cycle.
+//
+// Only UpdateFunc is set; Create/Delete/Generic default to true (a referenced
+// object appearing or disappearing must re-drive dependents, including the
+// informer's create-replay of ready objects on operator restart).
+func statusIDChangedPredicate[T client.Object](statusID func(T) string) predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldObj, ok1 := e.ObjectOld.(T)
+			newObj, ok2 := e.ObjectNew.(T)
+			if !ok1 || !ok2 {
+				return true
+			}
+			return statusID(oldObj) != statusID(newObj)
+		},
+	}
 }
 
 // mapPoolToLBs enqueues every LoadBalancer that references the given pool, so

@@ -438,6 +438,7 @@ func (r *LoadBalancerPoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&lbv1beta1.LoadBalancerMonitor{},
 			handler.EnqueueRequestsFromMapFunc(r.mapMonitorToPools),
+			builder.WithPredicates(statusIDChangedPredicate(func(m *lbv1beta1.LoadBalancerMonitor) string { return m.Status.ID })),
 		).
 		Named("loadbalancerpool").
 		WithOptions(controller.Options{
