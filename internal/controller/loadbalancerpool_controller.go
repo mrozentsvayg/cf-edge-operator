@@ -623,6 +623,18 @@ func poolDrifted(cf *load_balancers.Pool, pool *lbv1beta1.LoadBalancerPool, moni
 	if pool.Spec.Description != "" && cf.Description != pool.Spec.Description {
 		return true
 	}
+	// Latitude/Longitude are managed only when both are set on the CR (the CRD
+	// requires them together). Compared as float64 -- CF echoes back what we
+	// send, mirroring the origin-weight comparison above. Unparseable values are
+	// skipped (the CRD pattern validator rejects them at admission).
+	if pool.Spec.Latitude != nil && pool.Spec.Longitude != nil {
+		if lat, err := strconv.ParseFloat(*pool.Spec.Latitude, 64); err == nil && cf.Latitude != lat {
+			return true
+		}
+		if lon, err := strconv.ParseFloat(*pool.Spec.Longitude, 64); err == nil && cf.Longitude != lon {
+			return true
+		}
+	}
 	// Compare origins by (name, address, enabled, weight, header) tuple.
 	if originsDrifted(cf.Origins, pool.Spec.Origins) {
 		return true

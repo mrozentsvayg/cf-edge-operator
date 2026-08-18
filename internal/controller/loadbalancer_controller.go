@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"time"
 
@@ -575,16 +576,26 @@ func (pr *poolResolver) resolve(ctx context.Context, ref lbv1beta1.LoadBalancerP
 	var pool lbv1beta1.LoadBalancerPool
 	if err := pr.r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ns}, &pool); err != nil {
 		if apierrors.IsNotFound(err) {
-			out.unresolved = append(out.unresolved, ref.Name)
+			out.addUnresolved(ref.Name)
 			return "", nil
 		}
 		return "", err
 	}
 	if pool.Status.ID == "" {
-		out.unresolved = append(out.unresolved, ref.Name)
+		out.addUnresolved(ref.Name)
 		return "", nil
 	}
 	return pool.Status.ID, nil
+}
+
+// addUnresolved records an unresolved pool-ref name once. The same pool can be
+// referenced from multiple slots (e.g. fallback plus a default), so dedupe to
+// keep the degraded Ready message clean.
+func (rp *resolvedPools) addUnresolved(name string) {
+	if slices.Contains(rp.unresolved, name) {
+		return
+	}
+	rp.unresolved = append(rp.unresolved, name)
 }
 
 // resolveRefList resolves an ordered list of refs, dropping unresolved ones
@@ -717,12 +728,16 @@ func buildLBNewParams(zoneID string, lb *lbv1beta1.LoadBalancer, resolved *resol
 	if lb.Spec.SessionAffinity != "" {
 		p.SessionAffinity = cloudflare.F(load_balancers.SessionAffinity(lb.Spec.SessionAffinity))
 	}
+	proxied := true
 	if lb.Spec.Proxied != nil {
-		p.Proxied = cloudflare.F(*lb.Spec.Proxied)
-	} else {
-		p.Proxied = cloudflare.F(true)
+		proxied = *lb.Spec.Proxied
 	}
-	if lb.Spec.TTL > 0 {
+	p.Proxied = cloudflare.F(proxied)
+	// TTL applies only to DNS-only (grey-cloud) LBs. Cloudflare ignores ttl for
+	// proxied LBs and echoes its own value, so sending it there would drift-loop
+	// (compared but the corrective write never takes). Manage it only when the
+	// LB is not proxied.
+	if !proxied && lb.Spec.TTL > 0 {
 		p.TTL = cloudflare.F(float64(lb.Spec.TTL))
 	}
 	if lb.Spec.Description != "" {
@@ -753,12 +768,16 @@ func buildLBUpdateParams(zoneID string, lb *lbv1beta1.LoadBalancer, resolved *re
 	if lb.Spec.SessionAffinity != "" {
 		p.SessionAffinity = cloudflare.F(load_balancers.SessionAffinity(lb.Spec.SessionAffinity))
 	}
+	proxied := true
 	if lb.Spec.Proxied != nil {
-		p.Proxied = cloudflare.F(*lb.Spec.Proxied)
-	} else {
-		p.Proxied = cloudflare.F(true)
+		proxied = *lb.Spec.Proxied
 	}
-	if lb.Spec.TTL > 0 {
+	p.Proxied = cloudflare.F(proxied)
+	// TTL applies only to DNS-only (grey-cloud) LBs. Cloudflare ignores ttl for
+	// proxied LBs and echoes its own value, so sending it there would drift-loop
+	// (compared but the corrective write never takes). Manage it only when the
+	// LB is not proxied.
+	if !proxied && lb.Spec.TTL > 0 {
 		p.TTL = cloudflare.F(float64(lb.Spec.TTL))
 	}
 	if lb.Spec.Description != "" {
@@ -817,9 +836,11 @@ func lbDrifted(cf *load_balancers.LoadBalancer, lb *lbv1beta1.LoadBalancer, reso
 	if lb.Spec.SessionAffinity != "" && string(cf.SessionAffinity) != lb.Spec.SessionAffinity {
 		return true
 	}
-	// TTL: only enforce when set on the CR. CF stores as float64; CR is
-	// int32 with kubebuilder minimum=30, so an int comparison is safe.
-	if lb.Spec.TTL > 0 && int32(cf.TTL) != lb.Spec.TTL {
+	// TTL: only enforce when the LB is not proxied and TTL is set. Cloudflare
+	// ignores ttl for proxied LBs (see buildLBNewParams), so comparing it there
+	// would report perpetual drift. CF stores float64; CR is int32 with
+	// kubebuilder minimum=30, so an int comparison is safe.
+	if !proxied && lb.Spec.TTL > 0 && int32(cf.TTL) != lb.Spec.TTL {
 		return true
 	}
 	return false
