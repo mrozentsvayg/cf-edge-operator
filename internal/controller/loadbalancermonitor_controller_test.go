@@ -136,6 +136,52 @@ func TestMonitorDrifted_MarkerLossIsAlwaysDrift(t *testing.T) {
 	}
 }
 
+func TestMonitorDrifted_HeaderCaseInsensitive(t *testing.T) {
+	// Header names are case-insensitive per the HTTP spec, so a CR "host" must
+	// not drift against a Cloudflare-normalized "Host" (that would drift-loop).
+	mon := newMonitorCR("m", lbv1beta1.LoadBalancerMonitorSpec{
+		Header: map[string][]string{"host": {"api.internal"}},
+	})
+	cf := &load_balancers.Monitor{
+		Header:      map[string][]string{"Host": {"api.internal"}},
+		Description: buildMonitorDescription(mon),
+	}
+	if monitorDrifted(cf, mon) {
+		t.Fatal("case-only key difference must not drift")
+	}
+
+	// A genuine value difference on a managed header drifts.
+	cf.Header = map[string][]string{"Host": {"other.internal"}}
+	if !monitorDrifted(cf, mon) {
+		t.Fatal("changed header value should drift")
+	}
+
+	// A header the CR manages but Cloudflare is missing drifts.
+	cf.Header = map[string][]string{}
+	if !monitorDrifted(cf, mon) {
+		t.Fatal("missing managed header should drift")
+	}
+
+	// A header Cloudflare has that the CR does not set drifts (full-set
+	// enforcement when the CR manages headers, matching keyed-pool map drift).
+	cf.Header = map[string][]string{"Host": {"api.internal"}, "Accept": {"application/json"}}
+	if !monitorDrifted(cf, mon) {
+		t.Fatal("extra CF header should drift when the CR manages headers")
+	}
+}
+
+func TestMonitorDrifted_HeaderUnmanagedWhenUnset(t *testing.T) {
+	// When the CR sets no headers, Cloudflare-side headers are left alone.
+	mon := newMonitorCR("m", lbv1beta1.LoadBalancerMonitorSpec{})
+	cf := &load_balancers.Monitor{
+		Header:      map[string][]string{"Host": {"api.internal"}},
+		Description: buildMonitorDescription(mon),
+	}
+	if monitorDrifted(cf, mon) {
+		t.Fatal("unset spec.Header must not drift against CF headers")
+	}
+}
+
 func TestBuildMonitorNewParams_OnlyEmitsSetFields(t *testing.T) {
 	// The CF SDK's param.Field distinguishes "set" from "not set". A field
 	// left unset omits from the JSON body, which is what we want when the

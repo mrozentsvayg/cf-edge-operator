@@ -20,7 +20,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
+	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -626,7 +627,7 @@ func monitorDrifted(cf *load_balancers.Monitor, mon *lbv1beta1.LoadBalancerMonit
 	if mon.Spec.Port > 0 && int32(cf.Port) != mon.Spec.Port {
 		return true
 	}
-	if len(mon.Spec.Header) > 0 && !reflect.DeepEqual(cf.Header, mon.Spec.Header) {
+	if len(mon.Spec.Header) > 0 && monitorHeaderDrifted(cf.Header, mon.Spec.Header) {
 		return true
 	}
 	if mon.Spec.ExpectedCodes != "" && cf.ExpectedCodes != mon.Spec.ExpectedCodes {
@@ -663,6 +664,31 @@ func monitorDrifted(cf *load_balancers.Monitor, mon *lbv1beta1.LoadBalancerMonit
 	// marker (e.g. user edited it via dashboard), we need to reassert.
 	if cf.Description != buildMonitorDescription(mon) {
 		return true
+	}
+	return false
+}
+
+// monitorHeaderDrifted reports whether the CF probe headers diverge from the
+// CR's. Header names are case-insensitive per the HTTP spec, so keys are
+// canonicalized on both sides before comparison -- a case-sensitive compare
+// would drift-loop forever if the CR uses "host" while Cloudflare returns the
+// normalized "Host". Called only when the CR sets headers (len > 0); when it
+// does, the full set is enforced (a header the CR dropped, or one Cloudflare has
+// that the CR doesn't, counts as drift), matching the map-drift convention used
+// for keyed pools (mapListsEqual). Values are compared in order.
+func monitorHeaderDrifted(cf, spec map[string][]string) bool {
+	if len(cf) != len(spec) {
+		return true
+	}
+	canonicalCF := make(map[string][]string, len(cf))
+	for k, v := range cf {
+		canonicalCF[http.CanonicalHeaderKey(k)] = v
+	}
+	for k, want := range spec {
+		got, ok := canonicalCF[http.CanonicalHeaderKey(k)]
+		if !ok || !slices.Equal(got, want) {
+			return true
+		}
 	}
 	return false
 }
