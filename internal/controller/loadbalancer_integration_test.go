@@ -929,8 +929,9 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 
 		It("adopts a pre-existing CF monitor by its marker without creating a duplicate", func() {
 			marker := monitorMarkerFor(lbTestNS, "mon-adopt")
-			// Seed a monitor that matches the CR defaults so no drift correction
-			// fires -- this keeps the assertion focused on adoption.
+			// Seed a monitor carrying this CR's marker so the reconcile adopts it.
+			// The assertion is on adoption (status.ID reused, no duplicate create),
+			// not on drift -- a corrective PATCH may still run harmlessly.
 			lbMock.seedMonitor(mockMonitor{
 				ID:          "mock-mon-seeded-adopt",
 				Type:        "https",
