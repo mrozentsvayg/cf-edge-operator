@@ -12,10 +12,11 @@ All flags are set via Helm values, which are passed as container args in the Dep
 | `--management-policy` | `manage` | `managementPolicy` | `manage`, `create`, or `observe` -- see [migration.md](migration.md) |
 | `--delete-policy` | `always` | `deletePolicy` | `always`, `own-only`, or `never` -- see [migration.md](migration.md) |
 | `--dry-run` | `false` | `dryRun` | Log Cloudflare (CF) operations without executing them |
-| `--drift-interval` | `1m` | `driftInterval` | How often the zone controller bulk-lists CF hostnames |
+| `--enable-loadbalancer` | `false` | `controlPlane.enabled` | Enable the load-balancing control-plane role (Account + the LoadBalancer/LoadBalancerPool/LoadBalancerMonitor controllers). Off by default |
+| `--drift-interval` | `1m` | `driftInterval` | How often the zone controller bulk-lists CF hostnames; also how often the load-balancing controllers (Account/LoadBalancer/LoadBalancerPool/LoadBalancerMonitor) self-requeue |
 | `--drift-buffer` | `1024` | `driftBuffer` | Internal channel buffer for drift events |
-| `--cf-api-timeout` | `5s` | `cfAPITimeout` | Per-request timeout for CF API read calls (zone lookup, CH get/findByHostname) |
-| `--cf-api-write-timeout` | `15s` | `cfAPIWriteTimeout` | Per-request timeout for CF API write calls (CH create/update/delete) |
+| `--cf-api-timeout` | `5s` | `cfAPITimeout` | Per-request timeout for single CF API read calls (zone lookup, CH and load-balancing get/list) |
+| `--cf-api-write-timeout` | `15s` | `cfAPIWriteTimeout` | Per-request timeout for single CF API write calls (CH and load-balancing create/update/delete) |
 | `--cf-api-max-retries` | `1` | `cfAPIMaxRetries` | Retries for single CF API calls (immediate, no backoff). Skips retry on 429 |
 | `--cf-api-bulk-timeout` | `5s` | `cfAPIBulkTimeout` | Per-page timeout for paginated CF API calls (bulk drift list) |
 | `--cf-api-bulk-max-retries` | `0` | `cfAPIBulkMaxRetries` | Per-page retries for paginated CF API calls (SDK-level, ~2s backoff). Only the failed page is retried |

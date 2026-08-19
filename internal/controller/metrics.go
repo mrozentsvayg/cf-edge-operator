@@ -36,9 +36,10 @@ const (
 
 var (
 	// operationsTotal counts successful CF operations by resource and type.
-	// CustomHostname operations: "adopt" = existing hostname found and tracked;
-	// "create" = first-time provisioning; "recreate" = recovery after external deletion;
-	// "update" = drift correction; "delete" = removal.
+	// The same vocabulary applies to CustomHostname and the load-balancing resources:
+	// "adopt" = existing resource found and tracked; "create" = first-time provisioning;
+	// "recreate" = recovery after external deletion; "update" = drift correction;
+	// "delete" = removal.
 	// Pre-initialized for all known values so all series appear at startup.
 	operationsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "cf_edge_operator_operations_total",
@@ -89,7 +90,8 @@ var (
 	}, []string{"zone_cr"})
 
 	// cfAPICallDuration observes Cloudflare API call latency by resource and operation.
-	// resource: "customhostname" or "zone". operation: get, list, create, update, delete.
+	// resource: "customhostname" or "zone"; also "account", "loadbalancer", "loadbalancerpool",
+	// "loadbalancermonitor" when the control-plane role is enabled. operation: get, list, create, update, delete.
 	// For "list", the duration spans all paginated HTTP calls (N data pages + 1 end marker),
 	// so observations can exceed the per-request WithRequestTimeout. Buckets cover both
 	// single-call operations (<5s) and multi-page list totals (up to 20s).

@@ -57,6 +57,7 @@ const (
 	hostnameField = "spec.hostname"
 
 	// Shared strings referenced in >1 place; single-use strings stay as literals.
+	// conditionReady is the shared Ready condition type used by CustomHostname and the LB resources.
 	conditionReady         = "Ready"
 	reasonHostnameConflict = "HostnameConflict"
 )

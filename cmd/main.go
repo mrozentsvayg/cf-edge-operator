@@ -135,9 +135,9 @@ func main() {
 		"Buffer size of the internal channel used to enqueue drifted CustomHostname CRs. "+
 			"Increase if operating with many zones and very frequent drift cycles.")
 	flag.DurationVar(&cfAPITimeout, "cf-api-timeout", 5*time.Second,
-		"Per-request timeout for CF API read calls (zone lookup, CH get/findByHostname).")
+		"Per-request timeout for single CF API read calls (zone lookup, CustomHostname and load-balancing get/list).")
 	flag.DurationVar(&cfAPIWriteTimeout, "cf-api-write-timeout", 15*time.Second,
-		"Per-request timeout for CF API write calls (CH create/update/delete). "+
+		"Per-request timeout for single CF API write calls (CustomHostname and load-balancing create/update/delete). "+
 			"Longer than read timeout to accommodate CF processing during degradation.")
 	flag.IntVar(&cfAPIMaxRetries, "cf-api-max-retries", 1,
 		"Maximum number of retries for single CF API calls (immediate, no backoff). "+

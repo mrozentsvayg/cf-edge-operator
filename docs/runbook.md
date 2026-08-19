@@ -42,7 +42,7 @@ Fix the secret name, zone ID, or API token. The Zone reconciler retries with bac
 
 **Severity:** critical
 
-**Meaning:** The operator metrics endpoint has been unreachable for 2 minutes. All custom hostname management (create, update, delete, drift detection) is suspended.
+**Meaning:** The operator metrics endpoint has been unreachable for 2 minutes. All Cloudflare reconciliation is suspended -- custom hostnames, and load balancing where the control-plane role is enabled.
 
 **Investigate:**
 

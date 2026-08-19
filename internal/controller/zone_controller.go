@@ -83,7 +83,14 @@ type ZoneReconciler struct {
 // +kubebuilder:rbac:groups=saas.cf-edge.io,resources=customhostnames,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
+// conditionInitialized is the credentials-validated condition type, shared by Zone and Account.
 const conditionInitialized = "Initialized"
+
+// defaultAPITokenKey is the default key looked up inside a credentials Secret when a
+// Zone or Account CR leaves credentialsRef.key empty -- the fallback used wherever the
+// operator builds a Cloudflare client (CustomHostname via a Zone; Account/Pool/Monitor
+// via an Account).
+const defaultAPITokenKey = "apiToken"
 
 func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -215,7 +222,7 @@ func (r *ZoneReconciler) initializeZone(ctx context.Context, zone *domainsv1beta
 func (r *ZoneReconciler) fetchAPIToken(ctx context.Context, zone *domainsv1beta1.Zone) (string, error) {
 	key := zone.Spec.CredentialsRef.Key
 	if key == "" {
-		key = "apiToken"
+		key = defaultAPITokenKey
 	}
 	var secret corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{

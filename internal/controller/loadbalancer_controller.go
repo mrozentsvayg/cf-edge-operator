@@ -50,15 +50,7 @@ import (
 	lbv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/loadbalancing/v1beta1"
 )
 
-const (
-	finalizerNameLB = "loadbalancing.cf-edge.io/loadbalancer"
-
-	// defaultAPITokenKey is the fallback key name inside a Zone's
-	// credentialsRef secret when the CR doesn't set it explicitly.
-	// Extracted as a package-level constant so all three LB controllers
-	// (Monitor, Pool, LB) share the same fallback.
-	defaultAPITokenKey = "apiToken"
-)
+const finalizerNameLB = "loadbalancing.cf-edge.io/loadbalancer"
 
 // LoadBalancerReconciler reconciles a LoadBalancer object.
 //

@@ -150,7 +150,7 @@ Load balancing is a single-owner control-plane role: enable it on exactly one (c
 | `resources.limits.cpu` | `500m` | CPU limit |
 | `resources.limits.memory` | `128Mi` | Memory limit |
 | `dryRun` | `false` | Log CF operations without executing them |
-| `driftInterval` | `1m` | How often the zone controller bulk-lists CF to detect drift |
+| `driftInterval` | `1m` | How often the zone controller bulk-lists CF to detect drift; also the load-balancing controllers' self-requeue cadence |
 | `driftBuffer` | `1024` | Internal channel buffer for drift events |
 | `cfAPITimeout` | `5s` | Per-request timeout for CF API read calls (GET) |
 | `cfAPIWriteTimeout` | `15s` | Per-request timeout for CF API write calls (create/update/delete) |

@@ -46,8 +46,10 @@ controlPlane:
   enabled: false
 
 # How often the zone controller bulk-lists Cloudflare custom hostnames to detect
-# external drift (manual dashboard changes, other automation). Lower values reduce
-# the window in which external changes go undetected.
+# external drift (manual dashboard changes, other automation), and how often the
+# load-balancing controllers (Account/LoadBalancer/LoadBalancerPool/LoadBalancerMonitor)
+# self-requeue to re-check external drift and retry transient errors. Lower values
+# reduce the window in which external changes go undetected.
 driftInterval: "1m"
 
 # Buffer size of the internal channel used to enqueue drifted CustomHostname CRs.

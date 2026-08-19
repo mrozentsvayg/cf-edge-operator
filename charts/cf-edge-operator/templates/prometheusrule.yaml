@@ -45,7 +45,8 @@ spec:
         summary: cf-edge-operator is not running
         description: >-
           The operator metrics endpoint has been unreachable for 2 minutes.
-          Custom hostname management (create, update, delete, drift detection) is suspended.
+          All Cloudflare reconciliation is suspended -- custom hostnames, and load
+          balancing where the control-plane role is enabled.
         {{- if .Values.prometheusRule.runbookUrl }}
         runbook_url: {{ .Values.prometheusRule.runbookUrl }}/CfEdgeOperatorDown
         {{- end }}

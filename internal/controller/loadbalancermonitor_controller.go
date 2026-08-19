@@ -369,8 +369,8 @@ func (r *LoadBalancerMonitorReconciler) handleDelete(ctx context.Context, ai *ac
 // is the only cross-restart identity we have -- CF monitors don't have a
 // user-provided "name" field, and status.ID may be stale.
 //
-// The description marker format is: "<namespace>/<name> (cf-edge-operator)"
-// (see buildMonitorDescription). Any user-provided description in
+// The description marker format is: "[cf-edge-operator:<namespace>/<name>]"
+// (see monitorMarker / buildMonitorDescription). Any user-provided description in
 // spec.description is preserved -- we prefix the marker so lookups by CR
 // identity are unambiguous.
 func (r *LoadBalancerMonitorReconciler) findMonitorByCRName(ctx context.Context, ai *accountInfo, mon *lbv1beta1.LoadBalancerMonitor) (*load_balancers.Monitor, error) {
