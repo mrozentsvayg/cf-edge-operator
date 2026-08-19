@@ -266,12 +266,15 @@ func (r *LoadBalancerPoolReconciler) handleCreate(ctx context.Context, ai *accou
 
 func (r *LoadBalancerPoolReconciler) editPool(ctx context.Context, ai *accountInfo, pool *lbv1beta1.LoadBalancerPool, cfID, monitorID string) (*load_balancers.Pool, error) {
 	log := logf.FromContext(ctx)
-	params := buildPoolUpdateParams(ai.AccountID, pool, monitorID)
+	// Edit (PATCH, partial): correct only the fields the CRD models and leave
+	// un-modeled Cloudflare pool config (load_shedding, origin_steering, ...)
+	// intact. Structural fields the CR owns (origins, monitor) are still sent.
+	params := buildPoolEditParams(ai.AccountID, pool, monitorID)
 	var resp *load_balancers.Pool
 	attempts, err := cfRetry(ctx, cfResourceLoadBalancerPool, cfOpUpdate, r.CFAPIMaxRetries, func() error {
 		start := time.Now()
 		var callErr error
-		resp, callErr = ai.Client.LoadBalancers.Pools.Update(ctx, cfID, params,
+		resp, callErr = ai.Client.LoadBalancers.Pools.Edit(ctx, cfID, params,
 			option.WithRequestTimeout(r.CFAPIWriteTimeout))
 		recordCFCall(cfResourceLoadBalancerPool, cfOpUpdate, start, &callErr)
 		return callErr
@@ -565,8 +568,8 @@ func buildPoolNewParams(accountID string, pool *lbv1beta1.LoadBalancerPool, moni
 	return p
 }
 
-func buildPoolUpdateParams(accountID string, pool *lbv1beta1.LoadBalancerPool, monitorID string) load_balancers.PoolUpdateParams {
-	p := load_balancers.PoolUpdateParams{
+func buildPoolEditParams(accountID string, pool *lbv1beta1.LoadBalancerPool, monitorID string) load_balancers.PoolEditParams {
+	p := load_balancers.PoolEditParams{
 		AccountID: cloudflare.F(accountID),
 		Name:      cloudflare.F(pool.Name),
 		Origins:   cloudflare.F(buildOriginParams(pool.Spec.Origins)),
@@ -576,9 +579,11 @@ func buildPoolUpdateParams(accountID string, pool *lbv1beta1.LoadBalancerPool, m
 	} else {
 		p.Enabled = cloudflare.F(true)
 	}
-	if monitorID != "" {
-		p.Monitor = cloudflare.F(monitorID)
-	}
+	// Monitor is always sent on edit (structural ref): monitorID is the resolved
+	// CF monitor ID, or "" when the CR has no monitorRef -- sending "" detaches a
+	// previously-attached monitor. The WaitingForMonitor path returns before any
+	// edit, so we never send "" for a ref that is merely unresolved.
+	p.Monitor = cloudflare.F(monitorID)
 	if pool.Spec.MinimumOrigins > 0 {
 		p.MinimumOrigins = cloudflare.F(int64(pool.Spec.MinimumOrigins))
 	}
@@ -612,7 +617,9 @@ func poolDrifted(cf *load_balancers.Pool, pool *lbv1beta1.LoadBalancerPool, moni
 	if cf.Enabled != enabled {
 		return true
 	}
-	if monitorID != "" && cf.Monitor != monitorID {
+	// Monitor is always managed (structural ref); compared unconditionally so
+	// that detaching it in the CR (monitorID "") is corrected. See buildPoolEditParams.
+	if cf.Monitor != monitorID {
 		return true
 	}
 	if pool.Spec.MinimumOrigins > 0 && int32(cf.MinimumOrigins) != pool.Spec.MinimumOrigins {

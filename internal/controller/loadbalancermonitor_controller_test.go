@@ -220,12 +220,12 @@ func TestBuildMonitorParams_BoolsAlwaysSent(t *testing.T) {
 	if !np.AllowInsecure.Present || np.AllowInsecure.Value {
 		t.Errorf("New: AllowInsecure must be present and false; present=%v value=%v", np.AllowInsecure.Present, np.AllowInsecure.Value)
 	}
-	up := buildMonitorUpdateParams("acct", monFalse)
-	if !up.FollowRedirects.Present || up.FollowRedirects.Value {
-		t.Errorf("Update: FollowRedirects must be present and false; present=%v value=%v", up.FollowRedirects.Present, up.FollowRedirects.Value)
+	ep := buildMonitorEditParams("acct", monFalse)
+	if !ep.FollowRedirects.Present || ep.FollowRedirects.Value {
+		t.Errorf("Edit: FollowRedirects must be present and false; present=%v value=%v", ep.FollowRedirects.Present, ep.FollowRedirects.Value)
 	}
-	if !up.AllowInsecure.Present || up.AllowInsecure.Value {
-		t.Errorf("Update: AllowInsecure must be present and false; present=%v value=%v", up.AllowInsecure.Present, up.AllowInsecure.Value)
+	if !ep.AllowInsecure.Present || ep.AllowInsecure.Value {
+		t.Errorf("Edit: AllowInsecure must be present and false; present=%v value=%v", ep.AllowInsecure.Present, ep.AllowInsecure.Value)
 	}
 
 	monTrue := newMonitorCR("m", lbv1beta1.LoadBalancerMonitorSpec{FollowRedirects: true, AllowInsecure: true})

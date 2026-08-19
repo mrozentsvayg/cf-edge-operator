@@ -281,16 +281,18 @@ func (r *LoadBalancerMonitorReconciler) handleCreate(ctx context.Context, ai *ac
 func (r *LoadBalancerMonitorReconciler) editMonitor(ctx context.Context, ai *accountInfo, mon *lbv1beta1.LoadBalancerMonitor, cfID string) (*load_balancers.Monitor, error) {
 	log := logf.FromContext(ctx)
 
-	// Use Update (full replace) rather than Edit (partial). The full spec is
-	// idempotent -- we always submit every field the CRD manages -- and the
-	// CF Update semantics ensure unspecified fields reset to the API defaults
-	// rather than silently retaining stale values.
-	params := buildMonitorUpdateParams(ai.AccountID, mon)
+	// Use Edit (PATCH, partial) so the operator corrects only the fields the
+	// CRD models and leaves everything else on the monitor intact. The CRD
+	// covers every Cloudflare monitor field today, but PATCH keeps the whole
+	// family (monitor/pool/LB) on one model where un-modeled Cloudflare config
+	// is never clobbered. Every field the CR expresses is still sent, so the CR
+	// stays authoritative for what it manages.
+	params := buildMonitorEditParams(ai.AccountID, mon)
 	var resp *load_balancers.Monitor
 	attempts, err := cfRetry(ctx, cfResourceLoadBalancerMon, cfOpUpdate, r.CFAPIMaxRetries, func() error {
 		start := time.Now()
 		var callErr error
-		resp, callErr = ai.Client.LoadBalancers.Monitors.Update(ctx, cfID, params,
+		resp, callErr = ai.Client.LoadBalancers.Monitors.Edit(ctx, cfID, params,
 			option.WithRequestTimeout(r.CFAPIWriteTimeout))
 		recordCFCall(cfResourceLoadBalancerMon, cfOpUpdate, start, &callErr)
 		return callErr
@@ -538,9 +540,11 @@ func buildMonitorNewParams(accountID string, mon *lbv1beta1.LoadBalancerMonitor)
 	if mon.Spec.Interval > 0 {
 		p.Interval = cloudflare.F(int64(mon.Spec.Interval))
 	}
-	if mon.Spec.Retries > 0 {
-		p.Retries = cloudflare.F(int64(mon.Spec.Retries))
-	}
+	// Retries is always sent: it is CRD-defaulted (so always populated) and its
+	// valid range includes 0 (fail on the first probe). A ">0" guard would drop
+	// an explicit 0, and Cloudflare would apply its own default instead of the
+	// requested value.
+	p.Retries = cloudflare.F(int64(mon.Spec.Retries))
 	if mon.Spec.Timeout > 0 {
 		p.Timeout = cloudflare.F(int64(mon.Spec.Timeout))
 	}
@@ -556,17 +560,18 @@ func buildMonitorNewParams(accountID string, mon *lbv1beta1.LoadBalancerMonitor)
 	return p
 }
 
-// buildMonitorUpdateParams is the update-side twin of buildMonitorNewParams.
-// The CF SDK's MonitorUpdateParams shape mirrors MonitorNewParams but has a
+// buildMonitorEditParams is the edit-side (PATCH) twin of buildMonitorNewParams.
+// The CF SDK's MonitorEditParams shape mirrors MonitorNewParams but has a
 // distinct Type enum, so the two builders can't share code without an
-// enum-conversion detour that would obscure the intent.
-func buildMonitorUpdateParams(accountID string, mon *lbv1beta1.LoadBalancerMonitor) load_balancers.MonitorUpdateParams {
-	p := load_balancers.MonitorUpdateParams{
+// enum-conversion detour that would obscure the intent. Only the fields the CR
+// expresses are sent; PATCH leaves every other Cloudflare setting untouched.
+func buildMonitorEditParams(accountID string, mon *lbv1beta1.LoadBalancerMonitor) load_balancers.MonitorEditParams {
+	p := load_balancers.MonitorEditParams{
 		AccountID:   cloudflare.F(accountID),
 		Description: cloudflare.F(buildMonitorDescription(mon)),
 	}
 	if mon.Spec.Type != "" {
-		p.Type = cloudflare.F(load_balancers.MonitorUpdateParamsType(mon.Spec.Type))
+		p.Type = cloudflare.F(load_balancers.MonitorEditParamsType(mon.Spec.Type))
 	}
 	if mon.Spec.Method != "" {
 		p.Method = cloudflare.F(mon.Spec.Method)
@@ -592,9 +597,11 @@ func buildMonitorUpdateParams(accountID string, mon *lbv1beta1.LoadBalancerMonit
 	if mon.Spec.Interval > 0 {
 		p.Interval = cloudflare.F(int64(mon.Spec.Interval))
 	}
-	if mon.Spec.Retries > 0 {
-		p.Retries = cloudflare.F(int64(mon.Spec.Retries))
-	}
+	// Retries is always sent: it is CRD-defaulted (so always populated) and its
+	// valid range includes 0 (fail on the first probe). A ">0" guard would drop
+	// an explicit 0, and Cloudflare would apply its own default instead of the
+	// requested value.
+	p.Retries = cloudflare.F(int64(mon.Spec.Retries))
 	if mon.Spec.Timeout > 0 {
 		p.Timeout = cloudflare.F(int64(mon.Spec.Timeout))
 	}
@@ -645,7 +652,9 @@ func monitorDrifted(cf *load_balancers.Monitor, mon *lbv1beta1.LoadBalancerMonit
 	if mon.Spec.Interval > 0 && int32(cf.Interval) != mon.Spec.Interval {
 		return true
 	}
-	if mon.Spec.Retries > 0 && int32(cf.Retries) != mon.Spec.Retries {
+	// Retries is always managed (CRD-defaulted; 0 is a valid value), so it is
+	// compared unconditionally -- see buildMonitorNewParams.
+	if int32(cf.Retries) != mon.Spec.Retries {
 		return true
 	}
 	if mon.Spec.Timeout > 0 && int32(cf.Timeout) != mon.Spec.Timeout {

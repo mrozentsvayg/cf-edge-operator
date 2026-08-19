@@ -279,12 +279,16 @@ func (r *LoadBalancerReconciler) handleCreate(ctx context.Context, zi *zoneInfo,
 
 func (r *LoadBalancerReconciler) editLoadBalancer(ctx context.Context, zi *zoneInfo, lb *lbv1beta1.LoadBalancer, cfID string, resolved *resolvedPools) (*load_balancers.LoadBalancer, error) {
 	log := logf.FromContext(ctx)
-	params := buildLBUpdateParams(zi.ID, lb, resolved)
+	// Edit (PATCH, partial): correct only the CRD-modeled fields and leave
+	// un-modeled Cloudflare LB config (rules, adaptive_routing, session affinity
+	// attributes, ...) intact. The pool topology the CR owns (default/fallback
+	// and geo pools) is always sent, so removing pools from the CR clears them.
+	params := buildLBEditParams(zi.ID, lb, resolved)
 	var resp *load_balancers.LoadBalancer
 	attempts, err := cfRetry(ctx, cfResourceLoadBalancer, cfOpUpdate, r.CFAPIMaxRetries, func() error {
 		start := time.Now()
 		var callErr error
-		resp, callErr = zi.Client.LoadBalancers.Update(ctx, cfID, params,
+		resp, callErr = zi.Client.LoadBalancers.Edit(ctx, cfID, params,
 			option.WithRequestTimeout(r.CFAPIWriteTimeout))
 		recordCFCall(cfResourceLoadBalancer, cfOpUpdate, start, &callErr)
 		return callErr
@@ -782,8 +786,8 @@ func buildLBNewParams(zoneID string, lb *lbv1beta1.LoadBalancer, resolved *resol
 	return p
 }
 
-func buildLBUpdateParams(zoneID string, lb *lbv1beta1.LoadBalancer, resolved *resolvedPools) load_balancers.LoadBalancerUpdateParams {
-	p := load_balancers.LoadBalancerUpdateParams{
+func buildLBEditParams(zoneID string, lb *lbv1beta1.LoadBalancer, resolved *resolvedPools) load_balancers.LoadBalancerEditParams {
+	p := load_balancers.LoadBalancerEditParams{
 		ZoneID:       cloudflare.F(zoneID),
 		Name:         cloudflare.F(lb.Spec.Hostname),
 		DefaultPools: cloudflare.F(buildDefaultPools(resolved.defaultIDs)),
@@ -810,15 +814,13 @@ func buildLBUpdateParams(zoneID string, lb *lbv1beta1.LoadBalancer, resolved *re
 	if lb.Spec.Description != "" {
 		p.Description = cloudflare.F(lb.Spec.Description)
 	}
-	if len(resolved.regionIDs) > 0 {
-		p.RegionPools = cloudflare.F(resolved.regionIDs)
-	}
-	if len(resolved.countryIDs) > 0 {
-		p.CountryPools = cloudflare.F(resolved.countryIDs)
-	}
-	if len(resolved.popIDs) > 0 {
-		p.POPPools = cloudflare.F(resolved.popIDs)
-	}
+	// Geo pool maps are always sent on edit (structural: the CR owns the LB's
+	// pool topology). An empty map clears CF-side geo steering -- Cloudflare does
+	// not auto-remove geo pool references, so we must send {} explicitly. This
+	// also keeps drift (unconditional mapListsEqual) loop-free under PATCH.
+	p.RegionPools = cloudflare.F(resolved.regionIDs)
+	p.CountryPools = cloudflare.F(resolved.countryIDs)
+	p.POPPools = cloudflare.F(resolved.popIDs)
 	return p
 }
 

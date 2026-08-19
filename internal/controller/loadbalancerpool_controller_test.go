@@ -207,9 +207,19 @@ func TestPoolDrifted_MonitorChange(t *testing.T) {
 	if !poolDrifted(cf, pool, "new-monitor-id") {
 		t.Fatal("monitor ID change should drift")
 	}
-	// Passing empty monitorID -> monitor drift is NOT checked (unmanaged).
-	if poolDrifted(cf, pool, "") {
-		t.Fatal("empty monitorID should not trigger monitor drift check")
+	// Empty monitorID means the CR has no monitorRef -> a monitor still attached
+	// in CF must be detached, so this drifts (structural ref, always managed).
+	if !poolDrifted(cf, pool, "") {
+		t.Fatal("empty monitorID must drift when CF still has a monitor (detach)")
+	}
+	// No monitor on either side -> no drift.
+	cfNoMon := &load_balancers.Pool{
+		Name:    "us-pool",
+		Enabled: true,
+		Origins: []load_balancers.Origin{{Name: "a", Address: "1.1.1.1", Enabled: true}},
+	}
+	if poolDrifted(cfNoMon, pool, "") {
+		t.Fatal("no monitor on either side should not drift")
 	}
 }
 

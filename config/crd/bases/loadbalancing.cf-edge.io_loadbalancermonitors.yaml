@@ -198,6 +198,10 @@ spec:
                 description: |-
                   Retries is the number of immediate retries before marking the origin
                   unhealthy on a single interval. Total retries per interval = Retries + 1.
+                  0 is valid (fail on the first probe). NOTE: no "omitempty" -- 0 is a
+                  meaningful value, and with a default of 2 an omitempty tag would drop an
+                  explicit 0 from the operator's own spec writes (e.g. adding the finalizer),
+                  causing the API server to re-apply the default and silently turn 0 into 2.
                 format: int32
                 maximum: 5
                 minimum: 0

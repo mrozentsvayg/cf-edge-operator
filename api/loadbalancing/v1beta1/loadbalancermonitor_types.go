@@ -96,11 +96,15 @@ type LoadBalancerMonitorSpec struct {
 
 	// Retries is the number of immediate retries before marking the origin
 	// unhealthy on a single interval. Total retries per interval = Retries + 1.
+	// 0 is valid (fail on the first probe). NOTE: no "omitempty" -- 0 is a
+	// meaningful value, and with a default of 2 an omitempty tag would drop an
+	// explicit 0 from the operator's own spec writes (e.g. adding the finalizer),
+	// causing the API server to re-apply the default and silently turn 0 into 2.
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=5
 	// +kubebuilder:default=2
 	// +optional
-	Retries int32 `json:"retries,omitempty"`
+	Retries int32 `json:"retries"`
 
 	// Timeout is seconds to wait for a probe response before considering the
 	// origin unhealthy for that attempt.

@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -104,6 +105,10 @@ type mockPool struct {
 	Latitude          float64      `json:"latitude"`
 	Longitude         float64      `json:"longitude"`
 	Origins           []mockOrigin `json:"origins"`
+	// LoadShedding is an example of a Cloudflare-side field the operator does
+	// NOT model. Under PATCH (partial edit) it must survive an operator update
+	// that touches only the modeled fields. The operator never sends it.
+	LoadShedding string `json:"load_shedding,omitempty"`
 }
 
 type mockOrigin struct {
@@ -131,6 +136,10 @@ type mockLB struct {
 	RegionPools     map[string][]string `json:"region_pools"`
 	CountryPools    map[string][]string `json:"country_pools"`
 	PopPools        map[string][]string `json:"pop_pools"`
+	// Rules is an example of a Cloudflare-side field the operator does NOT model.
+	// Under PATCH (partial edit) it must survive an operator update that touches
+	// only the modeled fields. The operator never sends it.
+	Rules json.RawMessage `json:"rules,omitempty"`
 }
 
 func newLBMockServer(accountID, zoneID, zoneName string) *lbMockServer {
@@ -147,22 +156,23 @@ func newLBMockServer(accountID, zoneID, zoneName string) *lbMockServer {
 	// Account validation.
 	mux.HandleFunc("GET /accounts/{accountID}", m.handleAccountGet)
 
-	// Monitors (account-scoped).
+	// Monitors (account-scoped). Update is PATCH (partial edit), matching the
+	// SDK's Monitors.Edit.
 	mux.HandleFunc("GET /accounts/{accountID}/load_balancers/monitors", m.handleMonitorList)
 	mux.HandleFunc("POST /accounts/{accountID}/load_balancers/monitors", m.handleMonitorCreate)
-	mux.HandleFunc("PUT /accounts/{accountID}/load_balancers/monitors/{id}", m.handleMonitorUpdate)
+	mux.HandleFunc("PATCH /accounts/{accountID}/load_balancers/monitors/{id}", m.handleMonitorUpdate)
 	mux.HandleFunc("DELETE /accounts/{accountID}/load_balancers/monitors/{id}", m.handleMonitorDelete)
 
-	// Pools (account-scoped).
+	// Pools (account-scoped). Update is PATCH (partial edit).
 	mux.HandleFunc("GET /accounts/{accountID}/load_balancers/pools", m.handlePoolList)
 	mux.HandleFunc("POST /accounts/{accountID}/load_balancers/pools", m.handlePoolCreate)
-	mux.HandleFunc("PUT /accounts/{accountID}/load_balancers/pools/{id}", m.handlePoolUpdate)
+	mux.HandleFunc("PATCH /accounts/{accountID}/load_balancers/pools/{id}", m.handlePoolUpdate)
 	mux.HandleFunc("DELETE /accounts/{accountID}/load_balancers/pools/{id}", m.handlePoolDelete)
 
-	// Load balancers (zone-scoped).
+	// Load balancers (zone-scoped). Update is PATCH (partial edit).
 	mux.HandleFunc("GET /zones/{zoneID}/load_balancers", m.handleLBList)
 	mux.HandleFunc("POST /zones/{zoneID}/load_balancers", m.handleLBCreate)
-	mux.HandleFunc("PUT /zones/{zoneID}/load_balancers/{id}", m.handleLBUpdate)
+	mux.HandleFunc("PATCH /zones/{zoneID}/load_balancers/{id}", m.handleLBUpdate)
 	mux.HandleFunc("DELETE /zones/{zoneID}/load_balancers/{id}", m.handleLBDelete)
 
 	m.server = httptest.NewServer(mux)
@@ -201,6 +211,33 @@ func writeCFError(w http.ResponseWriter, code int, msg string) {
 		"success": false,
 		"errors":  []map[string]any{{"code": code, "message": msg}},
 	})
+}
+
+// applyPatch models Cloudflare's PATCH (partial edit): only the top-level keys
+// PRESENT in the request body are applied onto the existing record; every other
+// field (including fields the operator does not model) survives untouched. It
+// merges at top-level field granularity -- a present object/array key replaces
+// that field wholesale, matching how the operator always sends whole
+// origins/pool-map values. existing and out are the same mock record type.
+func applyPatch(existing any, body []byte, out any) error {
+	base, err := json.Marshal(existing)
+	if err != nil {
+		return err
+	}
+	var merged map[string]json.RawMessage
+	if err := json.Unmarshal(base, &merged); err != nil {
+		return err
+	}
+	var patch map[string]json.RawMessage
+	if err := json.Unmarshal(body, &patch); err != nil {
+		return err
+	}
+	maps.Copy(merged, patch)
+	mergedBytes, err := json.Marshal(merged)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(mergedBytes, out)
 }
 
 // --- account ---
@@ -263,28 +300,14 @@ func (m *lbMockServer) handleMonitorUpdate(w http.ResponseWriter, r *http.Reques
 		writeCFError(w, http.StatusBadRequest, "read error")
 		return
 	}
-	var raw map[string]json.RawMessage
+	// PATCH partial-merge: fields the operator omits (e.g. a false bool it did
+	// not send) survive; the bool-drift regression relies on this.
 	var rec mockMonitor
-	if err := json.Unmarshal(body, &raw); err != nil {
+	if err := applyPatch(existing, body, &rec); err != nil {
 		writeCFError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if err := json.Unmarshal(body, &rec); err != nil {
-		writeCFError(w, http.StatusBadRequest, "invalid json")
-		return
-	}
-	rec.ID = id // Update is a full replace; keep the id from the path.
-	// Model real Cloudflare: follow_redirects / allow_insecure are retained when
-	// the field is omitted from the request. This is the exact behaviour the
-	// "always send bools" fix depends on -- a corrective update that omits a
-	// false bool would otherwise never clear a CF-side true, drift-looping
-	// forever. Modelling retain-on-omit lets the regression test catch that.
-	if _, present := raw["follow_redirects"]; !present {
-		rec.FollowRedirects = existing.FollowRedirects
-	}
-	if _, present := raw["allow_insecure"]; !present {
-		rec.AllowInsecure = existing.AllowInsecure
-	}
+	rec.ID = id
 	m.monitors[id] = rec
 	writeResult(w, http.StatusOK, rec)
 }
@@ -330,12 +353,18 @@ func (m *lbMockServer) handlePoolUpdate(w http.ResponseWriter, r *http.Request) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	id := r.PathValue("id")
-	if _, ok := m.pools[id]; !ok {
+	existing, ok := m.pools[id]
+	if !ok {
 		writeCFError(w, http.StatusNotFound, "pool not found")
 		return
 	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeCFError(w, http.StatusBadRequest, "read error")
+		return
+	}
 	var rec mockPool
-	if err := json.NewDecoder(r.Body).Decode(&rec); err != nil {
+	if err := applyPatch(existing, body, &rec); err != nil {
 		writeCFError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -397,12 +426,18 @@ func (m *lbMockServer) handleLBUpdate(w http.ResponseWriter, r *http.Request) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	id := r.PathValue("id")
-	if _, ok := m.lbs[id]; !ok {
+	existing, ok := m.lbs[id]
+	if !ok {
 		writeCFError(w, http.StatusNotFound, "load balancer not found")
 		return
 	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeCFError(w, http.StatusBadRequest, "read error")
+		return
+	}
 	var rec mockLB
-	if err := json.NewDecoder(r.Body).Decode(&rec); err != nil {
+	if err := applyPatch(existing, body, &rec); err != nil {
 		writeCFError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -523,6 +558,20 @@ func (m *lbMockServer) poolsWithName(name string) int {
 	return n
 }
 
+// setPoolLoadShedding sets the un-modeled LoadShedding field on the CF pool with
+// the given name, simulating Cloudflare-side state the operator does not manage.
+func (m *lbMockServer) setPoolLoadShedding(name, v string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, p := range m.pools {
+		if p.Name == name {
+			p.LoadShedding = v
+			m.pools[id] = p
+			return
+		}
+	}
+}
+
 // poolReplaceID reassigns the CF id of the pool with the given name, keeping the
 // record otherwise intact. Simulates an external recreate so deletePolicy=own-only
 // sees a status.ID mismatch and refuses to delete.
@@ -560,6 +609,20 @@ func (m *lbMockServer) lbsWithName(name string) int {
 		}
 	}
 	return n
+}
+
+// setLBRules sets the un-modeled Rules field on the CF LB with the given name,
+// simulating Cloudflare-side state the operator does not manage.
+func (m *lbMockServer) setLBRules(name string, rules json.RawMessage) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, l := range m.lbs {
+		if l.Name == name {
+			l.Rules = rules
+			m.lbs[id] = l
+			return
+		}
+	}
 }
 
 // lbReplaceID reassigns the CF id of the LB with the given name (hostname),
@@ -731,6 +794,10 @@ func createLBFixtures(ns string, zone bool) {
 const (
 	lbEventuallyTimeout = 10 * time.Second
 	lbPollInterval      = 150 * time.Millisecond
+
+	// steeringOff is a non-default LB steering policy, used to exercise drift
+	// correction away from the CRD default (dynamic_latency).
+	steeringOff = "off"
 )
 
 // --- Main suite: account / monitor / pool / load balancer / create-guard / delete ---
@@ -1173,7 +1240,7 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 			var current lbv1beta1.LoadBalancer
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "lb-drift", Namespace: lbTestNS}, &current)).To(Succeed())
 			patch := client.MergeFrom(current.DeepCopy())
-			current.Spec.SteeringPolicy = "off"
+			current.Spec.SteeringPolicy = steeringOff
 			Expect(k8sClient.Patch(ctx, &current, patch)).To(Succeed())
 
 			Eventually(func() string {
@@ -1182,7 +1249,7 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 					return ""
 				}
 				return r.SteeringPolicy
-			}, lbEventuallyTimeout, lbPollInterval).Should(Equal("off"))
+			}, lbEventuallyTimeout, lbPollInterval).Should(Equal(steeringOff))
 
 			var after lbv1beta1.LoadBalancer
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "lb-drift", Namespace: lbTestNS}, &after)).To(Succeed())
@@ -1590,6 +1657,230 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				}
 				return floatNear(r.Latitude, 40.7128) && floatNear(r.Longitude, -74.0060)
 			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+		})
+	})
+
+	// -- PATCH semantics: un-modeled Cloudflare fields survive an operator edit --
+	Context("Partial edit preserves un-modeled fields", func() {
+		It("pool: LoadShedding survives an edit that only touches modeled fields", func() {
+			pool := &lbv1beta1.LoadBalancerPool{
+				ObjectMeta: metav1.ObjectMeta{Name: "pool-unmodeled", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerPoolSpec{
+					AccountRef: lbv1beta1.AccountRef{Name: lbAccountName},
+					Origins: []lbv1beta1.LoadBalancerPoolOrigin{
+						{Name: "o1", Address: "10.0.10.1", Enabled: new(true)},
+					},
+					Enabled: new(true),
+				},
+			}
+			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+			Eventually(func() bool {
+				r, ok := lbMock.poolByName("pool-unmodeled")
+				return ok && r.ID != ""
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			// CF-side field the operator does not model.
+			lbMock.setPoolLoadShedding("pool-unmodeled", "custom-shedding")
+
+			// Trigger an operator edit by mutating a modeled field.
+			var current lbv1beta1.LoadBalancerPool
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "pool-unmodeled", Namespace: lbTestNS}, &current)).To(Succeed())
+			patch := client.MergeFrom(current.DeepCopy())
+			current.Spec.Enabled = new(false)
+			Expect(k8sClient.Patch(ctx, &current, patch)).To(Succeed())
+
+			// The edit lands (enabled cleared) AND the un-modeled field survives.
+			Eventually(func() bool {
+				r, ok := lbMock.poolByName("pool-unmodeled")
+				return ok && !r.Enabled
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+			r, ok := lbMock.poolByName("pool-unmodeled")
+			Expect(ok).To(BeTrue())
+			Expect(r.LoadShedding).To(Equal("custom-shedding"))
+			// And it keeps surviving subsequent reconciles (no full-replace wipe).
+			Consistently(func() string {
+				rr, _ := lbMock.poolByName("pool-unmodeled")
+				return rr.LoadShedding
+			}, 3*time.Second, lbPollInterval).Should(Equal("custom-shedding"))
+		})
+
+		It("loadbalancer: Rules survive an edit that only touches modeled fields", func() {
+			hostname := "lb-unmodeled." + lbZoneName
+			lb := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-unmodeled", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:        hostname,
+					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+					SteeringPolicy:  "dynamic_latency",
+				},
+			}
+			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
+			Eventually(func() int {
+				return lbMock.lbsWithName(hostname)
+			}, lbEventuallyTimeout, lbPollInterval).Should(Equal(1))
+
+			lbMock.setLBRules(hostname, json.RawMessage(`[{"name":"rule-1","disabled":false}]`))
+
+			var current lbv1beta1.LoadBalancer
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "lb-unmodeled", Namespace: lbTestNS}, &current)).To(Succeed())
+			patch := client.MergeFrom(current.DeepCopy())
+			current.Spec.SteeringPolicy = steeringOff
+			Expect(k8sClient.Patch(ctx, &current, patch)).To(Succeed())
+
+			Eventually(func() bool {
+				r, ok := lbMock.lbByName(hostname)
+				return ok && r.SteeringPolicy == steeringOff
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+			r, ok := lbMock.lbByName(hostname)
+			Expect(ok).To(BeTrue())
+			Expect(string(r.Rules)).To(ContainSubstring("rule-1"))
+			Consistently(func() string {
+				rr, _ := lbMock.lbByName(hostname)
+				return string(rr.Rules)
+			}, 3*time.Second, lbPollInterval).Should(ContainSubstring("rule-1"))
+		})
+	})
+
+	// -- Keyed pools cleared declaratively on ref removal (always-send {}) --
+	Context("Keyed pools removal", func() {
+		It("clears region_pools when the CR drops the mapping", func() {
+			hostname := "lb-keyclear." + lbZoneName
+			lb := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-keyclear", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:        hostname,
+					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+					SteeringPolicy:  "geo",
+					RegionPools:     map[string][]lbv1beta1.LoadBalancerPoolRef{"WNAM": {{Name: "pool-fb"}}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
+
+			var poolID string
+			Eventually(func() bool {
+				p, okP := lbMock.poolByName("pool-fb")
+				poolID = p.ID
+				r, ok := lbMock.lbByName(hostname)
+				return okP && ok && stringSlicesEqual(r.RegionPools["WNAM"], []string{poolID})
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			// Drop the mapping entirely -> operator sends region_pools:{} on edit.
+			var current lbv1beta1.LoadBalancer
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "lb-keyclear", Namespace: lbTestNS}, &current)).To(Succeed())
+			patch := client.MergeFrom(current.DeepCopy())
+			current.Spec.RegionPools = nil
+			Expect(k8sClient.Patch(ctx, &current, patch)).To(Succeed())
+
+			Eventually(func() int {
+				r, ok := lbMock.lbByName(hostname)
+				if !ok {
+					return -1
+				}
+				return len(r.RegionPools)
+			}, lbEventuallyTimeout, lbPollInterval).Should(Equal(0))
+			// Stays cleared -- no drift-loop re-adding it.
+			Consistently(func() int {
+				r, _ := lbMock.lbByName(hostname)
+				return len(r.RegionPools)
+			}, 3*time.Second, lbPollInterval).Should(Equal(0))
+		})
+	})
+
+	// -- Monitor detach when the pool drops its monitorRef (always-send "") --
+	Context("Monitor detach", func() {
+		It("clears the pool's monitor when monitorRef is removed", func() {
+			mon := &lbv1beta1.LoadBalancerMonitor{
+				ObjectMeta: metav1.ObjectMeta{Name: "mon-detach", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerMonitorSpec{
+					AccountRef: lbv1beta1.AccountRef{Name: lbAccountName},
+					Type:       "https",
+				},
+			}
+			Expect(k8sClient.Create(ctx, mon)).To(Succeed())
+			var monID string
+			Eventually(func() string {
+				var m lbv1beta1.LoadBalancerMonitor
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: "mon-detach", Namespace: lbTestNS}, &m); err != nil {
+					return ""
+				}
+				monID = m.Status.ID
+				return m.Status.ID
+			}, lbEventuallyTimeout, lbPollInterval).ShouldNot(BeEmpty())
+
+			pool := &lbv1beta1.LoadBalancerPool{
+				ObjectMeta: metav1.ObjectMeta{Name: "pool-detach", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerPoolSpec{
+					AccountRef: lbv1beta1.AccountRef{Name: lbAccountName},
+					Origins: []lbv1beta1.LoadBalancerPoolOrigin{
+						{Name: "o1", Address: "10.0.11.1", Enabled: new(true)},
+					},
+					Enabled:    new(true),
+					MonitorRef: &lbv1beta1.LoadBalancerMonitorRef{Name: "mon-detach"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+
+			Eventually(func() string {
+				r, ok := lbMock.poolByName("pool-detach")
+				if !ok {
+					return ""
+				}
+				return r.Monitor
+			}, lbEventuallyTimeout, lbPollInterval).Should(Equal(monID))
+
+			// Remove the ref -> operator sends monitor:"" on edit -> CF detaches.
+			var current lbv1beta1.LoadBalancerPool
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "pool-detach", Namespace: lbTestNS}, &current)).To(Succeed())
+			patch := client.MergeFrom(current.DeepCopy())
+			current.Spec.MonitorRef = nil
+			Expect(k8sClient.Patch(ctx, &current, patch)).To(Succeed())
+
+			Eventually(func() string {
+				r, ok := lbMock.poolByName("pool-detach")
+				if !ok {
+					return "<missing>"
+				}
+				return r.Monitor
+			}, lbEventuallyTimeout, lbPollInterval).Should(Equal(""))
+		})
+	})
+
+	// -- retries=0 is expressible end-to-end via the plain typed path --
+	Context("Monitor retries=0", func() {
+		It("preserves an explicit retries=0 through the normal reconcile to CF", func() {
+			// Two fixes make this work on the ordinary path a user would take:
+			// the build guard was dropped (0 is sent to CF), and "omitempty" was
+			// removed from the Retries type so the operator's finalizer-add spec
+			// Update no longer drops the 0 and let the API server re-apply the
+			// default (2). No unstructured payload and no pre-set finalizer needed.
+			mon := &lbv1beta1.LoadBalancerMonitor{
+				ObjectMeta: metav1.ObjectMeta{Name: "mon-retries0", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerMonitorSpec{
+					AccountRef: lbv1beta1.AccountRef{Name: lbAccountName},
+					Type:       "https",
+					Retries:    0,
+				},
+			}
+			Expect(k8sClient.Create(ctx, mon)).To(Succeed())
+
+			marker := monitorMarkerFor(lbTestNS, "mon-retries0")
+			Eventually(func() bool {
+				r, ok := lbMock.monitorByMarker(marker)
+				return ok && r.ID != ""
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			r, ok := lbMock.monitorByMarker(marker)
+			Expect(ok).To(BeTrue())
+			Expect(r.Retries).To(Equal(int64(0)))
+			// retries=0 must not drift back to the default 2.
+			Consistently(func() int64 {
+				rr, _ := lbMock.monitorByMarker(marker)
+				return rr.Retries
+			}, 3*time.Second, lbPollInterval).Should(Equal(int64(0)))
 		})
 	})
 })
