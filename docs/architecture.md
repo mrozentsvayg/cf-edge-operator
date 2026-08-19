@@ -2,7 +2,7 @@
 
 ## Overview
 
-cf-edge-operator manages Cloudflare (CF) for SaaS (custom hostnames, Origin Server Name Indication (SNI) overrides) via Kubernetes CRDs. It deliberately excludes DNS record management, which belongs to external-dns or similar tools.
+cf-edge-operator manages Cloudflare (CF) for SaaS (custom hostnames, Origin Server Name Indication (SNI) overrides) via Kubernetes CRDs. It deliberately excludes DNS record management, which belongs to external-dns or similar tools. An optional, single-owner control-plane role additionally manages Cloudflare Load Balancing (see [Load Balancing reconciliation model](#load-balancing-reconciliation-model)).
 
 See also: [docs/operations.md](operations.md) for configuration flags, performance tuning, and HA setup. [docs/runbook.md](runbook.md) for alert investigation.
 
@@ -22,6 +22,56 @@ Key spec fields:
 - `spec.ssl` -- (optional) SSL configuration: CA (`lets_encrypt`/`google`/`ssl_com`), minTLSVersion (`1.0`-`1.3`), method (`http`/`txt`/`email`), type (`dv`). Empty fields use `--ssl-*` operator defaults; method defaults to `http`, type to `dv`; CA and minTLSVersion default to CF defaults.
 - `spec.managementPolicy` -- (optional) per-CR override for `--management-policy`. See [Management Policy](#management-policy).
 - `spec.deletePolicy` -- (optional) per-CR override for `--delete-policy`. See [Delete Policy](#delete-policy).
+
+### Account (`loadbalancing.cf-edge.io/v1beta1`)
+Carries a Cloudflare account ID and API credentials for account-scoped Load Balancing resources -- the account-scope analog of a Zone. Lives in the operator namespace; LoadBalancerPool and LoadBalancerMonitor reference it via `accountRef`. A light validating controller: it confirms the credentials can reach the account (`accounts.Get`) and records the outcome, but creates no Cloudflare resources. Part of the optional load-balancing control-plane role (see [Load Balancing reconciliation model](#load-balancing-reconciliation-model)).
+
+Key spec fields:
+- `spec.id` -- the Cloudflare account ID (32-char hex, immutable)
+- `spec.credentialsRef` -- secret holding the API token (needs account-scoped Load Balancing permissions); must be in the Account's namespace
+
+Status: `status.name` (account name resolved from CF), `status.conditions[Initialized]`.
+
+### LoadBalancerMonitor (`loadbalancing.cf-edge.io/v1beta1`)
+An account-scoped health check that pools reference to probe their origins. A Cloudflare monitor has no name field, so the controller stamps an identity marker (`[cf-edge-operator:<namespace>/<name>]`) into the CF description and matches on it across restarts. References an Account cross-namespace.
+
+Key spec fields:
+- `spec.accountRef` -- references the Account CR (name + optional namespace, defaults to operator namespace)
+- `spec.type` -- probe protocol: `http`, `https`, `tcp`, `udp_icmp`, `icmp_ping`, `smtp` (default `https`)
+- `spec.method`, `spec.path`, `spec.port`, `spec.expectedCodes`, `spec.expectedBody`, `spec.header` -- HTTP/S probe request and expected response
+- `spec.followRedirects`, `spec.allowInsecure` -- HTTP/S probe behavior
+- `spec.interval` (default 60), `spec.timeout` (default 5), `spec.retries` (default 2), `spec.consecutiveUp`, `spec.consecutiveDown` -- probe timing and up/down thresholds (seconds / counts)
+- `spec.managementPolicy` / `spec.deletePolicy` -- (optional) per-CR policy overrides. See [Management Policy](#management-policy) / [Delete Policy](#delete-policy).
+
+Status: `status.id` (CF monitor ID, read by the Pool controller to resolve `monitorRef`), `status.createCount`, `status.consecutiveErrors`, `status.conditions[Ready]`.
+
+### LoadBalancerPool (`loadbalancing.cf-edge.io/v1beta1`)
+An account-scoped origin pool. The CR name is used verbatim as the Cloudflare pool name, so charts must keep pool names unique across the fleet. References an Account via `accountRef` and, optionally, a Monitor via `monitorRef`; the LoadBalancer controller resolves pool references to this pool's `status.id`.
+
+Key spec fields:
+- `spec.accountRef` -- references the Account CR
+- `spec.origins` -- backend endpoints (each with `name`, `address`, `enabled`, `weight`, and an optional `header.host` override); at least one required
+- `spec.monitorRef` -- (optional) references a LoadBalancerMonitor CR whose CF ID is threaded into the pool
+- `spec.enabled` (default true), `spec.minimumOrigins` (healthy-origin threshold), `spec.notificationEmail`
+- `spec.latitude` / `spec.longitude` -- (optional, set together) pool geo-coordinates for proximity steering
+- `spec.managementPolicy` / `spec.deletePolicy` -- (optional) per-CR policy overrides.
+
+Status: `status.id` (CF pool ID), `status.enabled` (administrative state observed from CF, not per-origin health), `status.monitorID` (resolved from `monitorRef`), `status.createCount`, `status.consecutiveErrors`, `status.conditions[Ready]`.
+
+### LoadBalancer (`loadbalancing.cf-edge.io/v1beta1`)
+A Cloudflare zone-scoped load balancer. `spec.hostname` becomes a geo-steered DNS record in the referenced zone (the CF-side LB is named after the hostname, so charts must keep hostnames unique per zone). References a Zone via `zoneRef` and LoadBalancerPool CRs by name; the controller resolves each pool ref to its `status.id`.
+
+Key spec fields:
+- `spec.zoneRef` -- references the Zone CR (supplies the CF zone ID and credentials)
+- `spec.hostname` -- the DNS name clients resolve; must be within the zone (immutable)
+- `spec.defaultPoolRefs` -- ordered pool refs used when no geo rule matches (at least one required)
+- `spec.fallbackPoolRef` -- pool used when every other pool is unhealthy (required by CF)
+- `spec.steeringPolicy` -- `off`, `geo`, `random`, `dynamic_latency` (default), `proximity`, `least_outstanding_requests`, `least_connections`
+- `spec.regionPools` / `spec.countryPools` / `spec.popPools` -- per-geo pool ref overrides (used when `steeringPolicy=geo`)
+- `spec.proxied` (default true), `spec.ttl` (DNS-only LBs only), `spec.sessionAffinity`, `spec.description`
+- `spec.managementPolicy` / `spec.deletePolicy` -- (optional) per-CR policy overrides.
+
+Status: `status.id` (CF LB ID), `status.resolvedDefaultPoolIDs`, `status.resolvedFallbackPoolID`, `status.createCount`, `status.consecutiveErrors`, `status.conditions[Ready]`.
 
 ## Controller Architecture: Coordinator / Worker Split
 
@@ -155,6 +205,22 @@ Note: when `managementPolicy` is `observe`, the operator always releases the fin
 - `own-only`: looks up current CF state, sees ID mismatch -> releases without any CF API call. Explicitly safe.
 
 **Recommended:** deploy with `--delete-policy=own-only` and `--management-policy=create` during migration. See [docs/migration.md](migration.md).
+
+## Load Balancing reconciliation model
+
+Load balancing is an opt-in control-plane role, distinct from the per-cluster CustomHostname flow. It adds four CRDs (Account, LoadBalancerMonitor, LoadBalancerPool, LoadBalancer) and four self-requeuing worker controllers. There is no Zone-style coordinator: each controller re-reconciles every `--drift-interval` to catch external drift and retry transient errors.
+
+**Single-owner-local.** All LoadBalancer, Pool, Monitor, and Account CRs live in one control cluster's operator, and every pool reference resolves from a local Pool CR's `status.id` -- there is no cross-cluster or CF-list fallback. This is deliberately unlike CustomHostname, which runs per-cluster: for the multi-region pattern the regional pools and the LoadBalancer that fans out to them must be managed together by one operator, so every ref is a local CR.
+
+**Opt-in and gated.** The LB controllers are off unless `--enable-loadbalancer` is set (Helm `controlPlane.enabled=true`). When off: none of the four controllers start, their metric series are not pre-initialized, and the load-balancing CRDs and RBAC are not installed. A deployment with the feature disabled is byte-identical to a chart without it -- so exactly one cluster runs the control-plane role and all others leave it off, unaffected.
+
+**Curated subset via PATCH.** Like CustomHostname, the operator manages only the fields the CRDs model and leaves the rest of the Cloudflare configuration intact (LB rules and `adaptive_routing`, pool `load_shedding` and `origin_steering`, etc.). The LB family achieves this with PATCH (partial update). A field is sent iff it is drift-checked iff the CR expresses it -- either as an explicit value or as a CRD default. Fields that have CRD defaults (monitor `retries` / `interval` / `timeout`, LB `steeringPolicy` / `proxied`, pool and origin `enabled`) are always populated and therefore always enforced. An optional field left blank is left as-is on Cloudflare -- the operator cannot force-clear an optional field back to empty; clear it via the CF dashboard or API. Structural references are authoritative and always sent: an LB's default / fallback / region / country / pop pools, and a pool's monitor. Removing one from the CR clears it on Cloudflare (dropping a pool's `monitorRef` detaches the monitor; emptying `regionPools` clears geo steering).
+
+**Best-effort pool resolution.** An unresolved pool ref -- the Pool CR is absent, or exists but has no `status.id` yet -- is dropped from the CF payload and recorded on the LoadBalancer's `Ready` condition (degraded), not treated as fatal, so one unready pool does not block the whole endpoint. A transient (non-NotFound) error during resolution is propagated instead of dropping the ref, so an API blip never removes a live pool (shrink-safety). Cloudflare's hard minimum still applies -- a resolvable fallback pool plus at least one default -- so an LB with no resolvable fallback waits (`WaitingForFallbackPool`) rather than writing an invalid config; if every default ref is unresolved but the fallback resolves, the fallback is promoted into the default set. Cross-object watches re-drive dependents as they become ready: a Pool wakes on its Monitor's `status.id` (`WaitingForMonitor`), and a LoadBalancer wakes on each referenced Pool's `status.id`. Both watches filter on the CF-ID change, so status-only churn does not fan out.
+
+**Map-overwrite assumption.** Removal of map-valued fields -- the monitor `header` (sent, and enforced as a full set, when the CR sets it) and the LB `regionPools` / `countryPools` / `popPools` (always sent on edit, empty to clear) -- relies on Cloudflare's PATCH overwriting a top-level map property wholesale (as its docs state, PATCH "overwrite[s] specific properties"). This must be confirmed against a live Cloudflare account before relying on it in production: create an LB with two region pools, PATCH one, and verify the other is removed. If Cloudflare instead deep-merged map keys, keyed-pool and header removal by omission would not take effect and would need a different approach (synthesizing merge-patch null removals from the already-read CF state).
+
+**Policy semantics.** `managementPolicy` (`manage` / `create` / `observe`) and `deletePolicy` (`always` / `own-only` / `never`), including per-CR overrides, apply to the LB resources exactly as they do to CustomHostname. See [Management Policy](#management-policy) and [Delete Policy](#delete-policy). Teardown ordering and finalizer-wedge recovery are covered in [operations.md](operations.md#uninstallation).
 
 ## Observability
 

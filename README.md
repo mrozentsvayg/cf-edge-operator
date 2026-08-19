@@ -1,6 +1,6 @@
 # cf-edge-operator
 
-A Kubernetes operator for managing [Cloudflare for SaaS](https://developers.cloudflare.com/cloudflare-for-platforms/cloudflare-for-saas/) custom hostnames. It handles custom hostname lifecycle (create, update, delete), SSL provisioning, Origin SNI overrides, and drift detection -- things that don't belong in external-dns.
+A Kubernetes operator for managing [Cloudflare for SaaS](https://developers.cloudflare.com/cloudflare-for-platforms/cloudflare-for-saas/) custom hostnames. It handles custom hostname lifecycle (create, update, delete), SSL provisioning, Origin SNI overrides, and drift detection -- things that don't belong in external-dns. It can also optionally manage Cloudflare Load Balancing (Accounts, Pools, Monitors, LoadBalancers) as a single-owner control-plane role.
 
 ## Quick Start
 
@@ -117,6 +117,19 @@ kubectl get customhostnames -A
 | `status.conditions[Ready].reason` | `HostnameConflict` when another CR already owns this hostname in Cloudflare. Clears automatically when the owning CR is deleted. |
 | `status.sslProvisioningStartedAt` | Timestamp set on each create/recreate in Cloudflare. Source for the `ssl_provisioning_duration_seconds` metric. |
 
+### Load Balancing (control-plane role)
+
+Optional. The operator can also manage Cloudflare Load Balancing through four CRDs in the `loadbalancing.cf-edge.io/v1beta1` group:
+
+| Kind | Scope | Purpose |
+|------|-------|---------|
+| `Account` | account | Cloudflare account ID + credentials for account-scoped LB resources (the account-scope analog of a Zone) |
+| `LoadBalancerMonitor` | account | Health check that probes pool origins; referenced by pools |
+| `LoadBalancerPool` | account | Origin pool; references an Account and, optionally, a Monitor |
+| `LoadBalancer` | zone | Geo-steered hostname; references a Zone and LoadBalancerPool CRs by name |
+
+Load balancing is a single-owner control-plane role: enable it on exactly one (control) cluster with `controlPlane.enabled=true` (Helm) / `--enable-loadbalancer`. All other clusters leave it off, and the LB CRDs, RBAC, controllers, and metrics are omitted. See [docs/architecture.md](docs/architecture.md#load-balancing-reconciliation-model) for the reconciliation model and per-CRD field reference.
+
 ---
 
 ## Helm Values
@@ -131,6 +144,7 @@ kubectl get customhostnames -A
 | `operatorNamespace` | release namespace | Namespace where Zone CRs live |
 | `managementPolicy` | `manage` | `manage`, `create`, or `observe`. See [docs/architecture.md](docs/architecture.md#management-policy). |
 | `deletePolicy` | `always` | `always`, `own-only`, or `never`. See [docs/architecture.md](docs/architecture.md#delete-policy). |
+| `controlPlane.enabled` | `false` | Enable the load-balancing controllers, CRDs, and RBAC (single-owner control-plane role; set `true` on exactly one cluster). See [docs/architecture.md](docs/architecture.md#load-balancing-reconciliation-model). |
 | `leaderElect` | `true` | Enable leader election (required for HA) |
 | `replicaCount` | `1` | Number of replicas |
 | `resources.limits.cpu` | `500m` | CPU limit |
