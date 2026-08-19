@@ -268,10 +268,24 @@ func (m *lbMockServer) handleMonitorList(w http.ResponseWriter, r *http.Request)
 func (m *lbMockServer) handleMonitorCreate(w http.ResponseWriter, r *http.Request) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeCFError(w, http.StatusBadRequest, "read error")
+		return
+	}
 	var rec mockMonitor
-	if err := json.NewDecoder(r.Body).Decode(&rec); err != nil {
+	if err := json.Unmarshal(body, &rec); err != nil {
 		writeCFError(w, http.StatusBadRequest, "invalid json")
 		return
+	}
+	// Model Cloudflare's server-side default: an absent "retries" becomes 2.
+	// This keeps the retries=0 regression honest -- if the operator's build guard
+	// were ever restored (omitting retries on create), CF would default it to 2
+	// and the test would catch it, not silently see the zero-value 0.
+	var raw map[string]json.RawMessage
+	_ = json.Unmarshal(body, &raw)
+	if _, ok := raw["retries"]; !ok {
+		rec.Retries = 2
 	}
 	rec.ID = m.nextID("mon")
 	m.monitors[rec.ID] = rec
@@ -300,8 +314,9 @@ func (m *lbMockServer) handleMonitorUpdate(w http.ResponseWriter, r *http.Reques
 		writeCFError(w, http.StatusBadRequest, "read error")
 		return
 	}
-	// PATCH partial-merge: fields the operator omits (e.g. a false bool it did
-	// not send) survive; the bool-drift regression relies on this.
+	// PATCH partial-merge: only the top-level keys present in the body overwrite
+	// the stored record; absent keys survive. The bool-drift regression relies on
+	// an explicitly-sent false overwriting CF's true.
 	var rec mockMonitor
 	if err := applyPatch(existing, body, &rec); err != nil {
 		writeCFError(w, http.StatusBadRequest, "invalid json")

@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
 	"slices"
 	"sort"
 	"time"
@@ -739,7 +738,10 @@ func mapListsEqual(a, b map[string][]string) bool {
 		if !ok {
 			return false
 		}
-		if !reflect.DeepEqual(av, bv) {
+		// stringSlicesEqual is len-based, so nil and []string{} compare equal --
+		// avoids a reflect.DeepEqual nil-vs-empty-slice false mismatch if a keyed
+		// pool value is ever empty.
+		if !stringSlicesEqual(av, bv) {
 			return false
 		}
 	}
