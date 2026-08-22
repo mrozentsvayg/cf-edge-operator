@@ -31,7 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -88,7 +88,7 @@ const (
 type LoadBalancerReconciler struct {
 	client.Client
 	Scheme            *runtime.Scheme
-	Recorder          record.EventRecorder
+	Recorder          events.EventRecorder
 	OperatorNamespace string
 	ManagementPolicy  string
 	DeletePolicy      string
@@ -249,7 +249,7 @@ func (r *LoadBalancerReconciler) reconcileCloudflareState(ctx context.Context, z
 			log.Info("loadbalancer - adopted Cloudflare load balancer has enabled differing from the CR; enforcing the CR value",
 				"hostname", lb.Spec.Hostname, "observedEnabled", existing.Enabled, "desiredEnabled", lbEnabled(lb))
 			if r.Recorder != nil {
-				r.Recorder.Eventf(lb, corev1.EventTypeWarning, "EnabledEnforced",
+				r.Recorder.Eventf(lb, nil, corev1.EventTypeWarning, "EnabledEnforced", "Enforcing",
 					"Adopted Cloudflare load balancer had enabled=%t; enforcing the CR's value enabled=%t",
 					existing.Enabled, lbEnabled(lb))
 			}
@@ -497,7 +497,7 @@ func (r *LoadBalancerReconciler) markReady(ctx context.Context, lb *lbv1beta1.Lo
 			logf.FromContext(ctx).Info("loadbalancer - serving in a degraded (partial) state, some pool refs unresolved",
 				"hostname", lb.Spec.Hostname, "unresolvedPoolRefs", resolved.unresolved)
 			if r.Recorder != nil {
-				r.Recorder.Eventf(lb, corev1.EventTypeWarning, "Partial",
+				r.Recorder.Eventf(lb, nil, corev1.EventTypeWarning, "Partial", "Degraded",
 					"LoadBalancer serving in a degraded state; %d pool ref(s) unresolved: %v",
 					len(resolved.unresolved), resolved.unresolved)
 			}

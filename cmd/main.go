@@ -495,7 +495,7 @@ func main() {
 		if err := (&controller.LoadBalancerReconciler{
 			Client:            mgr.GetClient(),
 			Scheme:            mgr.GetScheme(),
-			Recorder:          mgr.GetEventRecorderFor("loadbalancer"),
+			Recorder:          mgr.GetEventRecorder("loadbalancer"),
 			OperatorNamespace: operatorNamespace,
 			ManagementPolicy:  managementPolicy,
 			DeletePolicy:      deletePolicy,

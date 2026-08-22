@@ -17,7 +17,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/cloudflare/cloudflare-go/v6/load_balancers"
@@ -428,7 +428,7 @@ func TestMarkReady_PartialTransitionOnce(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(&lbv1beta1.LoadBalancer{}).
 		WithObjects(lb).Build()
-	rec := record.NewFakeRecorder(10)
+	rec := events.NewFakeRecorder(10)
 	r := &LoadBalancerReconciler{Client: c, Scheme: scheme, Recorder: rec}
 
 	// Enter partial: Ready=True + reason Partial, one Event.

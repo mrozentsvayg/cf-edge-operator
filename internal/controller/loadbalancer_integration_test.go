@@ -939,7 +939,7 @@ func startLBManager(ns string, dryRun bool, requeue time.Duration, baseURL strin
 	Expect((&LoadBalancerReconciler{
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
-		Recorder:          mgr.GetEventRecorderFor("loadbalancer"),
+		Recorder:          mgr.GetEventRecorder("loadbalancer"),
 		OperatorNamespace: ns,
 		ManagementPolicy:  ManagementPolicyManage,
 		DeletePolicy:      DeletePolicyAlways,
