@@ -112,6 +112,7 @@ type LoadBalancerReconciler struct {
 // +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=loadbalancerpools,verbs=get;list;watch
 // +kubebuilder:rbac:groups=domains.cf-edge.io,resources=zones,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile drives a LoadBalancer to its desired Cloudflare state, then rebuilds
 // the per-zone state gauge. The recompute is deferred here -- wrapping the inner

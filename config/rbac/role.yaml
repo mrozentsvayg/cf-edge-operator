@@ -53,6 +53,13 @@ rules:
   - patch
   - update
 - apiGroups:
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
   - loadbalancing.cf-edge.io
   resources:
   - loadbalancermonitors

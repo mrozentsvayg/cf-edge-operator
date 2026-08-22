@@ -55,4 +55,10 @@ rules:
 - apiGroups: [loadbalancing.cf-edge.io]
   resources: [loadbalancers/finalizers, loadbalancerpools/finalizers, loadbalancermonitors/finalizers]
   verbs: [update]
+# The LoadBalancer controller emits Kubernetes Events (EnabledEnforced, Partial) via
+# the events.k8s.io/v1 API (mgr.GetEventRecorder), so it needs create/patch on
+# events.k8s.io -- a core "" events grant does not authorize the events.k8s.io group.
+- apiGroups: [events.k8s.io]
+  resources: [events]
+  verbs: [create, patch]
 {{- end }}
