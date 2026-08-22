@@ -119,6 +119,10 @@ helm-validate: ## Lint and template-render Helm chart with all optional features
 		> /dev/null
 	@echo "Helm chart validation passed"
 
+.PHONY: helm-verify
+helm-verify: ## Full Helm CI parity: lint + render + flag/CRD-lifecycle assertions + CRD diff (local == CI; run by .github/workflows/helm.yml).
+	bash test/helm-verify.sh
+
 .PHONY: helm-crd-sync
 helm-crd-sync: manifests ## Copy generated CRDs into the chart's crds-render/ data dir.
 	@rm -f charts/cf-edge-operator/crds-render/*.yaml

@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+#
+# Full Helm chart verification -- the SINGLE SOURCE OF TRUTH shared by the "Helm"
+# CI job (.github/workflows/helm.yml) and local `make helm-verify`, so local == CI
+# mechanically. Run from the repo root. Requires `helm` on PATH.
+#
+# Covers: helm lint, all-features render smokes, flag-rendering assertions,
+# CRD-lifecycle (crds.enabled / crds.keep / per-feature gating) assertions, and
+# the chart-CRDs-match-generated-CRDs diff. Uses `set -e` to match CI's `bash -e`
+# semantics (a failed assertion via `... || { echo FAIL; exit 1; }` aborts).
+set -e
+
+C=charts/cf-edge-operator
+
+echo "== helm lint =="
+helm lint "$C"/
+
+echo "== render smoke (all features) =="
+helm template test "$C"/ \
+  --set podDisruptionBudget.enabled=true \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.namespace=monitoring \
+  --set prometheusRule.enabled=true \
+  --set prometheusRule.namespace=monitoring \
+  > /dev/null
+
+echo "== render smoke (all features + runbook URL) =="
+helm template test "$C"/ \
+  --set podDisruptionBudget.enabled=true \
+  --set serviceMonitor.enabled=true \
+  --set prometheusRule.enabled=true \
+  --set prometheusRule.runbookUrl=https://example.com/runbooks \
+  > /dev/null
+
+echo "== verify rendered flags match values =="
+# Boolean flags: string and boolean values (ApplicationSet passes strings)
+helm template test "$C"/ --set-string dryRun=false | grep -q "\-\-dry-run" \
+  && { echo "FAIL: --dry-run present with string false"; exit 1; }
+helm template test "$C"/ --set-string dryRun=true | grep -q "\-\-dry-run" \
+  || { echo "FAIL: --dry-run absent with string true"; exit 1; }
+helm template test "$C"/ --set dryRun=false | grep -q "\-\-dry-run" \
+  && { echo "FAIL: --dry-run present with bool false"; exit 1; }
+helm template test "$C"/ --set dryRun=true | grep -q "\-\-dry-run" \
+  || { echo "FAIL: --dry-run absent with bool true"; exit 1; }
+helm template test "$C"/ --set-string leaderElect=false | grep -q "\-\-leader-elect$" \
+  && { echo "FAIL: --leader-elect present with string false"; exit 1; }
+helm template test "$C"/ --set-string leaderElect=true | grep -q "\-\-leader-elect$" \
+  || { echo "FAIL: --leader-elect absent with string true"; exit 1; }
+
+# Operator flags render with correct values
+out=$(helm template test "$C"/ \
+  --set podLabels.export-logs=true \
+  --set managementPolicy=create \
+  --set deletePolicy=never \
+  --set driftInterval=30s \
+  --set cfAPITimeout=5s \
+  --set cfAPIWriteTimeout=20s \
+  --set cfAPIMaxRetries=2 \
+  --set cfAPIBulkTimeout=10s \
+  --set cfAPIBulkMaxRetries=1 \
+  --set cfAPIWriteDelay=500ms \
+  --set sslCertificateAuthority=lets_encrypt \
+  --set sslMinTLSVersion=1.2 \
+  --set zapDevel=false \
+  --set zapLogLevel=2)
+echo "$out" | grep -q "\-\-management-policy=create"              || { echo "FAIL: managementPolicy"; exit 1; }
+echo "$out" | grep -q "\-\-delete-policy=never"                   || { echo "FAIL: deletePolicy"; exit 1; }
+echo "$out" | grep -q "\-\-drift-interval=30s"                    || { echo "FAIL: driftInterval"; exit 1; }
+echo "$out" | grep -q "\-\-cf-api-timeout=5s"                     || { echo "FAIL: cfAPITimeout"; exit 1; }
+echo "$out" | grep -q "\-\-cf-api-write-timeout=20s"               || { echo "FAIL: cfAPIWriteTimeout"; exit 1; }
+echo "$out" | grep -q "\-\-cf-api-max-retries=2"                  || { echo "FAIL: cfAPIMaxRetries"; exit 1; }
+echo "$out" | grep -q "\-\-cf-api-bulk-timeout=10s"               || { echo "FAIL: cfAPIBulkTimeout"; exit 1; }
+echo "$out" | grep -q "\-\-cf-api-bulk-max-retries=1"             || { echo "FAIL: cfAPIBulkMaxRetries"; exit 1; }
+echo "$out" | grep -q "\-\-cf-api-write-delay=500ms"              || { echo "FAIL: cfAPIWriteDelay"; exit 1; }
+echo "$out" | grep -q "\-\-ssl-certificate-authority=lets_encrypt" || { echo "FAIL: sslCertificateAuthority"; exit 1; }
+echo "$out" | grep -q "\-\-ssl-min-tls-version=1.2"               || { echo "FAIL: sslMinTLSVersion"; exit 1; }
+echo "$out" | grep -q "\-\-zap-devel=false"                       || { echo "FAIL: zapDevel"; exit 1; }
+echo "$out" | grep -q "\-\-zap-log-level=2"                       || { echo "FAIL: zapLogLevel"; exit 1; }
+echo "$out" | grep -q "export-logs"                                || { echo "FAIL: podLabels"; exit 1; }
+
+# Optional flags absent when empty (defaults). Match the "=" (flag) form:
+# crds.yaml renders CRDs into `helm template` output, and some CRD field
+# descriptions name operator flags (e.g. "use --ssl-method operator default"),
+# so a bare "--ssl-method" grep would match description prose. A real rendered
+# flag is always "--<name>=<value>", so "=" scopes the check to actual flags.
+out=$(helm template test "$C"/)
+echo "$out" | grep -q "\-\-ssl-certificate-authority=" && { echo "FAIL: sslCA should be absent by default"; exit 1; }
+echo "$out" | grep -q "\-\-ssl-min-tls-version="       && { echo "FAIL: sslMinTLS should be absent by default"; exit 1; }
+echo "$out" | grep -q "\-\-ssl-method="                && { echo "FAIL: sslMethod should be absent by default"; exit 1; }
+echo "$out" | grep -q "\-\-ssl-type="                  && { echo "FAIL: sslType should be absent by default"; exit 1; }
+echo "$out" | grep -q "\-\-zap-log-level="             && { echo "FAIL: zapLogLevel should be absent by default"; exit 1; }
+echo "$out" | grep -q "export-logs"                  && { echo "FAIL: podLabels should be absent by default"; exit 1; }
+
+# Feature gating. Both flags always render as --enable-<feature>=<bool>.
+# Defaults: customhostname on, loadBalancing off. CRDs render as regular
+# templates (crds.yaml), so no --include-crds is needed.
+def=$(helm template test "$C"/)
+echo "$def" | grep -q "\-\-enable-customhostname=true"  || { echo "FAIL: --enable-customhostname=true absent by default"; exit 1; }
+echo "$def" | grep -q "\-\-enable-loadbalancing=false"  || { echo "FAIL: --enable-loadbalancing=false absent by default"; exit 1; }
+echo "$def" | grep -q "resources: \[customhostnames\]"  || { echo "FAIL: CH RBAC absent by default"; exit 1; }
+echo "$def" | grep -q "resources: \[zones\]"            || { echo "FAIL: Zone RBAC absent by default"; exit 1; }
+echo "$def" | grep -q "loadbalancing.cf-edge.io"        && { echo "FAIL: loadbalancing RBAC/CRDs present by default"; exit 1; }
+echo "$def" | grep -q "accounts.cf-edge.io"             && { echo "FAIL: accounts RBAC/CRDs present by default"; exit 1; }
+# features.loadBalancing.enabled=true adds the flag value, LB RBAC, and the
+# LB CRDs (Account lives in its own accounts.cf-edge.io group, LoadBalancer/
+# Pool/Monitor in loadbalancing.cf-edge.io).
+cp=$(helm template test "$C"/ --set features.loadBalancing.enabled=true)
+echo "$cp" | grep -q "\-\-enable-loadbalancing=true"    || { echo "FAIL: --enable-loadbalancing=true absent when loadBalancing enabled"; exit 1; }
+echo "$cp" | grep -q "resources: \[accounts\]"          || { echo "FAIL: LB RBAC absent when loadBalancing enabled"; exit 1; }
+echo "$cp" | grep -q "name: accounts.accounts.cf-edge.io" || { echo "FAIL: accounts CRD absent when loadBalancing enabled"; exit 1; }
+n=$(echo "$cp" | grep -cE "name: (loadbalancers|loadbalancerpools|loadbalancermonitors)\.loadbalancing\.cf-edge\.io")
+[ "$n" = "3" ] || { echo "FAIL: expected 3 loadbalancing CRDs when loadBalancing enabled, got $n"; exit 1; }
+# customhostname disabled omits the CH flag value and CH RBAC; with LB also
+# off, the shared Zone RBAC is omitted too.
+choff=$(helm template test "$C"/ --set features.customhostname.enabled=false)
+echo "$choff" | grep -q "\-\-enable-customhostname=false" || { echo "FAIL: --enable-customhostname=false absent when CH disabled"; exit 1; }
+echo "$choff" | grep -q "resources: \[customhostnames\]"  && { echo "FAIL: CH RBAC present when CH disabled"; exit 1; }
+echo "$choff" | grep -q "resources: \[zones\]"            && { echo "FAIL: Zone RBAC present when both CH and LB disabled"; exit 1; }
+# Zone RBAC returns when LB alone is enabled (Zone is shared substrate).
+lbonly=$(helm template test "$C"/ --set features.customhostname.enabled=false --set features.loadBalancing.enabled=true)
+echo "$lbonly" | grep -q "resources: \[customhostnames\]" && { echo "FAIL: CH RBAC present when CH disabled (LB on)"; exit 1; }
+echo "$lbonly" | grep -q "resources: \[zones\]"           || { echo "FAIL: Zone RBAC absent when LB enabled (Zone is shared)"; exit 1; }
+echo "All flag rendering tests passed"
+
+echo "== verify CRD lifecycle (crds.enabled / crds.keep / per-feature gating) =="
+crd_count() { grep -cE "^  name: \S+\.cf-edge\.io" || true; }
+# Defaults (crds.enabled, CH on, LB off): CustomHostname + Zone only.
+out=$(helm template test "$C"/)
+n=$(echo "$out" | crd_count); [ "$n" = "2" ] || { echo "FAIL: expected 2 CRDs by default, got $n"; exit 1; }
+echo "$out" | grep -q "^  name: customhostnames.saas.cf-edge.io" || { echo "FAIL: CH CRD absent by default"; exit 1; }
+echo "$out" | grep -q "^  name: zones.domains.cf-edge.io"        || { echo "FAIL: Zone CRD absent by default"; exit 1; }
+echo "$out" | grep -q "loadbalancing.cf-edge.io"                 && { echo "FAIL: LB CRDs present by default"; exit 1; }
+# keep=true (default) stamps resource-policy:keep + argocd Prune=false on each CRD.
+k=$(echo "$out" | grep -c "helm.sh/resource-policy: keep"); [ "$k" = "2" ] || { echo "FAIL: expected 2 keep annotations, got $k"; exit 1; }
+p=$(echo "$out" | grep -c "argocd.argoproj.io/sync-options: Prune=false"); [ "$p" = "2" ] || { echo "FAIL: expected 2 Prune annotations, got $p"; exit 1; }
+# CH off + LB on: Zone (shared) + Account + 3 LB CRDs, no CustomHostname.
+out=$(helm template test "$C"/ --set features.customhostname.enabled=false --set features.loadBalancing.enabled=true)
+n=$(echo "$out" | crd_count); [ "$n" = "5" ] || { echo "FAIL: expected 5 CRDs (Zone+Account+3 LB), got $n"; exit 1; }
+echo "$out" | grep -q "^  name: customhostnames.saas.cf-edge.io" && { echo "FAIL: CH CRD present when CH disabled"; exit 1; }
+echo "$out" | grep -q "^  name: zones.domains.cf-edge.io"        || { echo "FAIL: Zone CRD absent when LB enabled (shared substrate)"; exit 1; }
+echo "$out" | grep -q "^  name: accounts.accounts.cf-edge.io"    || { echo "FAIL: Account CRD absent when LB enabled"; exit 1; }
+# Both features on: all 6 CRDs, each stamped with the keep + Prune annotations.
+# The keep/Prune counts must equal the CRD count so a missed annotation splice
+# (e.g. a future CRD generated without a metadata.annotations block) fails CI.
+out=$(helm template test "$C"/ --set features.customhostname.enabled=true --set features.loadBalancing.enabled=true)
+n=$(echo "$out" | crd_count); [ "$n" = "6" ] || { echo "FAIL: expected 6 CRDs with both features on, got $n"; exit 1; }
+k=$(echo "$out" | grep -c "helm.sh/resource-policy: keep"); [ "$k" = "6" ] || { echo "FAIL: expected 6 keep annotations (one per CRD) with both features on, got $k"; exit 1; }
+p=$(echo "$out" | grep -c "argocd.argoproj.io/sync-options: Prune=false"); [ "$p" = "6" ] || { echo "FAIL: expected 6 Prune annotations (one per CRD) with both features on, got $p"; exit 1; }
+# Both features off: no CRDs (Zone is dropped too).
+n=$(helm template test "$C"/ --set features.customhostname.enabled=false --set features.loadBalancing.enabled=false | crd_count)
+[ "$n" = "0" ] || { echo "FAIL: expected 0 CRDs with both features off, got $n"; exit 1; }
+# crds.enabled=false: out-of-band mode emits no CRDs even with features on.
+n=$(helm template test "$C"/ --set crds.enabled=false --set features.customhostname.enabled=true --set features.loadBalancing.enabled=true | crd_count)
+[ "$n" = "0" ] || { echo "FAIL: expected 0 CRDs with crds.enabled=false, got $n"; exit 1; }
+# crds.keep=false: CRDs render without the keep/Prune annotations.
+out=$(helm template test "$C"/ --set crds.keep=false)
+n=$(echo "$out" | crd_count); [ "$n" = "2" ] || { echo "FAIL: expected 2 CRDs with crds.keep=false, got $n"; exit 1; }
+echo "$out" | grep -q "helm.sh/resource-policy: keep"            && { echo "FAIL: keep annotation present with crds.keep=false"; exit 1; }
+echo "$out" | grep -q "argocd.argoproj.io/sync-options: Prune=false" && { echo "FAIL: Prune annotation present with crds.keep=false"; exit 1; }
+echo "All CRD lifecycle tests passed"
+
+echo "== verify chart CRDs match generated CRDs =="
+# All CRDs are chart-rendered from crds-render/ (a plain data dir loaded via
+# .Files.Glob and emitted per-feature by templates/crds.yaml). The wrapper emits
+# each schema body verbatim (crds.keep only splices annotations under metadata),
+# so the data files must byte-match the generated bases.
+diff -rq config/crd/bases/ "$C"/crds-render/
+
+echo "All Helm verification passed"
