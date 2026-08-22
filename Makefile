@@ -95,8 +95,16 @@ cover: test ## Run tests and open HTML coverage report.
 	go tool cover -html=cover.out
 
 .PHONY: lint
-lint: golangci-lint ## Run golangci-lint linter
+lint: golangci-lint lint-actions lint-shell ## Run all linters (Go, GitHub Actions workflows, shell).
 	"$(GOLANGCI_LINT)" run
+
+.PHONY: lint-actions
+lint-actions: actionlint ## Lint GitHub Actions workflow files.
+	"$(ACTIONLINT)" -color
+
+.PHONY: lint-shell
+lint-shell: shellcheck ## Shellcheck the repo's shell scripts.
+	"$(SHELLCHECK)" $(shell find . -name '*.sh' -not -path './bin/*')
 
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
@@ -269,6 +277,8 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+ACTIONLINT ?= $(LOCALBIN)/actionlint
+SHELLCHECK ?= $(LOCALBIN)/shellcheck
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.8.1
@@ -285,6 +295,8 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
   printf '%s\n' "$$v" | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')
 
 GOLANGCI_LINT_VERSION ?= v2.8.0
+ACTIONLINT_VERSION ?= v1.7.7
+SHELLCHECK_VERSION ?= v0.10.0
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
 $(KUSTOMIZE): $(LOCALBIN)
@@ -318,6 +330,36 @@ $(GOLANGCI_LINT): $(LOCALBIN)
 		mv -f $(LOCALBIN)/golangci-lint-custom "$(GOLANGCI_LINT)-$(GOLANGCI_LINT_VERSION)" && \
 		ln -sf "$$(realpath "$(GOLANGCI_LINT)-$(GOLANGCI_LINT_VERSION)")" "$(GOLANGCI_LINT)"; \
 	} || true
+
+.PHONY: actionlint
+actionlint: $(ACTIONLINT) ## Download actionlint locally if necessary.
+$(ACTIONLINT): $(LOCALBIN)
+	$(call go-install-tool,$(ACTIONLINT),github.com/rhysd/actionlint/cmd/actionlint,$(ACTIONLINT_VERSION))
+
+.PHONY: shellcheck
+shellcheck: $(SHELLCHECK) ## Download a pinned shellcheck static binary locally if necessary.
+$(SHELLCHECK): $(LOCALBIN)
+	$(call download-shellcheck,$(SHELLCHECK),$(SHELLCHECK_VERSION))
+
+# download-shellcheck fetches a pinned shellcheck static binary (shellcheck is not
+# go-installable). $1 - target path with name; $2 - version (vX.Y.Z). Darwin uses the
+# x86_64 build (runs on arm64 via Rosetta) to avoid depending on a darwin.aarch64 asset.
+define download-shellcheck
+@[ -f "$(1)-$(2)" ] && [ "$$(readlink -- "$(1)" 2>/dev/null)" = "$(1)-$(2)" ] || { \
+set -e; \
+os=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
+if [ "$$os" = "darwin" ]; then arch=x86_64; \
+else case "$$(uname -m)" in aarch64|arm64) arch=aarch64 ;; *) arch=x86_64 ;; esac; fi; \
+url="https://github.com/koalaman/shellcheck/releases/download/$(2)/shellcheck-$(2).$${os}.$${arch}.tar.xz"; \
+echo "Downloading $${url}"; \
+tmp=$$(mktemp -d); \
+curl -sSfL "$${url}" | tar -xJ -C "$${tmp}"; \
+mv "$${tmp}/shellcheck-$(2)/shellcheck" "$(1)-$(2)"; \
+chmod +x "$(1)-$(2)"; \
+rm -rf "$${tmp}"; \
+} ;\
+ln -sf "$$(realpath "$(1)-$(2)")" "$(1)"
+endef
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
