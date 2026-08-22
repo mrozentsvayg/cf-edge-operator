@@ -23,7 +23,7 @@ Key spec fields:
 - `spec.managementPolicy` -- (optional) per-CR override for `--management-policy`. See [Management Policy](#management-policy).
 - `spec.deletePolicy` -- (optional) per-CR override for `--delete-policy`. See [Delete Policy](#delete-policy).
 
-### Account (`loadbalancing.cf-edge.io/v1beta1`)
+### Account (`accounts.cf-edge.io/v1beta1`)
 Carries a Cloudflare account ID and API credentials for account-scoped Load Balancing resources -- the account-scope analog of a Zone. Lives in the operator namespace; LoadBalancerPool and LoadBalancerMonitor reference it via `accountRef`. A light validating controller: it confirms the credentials can reach the account (`accounts.Get`) and records the outcome, but creates no Cloudflare resources. Part of the optional load-balancing control-plane role (see [Load Balancing reconciliation model](#load-balancing-reconciliation-model)).
 
 Key spec fields:
@@ -50,9 +50,12 @@ An account-scoped origin pool. The CR name is used verbatim as the Cloudflare po
 
 Key spec fields:
 - `spec.accountRef` -- references the Account CR
-- `spec.origins` -- backend endpoints (each with `name`, `address`, `enabled`, `weight`, and an optional `header.host` override); at least one required
+- `spec.origins` -- backend endpoints (each with `name`, `address`, optional `port` and `virtualNetworkID`, `enabled`, `weight`, and an optional `header.host` override); at least one required. `virtualNetworkID` is required when `address` is an internal/reserved address.
 - `spec.monitorRef` -- (optional) references a LoadBalancerMonitor CR whose CF ID is threaded into the pool
 - `spec.enabled` (default true), `spec.minimumOrigins` (healthy-origin threshold), `spec.notificationEmail`
+- `spec.originSteering.policy` -- (optional) how origins are picked within the pool: `random`, `hash`, `least_outstanding_requests`, `least_connections`. Unset leaves CF's value.
+- `spec.checkRegions` -- (optional) CF regions that health-check this pool's origins; empty means CF probes from all regions. `ALL_REGIONS` is Enterprise-only and, if used, must be the sole entry. Applied via a follow-up edit (CF rejects it at create).
+- `spec.loadShedding` -- (optional) how the pool sheds traffic (`defaultPercent` / `defaultPolicy`, `sessionPercent` / `sessionPolicy`). Unset leaves CF's config intact (so incident-time manual sheds survive); set enforces every subfield.
 - `spec.latitude` / `spec.longitude` -- (optional, set together) pool geo-coordinates for proximity steering
 - `spec.managementPolicy` / `spec.deletePolicy` -- (optional) per-CR policy overrides.
 
@@ -68,10 +71,17 @@ Key spec fields:
 - `spec.fallbackPoolRef` -- pool used when every other pool is unhealthy (required by CF)
 - `spec.steeringPolicy` -- `off`, `geo`, `random`, `dynamic_latency` (default), `proximity`, `least_outstanding_requests`, `least_connections`
 - `spec.regionPools` / `spec.countryPools` / `spec.popPools` -- per-geo pool ref overrides (used when `steeringPolicy=geo`)
-- `spec.proxied` (default true), `spec.ttl` (DNS-only LBs only), `spec.sessionAffinity`, `spec.description`
+- `spec.randomSteering` -- (optional) `defaultWeight` plus a `poolWeights` list of `{poolRef, weight}` entries, for the weighted steering policies (`random` / `least_outstanding_requests` / `least_connections`). Each weighted pool ref is resolved like the other pool slots, so an unresolved one feeds the partial state (see below).
+- `spec.sessionAffinity` -- (optional) `none` (default), `cookie`, `ip_cookie`, or `header` client-to-pool stickiness
+- `spec.sessionAffinityAttributes` / `spec.sessionAffinityTtl` -- (optional) tune affinity behavior (`drainDuration`, `headers`, `requireAllHeaders`, `samesite`, `secure`, `zeroDowntimeFailover`) and the session TTL. Only valid when `sessionAffinity` is not `none` (CEL-enforced); `sessionAffinity=header` additionally requires a non-empty `headers` list.
+- `spec.adaptiveRouting.failoverAcrossPools` -- (optional) extend zero-downtime failover to healthy origins in alternate pools when a pool has no healthy origin. Unset leaves CF's value; set enforces it.
+- `spec.locationStrategy` -- (optional) location-based steering for non-proxied requests: `mode` (`pop` / `resolver_ip`) and `preferECS` (`always` / `never` / `proximity` / `geo`). Unset leaves CF's value.
+- `spec.networks` -- (optional) network identifiers the LB is available on. Create-only-write -- see [networks semantics](#load-balancing-reconciliation-model) below.
+- `spec.enabled` (default true) -- whether the LB serves traffic. Always managed: an out-of-band disable is corrected back to the CR's value. CF's create API does not accept it, so the controller applies it via a follow-up edit.
+- `spec.proxied` (default true), `spec.ttl` (DNS-only LBs only), `spec.description`
 - `spec.managementPolicy` / `spec.deletePolicy` -- (optional) per-CR policy overrides.
 
-Status: `status.id` (CF LB ID), `status.resolvedDefaultPoolIDs`, `status.resolvedFallbackPoolID`, `status.createCount`, `status.consecutiveErrors`, `status.conditions[Ready]`.
+Status: `status.id` (CF LB ID), `status.resolvedDefaultPoolIDs`, `status.resolvedFallbackPoolID`, `status.unresolvedPoolRefs` (pool refs with no ready Pool CR; a non-fallback unresolved ref makes the LB serve in the `partial` state, while an unresolved fallback makes it `waiting`), `status.createCount`, `status.consecutiveErrors`, `status.conditions[Ready]`, `status.conditions[NetworksSynced]`.
 
 ## Controller Architecture: Coordinator / Worker Split
 
@@ -212,11 +222,19 @@ Load balancing is an opt-in control-plane role, distinct from the per-cluster Cu
 
 **Single-owner-local.** All LoadBalancer, Pool, Monitor, and Account CRs live in one control cluster's operator, and every pool reference resolves from a local Pool CR's `status.id` -- there is no cross-cluster or CF-list fallback. This is deliberately unlike CustomHostname, which runs per-cluster: for the multi-region pattern the regional pools and the LoadBalancer that fans out to them must be managed together by one operator, so every ref is a local CR.
 
-**Opt-in and gated.** The LB controllers are off unless `--enable-loadbalancer` is set (Helm `controlPlane.enabled=true`). When off: none of the four controllers start, their metric series are not pre-initialized, and the load-balancing CRDs and RBAC are not installed. A deployment with the feature disabled is byte-identical to a chart without it -- so exactly one cluster runs the control-plane role and all others leave it off, unaffected.
+**Opt-in and gated.** The LB controllers are off unless `--enable-loadbalancing` is set (Helm `features.loadBalancing.enabled=true`). When off: none of the four controllers start, their metric series are not pre-initialized, and the load-balancing CRDs and RBAC are not installed. The chart still renders an explicit `--enable-loadbalancing=false` container arg and templates the CustomHostname/Zone CRDs, so a disabled deployment is not byte-identical to a chart built without the feature -- but it carries no load-balancing footprint (no controllers, CRDs, RBAC, or metric series). Exactly one cluster runs the control-plane role; all others leave it off, unaffected.
 
 **Curated subset via PATCH.** Like CustomHostname, the operator manages only the fields the CRDs model and leaves the rest of the Cloudflare configuration intact (LB rules and `adaptive_routing`, pool `load_shedding` and `origin_steering`, etc.). The LB family achieves this with PATCH (partial update). A field is sent iff it is drift-checked iff the CR expresses it -- either as an explicit value or as a CRD default. Fields that have CRD defaults (monitor `retries` / `interval` / `timeout`, LB `steeringPolicy` / `proxied`, pool and origin `enabled`) are always populated and therefore always enforced. An optional field left blank is left as-is on Cloudflare -- the operator cannot force-clear an optional field back to empty; clear it via the CF dashboard or API. Structural references are authoritative and always sent: an LB's default / fallback / region / country / pop pools, and a pool's monitor. Removing one from the CR clears it on Cloudflare (dropping a pool's `monitorRef` detaches the monitor; emptying `regionPools` clears geo steering).
 
 **Best-effort pool resolution.** An unresolved pool ref -- the Pool CR is absent, or exists but has no `status.id` yet -- is dropped from the CF payload and recorded on the LoadBalancer's `Ready` condition (degraded), not treated as fatal, so one unready pool does not block the whole endpoint. A transient (non-NotFound) error during resolution is propagated instead of dropping the ref, so an API blip never removes a live pool (shrink-safety). Cloudflare's hard minimum still applies -- a resolvable fallback pool plus at least one default -- so an LB with no resolvable fallback waits (`WaitingForFallbackPool`) rather than writing an invalid config; if every default ref is unresolved but the fallback resolves, the fallback is promoted into the default set. Cross-object watches re-drive dependents as they become ready: a Pool wakes on its Monitor's `status.id` (`WaitingForMonitor`), and a LoadBalancer wakes on each referenced Pool's `status.id`. Both watches filter on the CF-ID change, so status-only churn does not fan out.
+
+**Partial (degraded) state.** A LoadBalancer that reconciled and is serving, but with at least one pool ref unresolved (a default, geo, or `randomSteering` weight whose Pool CR is missing or not yet ready), is `Ready=True` with `reason=Partial` -- it IS serving, so it must not block `kubectl wait` or GitOps health, but the incompleteness is surfaced three ways: the dropped refs are listed in `status.unresolvedPoolRefs`, exposed on the `Unresolved` printcolumn (`.status.unresolvedPoolRefs.length()`), and counted by the `cf_edge_operator_loadbalancers{state="partial"}` metric (plus a log line and a Kubernetes Event on the transition into partial). `Ready` is only ever consumed externally (printcolumn, `kubectl wait`, an optional ArgoCD custom health check) -- the operator gates no control flow on it. The state converges to `ready` as the missing pools become ready; the fallback-resolution rule above still applies, so an LB with no resolvable fallback waits rather than serving partially. This differs from `waiting`, which is `Ready=False` (a soft wait on a dependency, or observe mode).
+
+**Enabled: always managed.** `spec.enabled` (default true, unified across LoadBalancer, Pool, and origins) is not treated as an optional coexist field: the operator always enforces it, so an out-of-band disable is corrected back to the CR's value on the next reconcile, and adopting an externally-disabled resource logs a warning. This is a deliberate divergence from the leave-as-is treatment of other optional fields, because a silently-disabled LB is an availability, not a configuration, concern. CF's create API does not accept `enabled`, so the controller applies it via a follow-up edit (create-then-edit).
+
+**Networks: create-only-write.** `spec.networks` is enforced only at create -- CF's Edit API does not accept it -- so it is excluded from the drift/Edit path (no reconcile loop). Post-create changes to `networks` must be applied out-of-band; the operator surfaces the divergence but does NOT auto-correct it, three ways: the `NetworksSynced` status condition flips to `False` with the CF-vs-spec values, the `cf_edge_operator_loadbalancer_networks_drift{zone_cr}` gauge counts drifted LBs for that zone, and a log line records the transition into drift. `Ready` is unaffected (networks drift does not degrade serving).
+
+**Pool health (opt-in).** A second, independent axis from the sync-state gauges tracks what Cloudflare's health checks observe, gated by `--enable-pool-health` (Helm `features.loadBalancing.poolHealth`; off by default). When on, each Pool reconcile makes one extra CF read (`PoolHealth.Get`, recorded under `operation="health"`) inside the existing per-pool loop -- no new controller or bulk poll. The poll is fully isolated: a failure records a CF API error and leaves the health series stale, but never sets an error, flips `Ready`, or touches the sync state (the two axes are independent). Values are threshold-free -- raw CF health booleans tallied by region, so a consumer derives fully/partial/down in PromQL. Four gauges are published: region-status counts for every polled pool (`loadbalancerpool_health`) and per origin (`loadbalancerpool_origin_health`), plus per-region series (`loadbalancerpool_health_region`, `loadbalancerpool_origin_health_region`) only for pools that set `spec.checkRegions` (a bounded, CR-declared dimension of at most 13 regions). A pool without `checkRegions` probes from every data center (an unbounded region set), so it gets only the summarized counts, not per-region series. See [operations.md](operations.md#pool-health-monitoring) for the cardinality caveat and the CF-native alerting recommendation.
 
 **Map-overwrite assumption.** Removal of map-valued fields -- the monitor `header` (sent, and enforced as a full set, when the CR sets it) and the LB `regionPools` / `countryPools` / `popPools` (always sent on edit, empty to clear) -- relies on Cloudflare's PATCH overwriting a top-level map property wholesale (as its docs state, PATCH "overwrite[s] specific properties"). This must be confirmed against a live Cloudflare account before relying on it in production: create an LB with two region pools, PATCH one, and verify the other is removed. If Cloudflare instead deep-merged map keys, keyed-pool and header removal by omission would not take effect and would need a different approach (synthesizing merge-patch null removals from the already-read CF state).
 
@@ -261,11 +279,20 @@ Parse with jq: `jq '.drift.drifted | keys'` or `jq '.changed | to_entries[] | "\
 | Metric | Type | Description |
 |--------|------|-------------|
 | `cf_edge_operator_zone_initialized{zone_cr}` | gauge | 1 if Zone CR has been initialized (zone name resolved from CF API). Set once on first successful zone GET; not toggled on transient failures. |
+| `cf_edge_operator_account_initialized{account_cr}` | gauge | 1 if Account CR has been initialized (credentials validated against the CF account), 0 otherwise. Load-balancing analog of `zone_initialized`. Only when the control-plane role is enabled. |
 | `cf_edge_operator_operations_total{resource,operation}` | counter | Successful CF operations; `resource`: customhostname, or a loadbalancing resource (account/loadbalancer/loadbalancerpool/loadbalancermonitor) when the control-plane role is enabled; `operation`: adopt, create, recreate, update, delete |
 | `cf_edge_operator_customhostnames{zone_cr,state}` | gauge | CRs by zone CR and state (ready/pending/unhealthy/conflict). Sum = total CRs in zone |
+| `cf_edge_operator_loadbalancers{zone_cr,state}` | gauge | LoadBalancer CRs by owning zone CR and state (ready/partial/waiting/dryrun/error). `partial` = serving with >=1 pool ref unresolved (LB-only). Sum = total LB CRs for that zone. Only when the control-plane role is enabled. |
+| `cf_edge_operator_loadbalancer_networks_drift{zone_cr}` | gauge | LoadBalancer CRs whose `spec.networks` diverges from Cloudflare, by zone CR. Networks are enforced only at create; post-create drift is surfaced (not auto-corrected). 0 or absent = in sync. Only when the control-plane role is enabled. |
+| `cf_edge_operator_loadbalancerpools{account_cr,state}` | gauge | LoadBalancerPool CRs by owning account CR and state (ready/waiting/dryrun/error). Sum = total pool CRs for that account. Only when the control-plane role is enabled. |
+| `cf_edge_operator_loadbalancermonitors{account_cr,state}` | gauge | LoadBalancerMonitor CRs by owning account CR and state (ready/waiting/dryrun/error). Monitors are leaf resources (no ref to wait on), but can still enter `waiting` under `managementPolicy=observe` (WaitingForExternal). Only when the control-plane role is enabled. |
+| `cf_edge_operator_loadbalancerpool_health{account_cr,pool_cr,status}` | gauge | Count of Cloudflare-checked regions for a pool in each status (healthy/unhealthy/unknown); sum across statuses = regions checked. Emitted for every polled pool. Opt-in (`--enable-pool-health`). |
+| `cf_edge_operator_loadbalancerpool_health_region{account_cr,pool_cr,region,status}` | gauge | Per-region pool health (1 for the current status, 0 otherwise). Emitted only for pools with `spec.checkRegions` set. Opt-in (`--enable-pool-health`). |
+| `cf_edge_operator_loadbalancerpool_origin_health{account_cr,pool_cr,origin,status}` | gauge | Count of Cloudflare-checked regions reporting an origin (by address) in each status. Emitted for every polled pool. Opt-in (`--enable-pool-health`). |
+| `cf_edge_operator_loadbalancerpool_origin_health_region{account_cr,pool_cr,origin,region,status}` | gauge | Per-region origin health (1 for the current status, 0 otherwise). Emitted only for pools with `spec.checkRegions` set. Opt-in (`--enable-pool-health`). |
 | `cf_edge_operator_customhostname_status{zone_cr,status}` | gauge | Managed CF custom hostnames by zone CR and CF activation status (active/pending/active_redeploying/blocked/moved/deleted). Only includes hostnames with an associated CR. |
 | `cf_edge_operator_zone_customhostnames{zone_cr,type}` | gauge | CF custom hostnames by zone CR and type (managed/orphan/drifted/total). `orphan` = no associated CR. `total` = CF quota usage for the zone |
-| `cf_edge_operator_api_duration_seconds{resource,operation}` | histogram | CF API call latency; `resource`: customhostname, zone, or a loadbalancing resource (account/loadbalancer/loadbalancerpool/loadbalancermonitor) when the control-plane role is enabled; `operation`: get, list, create, update, delete. For `list`, duration spans all paginated HTTP calls (can exceed per-request timeout) |
+| `cf_edge_operator_api_duration_seconds{resource,operation}` | histogram | CF API call latency; `resource`: customhostname, zone, or a loadbalancing resource (account/loadbalancer/loadbalancerpool/loadbalancermonitor) when the control-plane role is enabled; `operation`: get, list, create, update, delete, and `health` for the opt-in pool-health poll. For `list`, duration spans all paginated HTTP calls (can exceed per-request timeout). The load-balancing find-by-name/hostname lookups (resolving a LoadBalancer/Pool/Monitor with no CF ID cached) page through CF and are recorded as `list`, not `get`. |
 | `cf_edge_operator_api_errors_by_code_total{resource,operation,status_code}` | counter | CF API errors by resource, operation, and HTTP status code. `timeout` for request timeouts, `canceled` for context cancellation (shutdown), `unknown` for other non-HTTP errors |
 | `cf_edge_operator_api_retries_total{resource,operation}` | counter | Retry attempts for single (non-paginated) CF API calls. Non-zero means first attempts are failing |
 | `cf_edge_operator_ssl_provisioning_duration_seconds{zone_cr,hostname,method}` | gauge | Time from CF create to `ssl.status == active`. Set once per provisioning cycle, expires after 3 minutes (TTL-based cleanup to bound per-hostname cardinality). |
@@ -287,8 +314,19 @@ The Helm chart ships a `PrometheusRule` (disabled by default):
 | `CfEdgeOperatorConflictHostnames` | Any CR in `conflict` state for 5 min |
 | `CfEdgeOperatorHighAPIErrorRate` | Cloudflare 5xx error rate > 0.1/s for 5 min |
 | `CfEdgeOperatorSSLProvisioningStalled` | Any CR in `pending` state for 24 h |
+| `CfEdgeOperatorAccountNotInitialized` *(LB)* | Account CR not initialized (credentials never validated) for 10 min |
+| `CfEdgeOperatorLoadBalancersError` *(LB)* | Any LoadBalancer/Pool/Monitor CR in `error` state for 15 min |
+| `CfEdgeOperatorLoadBalancersWaiting` *(LB)* | Any LoadBalancer/Pool/Monitor CR in `waiting` state for 30 min (a dangling monitorRef/fallbackPoolRef, or a resource not yet present in Cloudflare under `managementPolicy=observe`) |
+| `CfEdgeOperatorLoadBalancersPartial` *(LB)* | Any LoadBalancer CR in `partial` state for 1 h (serving with >=1 unresolved pool ref) |
 
-Enable with `prometheusRule.enabled=true`. See [docs/runbook.md](runbook.md) for investigation and resolution steps per alert.
+Enable with `prometheusRule.enabled=true`. Alerts render only for the features in use: the
+custom-hostname alerts (`UnhealthyHostnames`, `ConflictHostnames`, `SSLProvisioningStalled`)
+render only when `features.customhostname.enabled=true`, and the four *(LB)* alerts only when
+`features.loadBalancing.enabled=true`; `ZoneNotInitialized` renders when either feature is on.
+`CfEdgeOperatorDown` and `HighAPIErrorRate` are always present. There is deliberately no
+operator alert on pool health -- for time-sensitive paging use Cloudflare's native Load
+Balancing Health Alert notification (see [operations.md](operations.md#pool-health-monitoring)).
+See [docs/runbook.md](runbook.md) for investigation and resolution steps per alert.
 
 ## Adding a New Resource Type
 

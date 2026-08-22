@@ -5,39 +5,52 @@ metadata:
   labels:
     {{- include "cf-edge-operator.labels" . | nindent 4 }}
 rules:
+# secrets are shared substrate: every controller builds a Cloudflare client from a
+# credentials Secret, so this rule is unconditional.
 - apiGroups: [""]
   resources: [secrets]
   verbs: [get, list, watch]
+{{- if eq (include "cf-edge-operator.customhostnameEnabled" .) "true" }}
+# CustomHostname controller.
 - apiGroups: [saas.cf-edge.io]
   resources: [customhostnames]
   verbs: [get, list, patch, update, watch]
-- apiGroups: [domains.cf-edge.io]
-  resources: [zones]
-  verbs: [get, list, watch]
 - apiGroups: [saas.cf-edge.io]
   resources: [customhostnames/finalizers]
-  verbs: [update]
-- apiGroups: [domains.cf-edge.io]
-  resources: [zones/finalizers]
   verbs: [update]
 - apiGroups: [saas.cf-edge.io]
   resources: [customhostnames/status]
   verbs: [get, patch, update]
+{{- end }}
+{{- if or (eq (include "cf-edge-operator.customhostnameEnabled" .) "true") (eq (include "cf-edge-operator.loadBalancingEnabled" .) "true") }}
+# Zone controller: shared credential/zone-identity substrate for both custom
+# hostname management and load balancing.
+- apiGroups: [domains.cf-edge.io]
+  resources: [zones]
+  verbs: [get, list, watch]
+- apiGroups: [domains.cf-edge.io]
+  resources: [zones/finalizers]
+  verbs: [update]
 - apiGroups: [domains.cf-edge.io]
   resources: [zones/status]
   verbs: [get, patch, update]
-{{- if .Values.controlPlane.enabled }}
+{{- end }}
+{{- if eq (include "cf-edge-operator.loadBalancingEnabled" .) "true" }}
 # Load-balancing controllers (control-plane role only). Kept in sync with the
 # +kubebuilder:rbac markers in internal/controller (config/rbac/role.yaml).
-# secrets access is covered by the shared rule above.
-- apiGroups: [loadbalancing.cf-edge.io]
+# secrets access is covered by the shared rule above. Account lives in its own
+# foundational group (accounts.cf-edge.io), so it has dedicated rules.
+- apiGroups: [accounts.cf-edge.io]
   resources: [accounts]
   verbs: [get, list, patch, update, watch]
+- apiGroups: [accounts.cf-edge.io]
+  resources: [accounts/status]
+  verbs: [get, patch, update]
 - apiGroups: [loadbalancing.cf-edge.io]
   resources: [loadbalancers, loadbalancerpools, loadbalancermonitors]
   verbs: [create, delete, get, list, patch, update, watch]
 - apiGroups: [loadbalancing.cf-edge.io]
-  resources: [accounts/status, loadbalancers/status, loadbalancerpools/status, loadbalancermonitors/status]
+  resources: [loadbalancers/status, loadbalancerpools/status, loadbalancermonitors/status]
   verbs: [get, patch, update]
 - apiGroups: [loadbalancing.cf-edge.io]
   resources: [loadbalancers/finalizers, loadbalancerpools/finalizers, loadbalancermonitors/finalizers]

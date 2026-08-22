@@ -30,17 +30,20 @@ make test-e2e     # full e2e against a dedicated Kind cluster
 ## Code generation
 
 CRDs, RBAC, and DeepCopy methods are generated from `+kubebuilder` markers.
-After editing any `api/**/*_types.go` file or its markers, regenerate:
+After editing any `api/**/*_types.go` file or its markers, regenerate and sync the
+generated CRDs into the chart:
 
 ```sh
 make manifests generate
+make helm-crd-sync
 ```
 
 Do not hand-edit generated files; your changes will be overwritten. These are
 generated:
 
 - `api/**/zz_generated.deepcopy.go`
-- `config/crd/bases/*.yaml` and `charts/cf-edge-operator/crds/*.yaml`
+- `config/crd/bases/*.yaml` (source of truth), copied into
+  `charts/cf-edge-operator/crds-render/*.yaml` by `make helm-crd-sync`
 - `config/rbac/role.yaml`
 - `PROJECT`
 

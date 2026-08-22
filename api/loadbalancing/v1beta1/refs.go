@@ -16,7 +16,7 @@ limitations under the License.
 
 package v1beta1
 
-// AccountRef references an Account resource (loadbalancing.cf-edge.io/Account),
+// AccountRef references an Account resource (accounts.cf-edge.io/Account),
 // which supplies the Cloudflare account ID and API credentials for
 // account-scoped resources (LoadBalancerPool, LoadBalancerMonitor).
 type AccountRef struct {
@@ -44,17 +44,4 @@ type ZoneRef struct {
 	// if omitted.
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
-}
-
-// SecretRef references a Kubernetes secret holding a Cloudflare API token.
-type SecretRef struct {
-	// Name of the secret.
-	// +kubebuilder:validation:Required
-	Name string `json:"name"`
-
-	// Key within the secret containing the API token.
-	// +kubebuilder:default=apiToken
-	// +kubebuilder:validation:MinLength=1
-	// +optional
-	Key string `json:"key,omitempty"`
 }

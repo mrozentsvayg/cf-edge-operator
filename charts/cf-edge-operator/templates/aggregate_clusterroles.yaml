@@ -1,6 +1,7 @@
 # Aggregate ClusterRoles for multi-tenant RBAC.
 # These merge into Kubernetes' built-in admin/edit/view ClusterRoles
 # so users with those roles automatically get appropriate CRD access.
+{{- if eq (include "cf-edge-operator.customhostnameEnabled" .) "true" }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -46,6 +47,10 @@ rules:
 - apiGroups: ["saas.cf-edge.io"]
   resources: ["customhostnames/status"]
   verbs: ["get"]
+{{- end }}
+{{- if or (eq (include "cf-edge-operator.customhostnameEnabled" .) "true") (eq (include "cf-edge-operator.loadBalancingEnabled" .) "true") }}
+# Zone aggregate roles: shared substrate for both custom hostname management and
+# load balancing, so they are present whenever either feature is enabled.
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -91,7 +96,8 @@ rules:
 - apiGroups: ["domains.cf-edge.io"]
   resources: ["zones/status"]
   verbs: ["get"]
-{{- if .Values.controlPlane.enabled }}
+{{- end }}
+{{- if eq (include "cf-edge-operator.loadBalancingEnabled" .) "true" }}
 # Load-balancing aggregate roles (control-plane role only), matching the
 # customhostname/zone roles above for the loadbalancing.cf-edge.io CRs.
 ---
@@ -103,11 +109,17 @@ metadata:
     {{- include "cf-edge-operator.labels" . | nindent 4 }}
     rbac.authorization.k8s.io/aggregate-to-admin: "true"
 rules:
+- apiGroups: ["accounts.cf-edge.io"]
+  resources: ["accounts"]
+  verbs: ["*"]
+- apiGroups: ["accounts.cf-edge.io"]
+  resources: ["accounts/status"]
+  verbs: ["get"]
 - apiGroups: ["loadbalancing.cf-edge.io"]
-  resources: ["accounts", "loadbalancers", "loadbalancerpools", "loadbalancermonitors"]
+  resources: ["loadbalancers", "loadbalancerpools", "loadbalancermonitors"]
   verbs: ["*"]
 - apiGroups: ["loadbalancing.cf-edge.io"]
-  resources: ["accounts/status", "loadbalancers/status", "loadbalancerpools/status", "loadbalancermonitors/status"]
+  resources: ["loadbalancers/status", "loadbalancerpools/status", "loadbalancermonitors/status"]
   verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -118,11 +130,17 @@ metadata:
     {{- include "cf-edge-operator.labels" . | nindent 4 }}
     rbac.authorization.k8s.io/aggregate-to-edit: "true"
 rules:
+- apiGroups: ["accounts.cf-edge.io"]
+  resources: ["accounts"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["accounts.cf-edge.io"]
+  resources: ["accounts/status"]
+  verbs: ["get"]
 - apiGroups: ["loadbalancing.cf-edge.io"]
-  resources: ["accounts", "loadbalancers", "loadbalancerpools", "loadbalancermonitors"]
+  resources: ["loadbalancers", "loadbalancerpools", "loadbalancermonitors"]
   verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
 - apiGroups: ["loadbalancing.cf-edge.io"]
-  resources: ["accounts/status", "loadbalancers/status", "loadbalancerpools/status", "loadbalancermonitors/status"]
+  resources: ["loadbalancers/status", "loadbalancerpools/status", "loadbalancermonitors/status"]
   verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -133,10 +151,16 @@ metadata:
     {{- include "cf-edge-operator.labels" . | nindent 4 }}
     rbac.authorization.k8s.io/aggregate-to-view: "true"
 rules:
+- apiGroups: ["accounts.cf-edge.io"]
+  resources: ["accounts"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["accounts.cf-edge.io"]
+  resources: ["accounts/status"]
+  verbs: ["get"]
 - apiGroups: ["loadbalancing.cf-edge.io"]
-  resources: ["accounts", "loadbalancers", "loadbalancerpools", "loadbalancermonitors"]
+  resources: ["loadbalancers", "loadbalancerpools", "loadbalancermonitors"]
   verbs: ["get", "list", "watch"]
 - apiGroups: ["loadbalancing.cf-edge.io"]
-  resources: ["accounts/status", "loadbalancers/status", "loadbalancerpools/status", "loadbalancermonitors/status"]
+  resources: ["loadbalancers/status", "loadbalancerpools/status", "loadbalancermonitors/status"]
   verbs: ["get"]
 {{- end }}

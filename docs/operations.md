@@ -12,7 +12,9 @@ All flags are set via Helm values, which are passed as container args in the Dep
 | `--management-policy` | `manage` | `managementPolicy` | `manage`, `create`, or `observe` -- see [migration.md](migration.md) |
 | `--delete-policy` | `always` | `deletePolicy` | `always`, `own-only`, or `never` -- see [migration.md](migration.md) |
 | `--dry-run` | `false` | `dryRun` | Log Cloudflare (CF) operations without executing them |
-| `--enable-loadbalancer` | `false` | `controlPlane.enabled` | Enable the load-balancing control-plane role (Account + the LoadBalancer/LoadBalancerPool/LoadBalancerMonitor controllers). Off by default |
+| `--enable-customhostname` | `true` | `features.customhostname.enabled` | Enable the CustomHostname controller (and the shared Zone controller). On by default -- the operator's original role |
+| `--enable-loadbalancing` | `false` | `features.loadBalancing.enabled` | Enable the load-balancing control-plane role (Account + the LoadBalancer/LoadBalancerPool/LoadBalancerMonitor controllers). Off by default |
+| `--enable-pool-health` | `false` | `features.loadBalancing.poolHealth` | Opt-in pool-health metrics: one extra CF read per Pool per reconcile publishes the pool/origin health gauges. Ignored unless load balancing is enabled (the operator warns if set while it is off). Off by default -- see [Pool health monitoring](#pool-health-monitoring) |
 | `--drift-interval` | `1m` | `driftInterval` | How often the zone controller bulk-lists CF hostnames; also how often the load-balancing controllers (Account/LoadBalancer/LoadBalancerPool/LoadBalancerMonitor) self-requeue |
 | `--drift-buffer` | `1024` | `driftBuffer` | Internal channel buffer for drift events |
 | `--cf-api-timeout` | `5s` | `cfAPITimeout` | Per-request timeout for single CF API read calls (zone lookup, CH and load-balancing get/list) |
@@ -137,6 +139,87 @@ resources:
 
 ---
 
+## Load Balancing
+
+These notes apply only when the load-balancing control-plane role is enabled
+(`features.loadBalancing.enabled=true`). See
+[architecture.md](architecture.md#load-balancing-reconciliation-model) for the
+reconciliation model.
+
+### Pool health monitoring
+
+The operator's sync-state metrics track whether it has reconciled each CR to
+Cloudflare; they say nothing about what Cloudflare's health checks observe. To
+also publish CF-side pool and origin health, enable the opt-in axis:
+
+```yaml
+# values.yaml
+features:
+  loadBalancing:
+    enabled: true
+    poolHealth: true   # --enable-pool-health
+```
+
+When on, every LoadBalancerPool reconcile makes **one extra Cloudflare read**
+(`PoolHealth.Get`, recorded under `operation="health"`) inside the existing
+per-pool loop -- no new controller or bulk poll, and the poll is isolated: a
+failure records a CF API error and leaves the health series stale, but never sets
+an error or flips a pool's `Ready`. The four gauges
+(`loadbalancerpool_health`, `loadbalancerpool_health_region`,
+`loadbalancerpool_origin_health`, `loadbalancerpool_origin_health_region`) carry
+raw region-status counts, so you derive fully/partial/down thresholds in PromQL.
+
+**Cardinality caveat.** Health series scale with pools, origins, and regions:
+
+- Every polled pool always gets the summarized per-pool and per-origin counts
+  (3 status series each).
+- Per-region series (`*_health_region`) are emitted **only** for pools that set
+  `spec.checkRegions`, a CR-declared dimension bounded to at most 13 regions.
+- A pool with `checkRegions` **unset** health-checks from *every* Cloudflare data
+  center (heavier probes and an unbounded region set), so it gets **no per-region
+  metric** -- only the summarized counts.
+
+Set `spec.checkRegions` on pools you want per-region health for: it both bounds
+the probe fan-out and makes the per-region series coherent. Leaving it unset on
+many pools means heavier CF probing with no per-region visibility.
+
+**Alerting.** There is deliberately no operator alert on pool health. The
+operator's health metrics are poll-stale (refreshed only each `--drift-interval`)
+and are best for dashboards and self-service PromQL, not time-sensitive paging.
+For real-time paging on origin/pool health, use Cloudflare's native **Load
+Balancing Health Alert** notification (stateful, per pool/origin, integrates with
+PagerDuty and other destinations). The split is deliberate: the operator alerts on
+sync (its domain); Cloudflare alerts on health (its domain).
+
+### Coexisting with out-of-band configuration
+
+The operator manages only the fields the CRDs model and leaves the rest of a
+Cloudflare load balancer, pool, or monitor intact (see the curated-subset model in
+[architecture.md](architecture.md#load-balancing-reconciliation-model)). A few
+fields warrant explicit notes:
+
+- **Pool `monitor` (monitor groups deferred).** A pool the operator manages
+  cannot use a Cloudflare **monitor group** out-of-band: the pool edit always
+  sends the single `monitor` field, so an externally-attached monitor group would
+  be overwritten on the next reconcile. Monitor groups need a future
+  `LoadBalancerMonitorGroup` CRD (a reusable account-scoped resource; pools would
+  reference it via `monitorGroupRef`). Until it lands, keep operator-managed pools
+  on a single `monitorRef`.
+- **Pool `notification_filter` (omitted).** This alerting-plane field is not
+  modeled. It is pool-level, so the operator never sends it -- an out-of-band
+  `notification_filter` is coexist-safe (never clobbered). Cloudflare is
+  deprecating it in favor of centralized Notifications.
+- **Pool `notification_email` (retained for compatibility).** `spec.notificationEmail`
+  is modeled and enforced even though Cloudflare has deprecated it, for backward
+  compatibility with existing pools. `notification_filter` (its replacement) is
+  omitted per the note above -- the two are intentionally treated differently.
+- **Origin `port` and `virtualNetworkID` (now modeled).** Both are modeled on
+  `spec.origins[]`, fixing an earlier version that would clobber an out-of-band
+  port or virtual-network setting on edit. Set `virtualNetworkID` when an origin
+  `address` is an internal/reserved address.
+
+---
+
 ## High Availability
 
 ### Multiple Replicas
@@ -164,6 +247,67 @@ podDisruptionBudget:
 
 ---
 
+## CRD Management
+
+All CRDs -- `CustomHostname`, `Zone`, and the four `loadbalancing.cf-edge.io`
+kinds -- are rendered by the chart from templates, gated by the same feature
+switches as the controllers. Which CRDs a release installs follows the enabled
+features:
+
+| Features enabled | CRDs installed |
+|------------------|----------------|
+| `customhostname` only *(default)* | `customhostnames`, `zones` |
+| `loadBalancing` only | `zones`, `accounts`, `loadbalancers`, `loadbalancerpools`, `loadbalancermonitors` |
+| both | all six |
+| neither | none |
+
+`Zone` is shared substrate (it supplies zone identity and credentials to both
+CustomHostname and LoadBalancer), so it installs whenever either feature is on.
+
+Two values control CRD lifecycle, mirroring cert-manager:
+
+- **`crds.enabled`** *(default `true`)* -- the chart installs and manages the CRDs.
+  Set `false` to manage them out-of-band (a cluster admin applies `config/crd`
+  separately, or another chart owns them); the chart then renders no CRDs.
+- **`crds.keep`** *(default `true`)* -- stamps `helm.sh/resource-policy: keep` and
+  `argocd.argoproj.io/sync-options: Prune=false` onto every CRD so a `helm
+  uninstall` or a GitOps prune never deletes them. Deleting a CRD cascade-deletes
+  every CR of that kind, so keeping them is the safe default.
+
+Because the CRDs are chart-managed (not in Helm's install-only `crds/`
+directory), `helm upgrade` updates them in place -- no manual `kubectl apply` step
+is needed before upgrading, unlike the pre-consolidation chart.
+
+### Migrating an existing install to chart-managed CRDs
+
+Earlier chart versions shipped the CustomHostname and Zone CRDs in Helm's special
+`crds/` directory, which installs them once and never tracks them in the release.
+This version renders all CRDs as normal templates so Helm (and ArgoCD) own them.
+
+- **ArgoCD:** the CRD names are unchanged, so this is an in-place update, not a
+  delete/recreate -- ArgoCD simply starts tracking the existing objects. The
+  `argocd.argoproj.io/sync-options: Prune=false` annotation (from `crds.keep`)
+  guards against an accidental prune removing a CRD, which would cascade-delete
+  every CR of that kind.
+- **Plain `helm upgrade`:** Helm refuses to adopt a resource it did not create
+  ("... exists and cannot be imported into the current release"). Adopt the two
+  pre-existing CRDs once before upgrading:
+
+  ```bash
+  for crd in customhostnames.saas.cf-edge.io zones.domains.cf-edge.io; do
+    kubectl annotate crd "$crd" \
+      meta.helm.sh/release-name=cf-edge-operator \
+      meta.helm.sh/release-namespace=<release-namespace> --overwrite
+    kubectl label crd "$crd" app.kubernetes.io/managed-by=Helm --overwrite
+  done
+  ```
+
+  (The `loadbalancing.cf-edge.io` CRDs were already chart-templated, so they need
+  no adoption.) This is the same adoption cert-manager documents for its own
+  `crds/`-to-chart migration.
+
+---
+
 ## Uninstallation
 
 **Important -- delete in dependency order.** A resource CR's finalizer is released
@@ -178,7 +322,7 @@ operator. Removing any of those before the resource CRs leaves the CRs stuck in
 
 The `loadbalancing.cf-edge.io` CRs (LoadBalancer, LoadBalancerPool,
 LoadBalancerMonitor, Account) exist only on a control cluster
-(`controlPlane.enabled=true`); the `--ignore-not-found` flags below are no-ops
+(`features.loadBalancing.enabled=true`); the `--ignore-not-found` flags below are no-ops
 elsewhere.
 
 ### Helm
@@ -192,16 +336,33 @@ kubectl delete customhostnames --all -A
 kubectl delete accounts --all -A --ignore-not-found
 kubectl delete zones --all -A
 
-# 3. Uninstall the operator. This also removes the load-balancing CRDs, which are
-#    chart-templated (control-plane only); the base Zone/CustomHostname CRDs are
-#    install-only and survive.
+# 3. Uninstall the operator (removes the Deployment, RBAC, Service, etc.). With
+#    crds.keep=true (the default) every CRD carries helm.sh/resource-policy:keep,
+#    so the CRDs SURVIVE the uninstall -- and with them any CRs not deleted above.
 helm uninstall cf-edge-operator
 
-# 4. Delete the remaining base CRDs
-kubectl delete -f charts/cf-edge-operator/crds/
+# 4. (Optional) Remove the CRDs. This cascade-deletes every remaining CR of each
+#    kind, so only do this once all CRs are gone (steps 1-2) -- no operator is left
+#    to finalize CRs, so any that remain would first need their finalizers stripped.
+#    --ignore-not-found skips the loadbalancing CRDs on non-control clusters.
+kubectl delete crd \
+  customhostnames.saas.cf-edge.io \
+  zones.domains.cf-edge.io \
+  accounts.accounts.cf-edge.io \
+  loadbalancers.loadbalancing.cf-edge.io \
+  loadbalancerpools.loadbalancing.cf-edge.io \
+  loadbalancermonitors.loadbalancing.cf-edge.io \
+  --ignore-not-found
 ```
 
 ### Kustomize
+
+> **Note.** The kubectl/Kustomize install path (`make install`, or the bundled
+> `dist/install.yaml`) applies **all** CRDs raw -- it has neither the Helm
+> chart's per-feature CRD gating (`crds.enabled`) nor the keep/Prune annotations
+> (`crds.keep`). Every CRD is installed regardless of which features run, and
+> `make undeploy` (below) removes every CRD, cascade-deleting all CRs. Use the
+> Helm chart for per-feature CRD selection and uninstall-safety.
 
 ```bash
 # 1. Delete resource CRs first
@@ -230,6 +391,11 @@ ordering, put the operator, Zone/Account CRs, and the Secret in an *earlier* wav
 than the resource CRs so they finalize while their credentials are still
 reachable (with ArgoCD, `argocd.argoproj.io/sync-wave`). If they do wedge, the
 recovery below is non-destructive.
+
+The CRDs themselves carry `argocd.argoproj.io/sync-options: Prune=false` (from
+`crds.keep=true`), so a prune never removes a CRD -- which would cascade-delete
+every CR of that kind. Remove CRDs deliberately (see step 4 above), never via a
+prune.
 
 ---
 
@@ -284,4 +450,4 @@ Before going live:
 - [ ] `serviceMonitor.enabled: true` and `prometheusRule.enabled: true` if using Prometheus Operator
 - [ ] `prometheusRule.runbookUrl` set to point to your copy of [runbook.md](runbook.md)
 - [ ] Resource limits reviewed for your scale (see sizing table above)
-- [ ] CRD upgrade procedure understood: `helm upgrade` does NOT update CRDs; apply them manually before upgrading the chart (`kubectl apply -f charts/cf-edge-operator/crds/`)
+- [ ] CRD lifecycle understood: CRDs are chart-managed and update in place on `helm upgrade` (`crds.enabled=true`); they survive `helm uninstall`/prune (`crds.keep=true`). See [CRD Management](#crd-management), and adopt pre-existing CRDs first when upgrading from a pre-consolidation chart.

@@ -13,6 +13,7 @@ spec:
   groups:
   - name: cf-edge-operator
     rules:
+    {{- if or (eq (include "cf-edge-operator.customhostnameEnabled" .) "true") (eq (include "cf-edge-operator.loadBalancingEnabled" .) "true") }}
 
     # Fires when a Zone CR has never been initialized (zone GET to resolve zone name
     # has never succeeded). This only happens on fresh zones or after credentialsRef changes.
@@ -31,6 +32,7 @@ spec:
         {{- if .Values.prometheusRule.runbookUrl }}
         runbook_url: {{ .Values.prometheusRule.runbookUrl }}/CfEdgeOperatorZoneNotInitialized
         {{- end }}
+    {{- end }}
 
     # Fires when the operator metrics endpoint is unreachable. Custom hostname
     # management is fully suspended while the operator is down.
@@ -50,6 +52,7 @@ spec:
         {{- if .Values.prometheusRule.runbookUrl }}
         runbook_url: {{ .Values.prometheusRule.runbookUrl }}/CfEdgeOperatorDown
         {{- end }}
+    {{- if eq (include "cf-edge-operator.customhostnameEnabled" .) "true" }}
 
     # Fires when one or more CustomHostname CRs have consecutive reconcile failures.
     # The CR's status.consecutiveErrors field shows the failure count.
@@ -90,6 +93,7 @@ spec:
         {{- if .Values.prometheusRule.runbookUrl }}
         runbook_url: {{ .Values.prometheusRule.runbookUrl }}/CfEdgeOperatorConflictHostnames
         {{- end }}
+    {{- end }}
 
     # Fires when the Cloudflare API returns sustained 5xx errors. 4xx errors (e.g., 409
     # conflict, 404 not found) are expected and are not counted here.
@@ -109,6 +113,7 @@ spec:
         {{- if .Values.prometheusRule.runbookUrl }}
         runbook_url: {{ .Values.prometheusRule.runbookUrl }}/CfEdgeOperatorHighAPIErrorRate
         {{- end }}
+    {{- if eq (include "cf-edge-operator.customhostnameEnabled" .) "true" }}
 
     # Fires when hostnames remain in a non-ready state for over 24 hours. Cloudflare SSL
     # provisioning normally completes within minutes to a few hours.
@@ -131,4 +136,101 @@ spec:
         {{- if .Values.prometheusRule.runbookUrl }}
         runbook_url: {{ .Values.prometheusRule.runbookUrl }}/CfEdgeOperatorSSLProvisioningStalled
         {{- end }}
+    {{- end }}
+    {{- if eq (include "cf-edge-operator.loadBalancingEnabled" .) "true" }}
+
+    # Fires when an Account CR has never been initialized (credentials never
+    # validated against the Cloudflare account). This only happens on fresh
+    # accounts or after credentialsRef changes.
+    - alert: CfEdgeOperatorAccountNotInitialized
+      expr: cf_edge_operator_account_initialized == 0
+      for: 10m
+      labels:
+        severity: critical
+      annotations:
+        summary: >-
+          Account {{`{{ $labels.account_cr }}`}} is not initialized
+        description: >-
+          The Account CR {{`{{ $labels.account_cr }}`}} has not been initialized for 10 minutes.
+          The credentials have not validated against the Cloudflare account.
+          Check the credentials secret and Cloudflare API reachability.
+        {{- if .Values.prometheusRule.runbookUrl }}
+        runbook_url: {{ .Values.prometheusRule.runbookUrl }}/CfEdgeOperatorAccountNotInitialized
+        {{- end }}
+
+    # Fires when one or more LoadBalancer, LoadBalancerPool, or LoadBalancerMonitor
+    # CRs have consecutive reconcile failures (Ready=False on a setError reason).
+    # The CR's status.consecutiveErrors field shows the failure count.
+    - alert: CfEdgeOperatorLoadBalancersError
+      expr: >-
+        (cf_edge_operator_loadbalancers{state="error"} > 0)
+        or (cf_edge_operator_loadbalancerpools{state="error"} > 0)
+        or (cf_edge_operator_loadbalancermonitors{state="error"} > 0)
+      for: 15m
+      labels:
+        severity: warning
+      annotations:
+        summary: >-
+          {{`{{ $value }}`}} {{`{{ $labels.__name__ }}`}} CR(s) in error state for owner {{`{{ $labels.zone_cr }}{{ $labels.account_cr }}`}}
+        description: >-
+          One or more {{`{{ $labels.__name__ }}`}} CRs for owner {{`{{ $labels.zone_cr }}{{ $labels.account_cr }}`}}
+          have consecutive reconcile failures (status.consecutiveErrors > 0, Ready=False). The operator
+          is retrying with exponential backoff. Check operator logs and the affected CR conditions.
+        {{- if .Values.prometheusRule.runbookUrl }}
+        runbook_url: {{ .Values.prometheusRule.runbookUrl }}/CfEdgeOperatorLoadBalancersError
+        {{- end }}
+
+    # Fires when LoadBalancer / LoadBalancerPool / LoadBalancerMonitor CRs stay in
+    # the waiting state. Waiting folds in two cases: a soft wait on an unresolved
+    # dependency (a dangling or misconfigured monitorRef or fallbackPoolRef whose
+    # referenced CR is missing or has not provisioned in Cloudflare yet), and observe
+    # mode (managementPolicy=observe), where the operator waits for the resource to
+    # appear in Cloudflare instead of creating it (WaitingForExternal).
+    - alert: CfEdgeOperatorLoadBalancersWaiting
+      expr: >-
+        (cf_edge_operator_loadbalancers{state="waiting"} > 0)
+        or (cf_edge_operator_loadbalancerpools{state="waiting"} > 0)
+        or (cf_edge_operator_loadbalancermonitors{state="waiting"} > 0)
+      for: 30m
+      labels:
+        severity: warning
+      annotations:
+        summary: >-
+          {{`{{ $value }}`}} waiting {{`{{ $labels.__name__ }}`}} CR(s) for owner {{`{{ $labels.zone_cr }}{{ $labels.account_cr }}`}}
+        description: >-
+          One or more {{`{{ $labels.__name__ }}`}} CRs for owner {{`{{ $labels.zone_cr }}{{ $labels.account_cr }}`}}
+          have been in the waiting state for 30 minutes. Waiting folds in two cases: a soft wait on
+          an unresolved dependency -- a dangling or misconfigured monitorRef or fallbackPoolRef whose
+          referenced CR is missing or has not provisioned in Cloudflare -- and observe mode
+          (managementPolicy=observe), where the operator waits for the resource to appear in Cloudflare
+          instead of creating it. Check the referenced pool/monitor CRs exist and are Ready, or that the
+          expected resource exists in Cloudflare if the CR is in observe mode.
+        {{- if .Values.prometheusRule.runbookUrl }}
+        runbook_url: {{ .Values.prometheusRule.runbookUrl }}/CfEdgeOperatorLoadBalancersWaiting
+        {{- end }}
+
+    # Fires when one or more LoadBalancer CRs are serving in a partial (degraded)
+    # state -- at least one referenced pool is unresolved (a missing or
+    # not-yet-ready Pool CR), so the LB serves with a reduced pool set. This is an
+    # application/configuration problem (a dangling pool ref), like the waiting
+    # alert, but the LB IS still serving, so it is low severity with a longer
+    # window.
+    - alert: CfEdgeOperatorLoadBalancersPartial
+      expr: cf_edge_operator_loadbalancers{state="partial"} > 0
+      for: 1h
+      labels:
+        severity: info
+      annotations:
+        summary: >-
+          {{`{{ $value }}`}} partial (degraded) LoadBalancer CR(s) for zone {{`{{ $labels.zone_cr }}`}}
+        description: >-
+          One or more LoadBalancer CRs for zone {{`{{ $labels.zone_cr }}`}} have been serving in a
+          partial (degraded) state for 1 hour: some referenced pools are unresolved (a missing or
+          not-yet-ready Pool CR), so the load balancer serves with a reduced pool set. Check
+          status.unresolvedPoolRefs on the affected LoadBalancer CR(s) and ensure the referenced
+          Pool CRs exist and are Ready.
+        {{- if .Values.prometheusRule.runbookUrl }}
+        runbook_url: {{ .Values.prometheusRule.runbookUrl }}/CfEdgeOperatorLoadBalancersPartial
+        {{- end }}
+    {{- end }}
 {{- end }}

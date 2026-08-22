@@ -25,7 +25,10 @@ import (
 // An Account carries the Cloudflare account ID and API credentials used by
 // account-scoped resources (LoadBalancerPool, LoadBalancerMonitor). It is the
 // account-scope analog of a Zone: account-scoped resources reference an Account
-// via AccountRef, the same way zone-scoped resources reference a Zone.
+// via AccountRef, the same way zone-scoped resources reference a Zone. Account is
+// a foundational credential/identity group of its own (accounts.cf-edge.io),
+// parallel to Zone in domains.cf-edge.io -- it carries no load-balancing-specific
+// fields so other account-scoped features can reuse it.
 type AccountSpec struct {
 	// ID is the Cloudflare account ID (32-character hex string).
 	// Immutable -- changing it would repoint all referencing resources at a
@@ -40,6 +43,19 @@ type AccountSpec struct {
 	// must be in the same namespace as the Account resource.
 	// +kubebuilder:validation:Required
 	CredentialsRef SecretRef `json:"credentialsRef"`
+}
+
+// SecretRef references a Kubernetes secret holding a Cloudflare API token.
+type SecretRef struct {
+	// Name of the secret.
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Key within the secret containing the API token.
+	// +kubebuilder:default=apiToken
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	Key string `json:"key,omitempty"`
 }
 
 // AccountStatus defines the observed state of an Account.

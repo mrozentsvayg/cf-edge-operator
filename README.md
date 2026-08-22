@@ -119,16 +119,16 @@ kubectl get customhostnames -A
 
 ### Load Balancing (control-plane role)
 
-Optional. The operator can also manage Cloudflare Load Balancing through four CRDs in the `loadbalancing.cf-edge.io/v1beta1` group:
+Optional. The operator can also manage Cloudflare Load Balancing through four CRDs. `Account` is a foundational credential resource in its own `accounts.cf-edge.io/v1beta1` group (parallel to `Zone` in `domains.cf-edge.io`); the three load-balancing kinds live in `loadbalancing.cf-edge.io/v1beta1`:
 
-| Kind | Scope | Purpose |
-|------|-------|---------|
-| `Account` | account | Cloudflare account ID + credentials for account-scoped LB resources (the account-scope analog of a Zone) |
-| `LoadBalancerMonitor` | account | Health check that probes pool origins; referenced by pools |
-| `LoadBalancerPool` | account | Origin pool; references an Account and, optionally, a Monitor |
-| `LoadBalancer` | zone | Geo-steered hostname; references a Zone and LoadBalancerPool CRs by name |
+| Kind | Group | Scope | Purpose |
+|------|-------|-------|---------|
+| `Account` | `accounts.cf-edge.io` | account | Cloudflare account ID + credentials for account-scoped LB resources (the account-scope analog of a Zone) |
+| `LoadBalancerMonitor` | `loadbalancing.cf-edge.io` | account | Health check that probes pool origins; referenced by pools |
+| `LoadBalancerPool` | `loadbalancing.cf-edge.io` | account | Origin pool; references an Account and, optionally, a Monitor. Models origins (`port`, `virtualNetworkID`, per-origin `header`), `originSteering`, `checkRegions`, and `loadShedding` |
+| `LoadBalancer` | `loadbalancing.cf-edge.io` | zone | Geo-steered hostname; references a Zone and LoadBalancerPool CRs by name. Models steering, session affinity (with `sessionAffinityAttributes`/`ttl`), `adaptiveRouting`, `locationStrategy`, `randomSteering`, and `networks` |
 
-Load balancing is a single-owner control-plane role: enable it on exactly one (control) cluster with `controlPlane.enabled=true` (Helm) / `--enable-loadbalancer`. All other clusters leave it off, and the LB CRDs, RBAC, controllers, and metrics are omitted. See [docs/architecture.md](docs/architecture.md#load-balancing-reconciliation-model) for the reconciliation model and per-CRD field reference.
+Load balancing is a single-owner control-plane role: enable it on exactly one (control) cluster with `features.loadBalancing.enabled=true` (Helm) / `--enable-loadbalancing`. All other clusters leave it off, and the LB CRDs, RBAC, controllers, and metrics are omitted. See [docs/architecture.md](docs/architecture.md#load-balancing-reconciliation-model) for the reconciliation model and per-CRD field reference.
 
 ---
 
@@ -144,7 +144,11 @@ Load balancing is a single-owner control-plane role: enable it on exactly one (c
 | `operatorNamespace` | release namespace | Namespace where Zone CRs live |
 | `managementPolicy` | `manage` | `manage`, `create`, or `observe`. See [docs/architecture.md](docs/architecture.md#management-policy). |
 | `deletePolicy` | `always` | `always`, `own-only`, or `never`. See [docs/architecture.md](docs/architecture.md#delete-policy). |
-| `controlPlane.enabled` | `false` | Enable the load-balancing controllers, CRDs, and RBAC (single-owner control-plane role; set `true` on exactly one cluster). See [docs/architecture.md](docs/architecture.md#load-balancing-reconciliation-model). |
+| `features.customhostname.enabled` | `true` | Enable the CustomHostname controller (and the shared Zone controller), plus their RBAC. On by default -- this is the operator's original role. |
+| `features.loadBalancing.enabled` | `false` | Enable the load-balancing controllers, CRDs, and RBAC (single-owner control-plane role; set `true` on exactly one cluster). See [docs/architecture.md](docs/architecture.md#load-balancing-reconciliation-model). |
+| `features.loadBalancing.poolHealth` | `false` | Opt-in pool-health metrics (`--enable-pool-health`): one extra CF read per Pool per reconcile publishes pool/origin health gauges. Ignored unless `loadBalancing.enabled`. See [docs/operations.md](docs/operations.md#pool-health-monitoring). |
+| `crds.enabled` | `true` | Let the chart install and manage the CRDs (gated per feature). Set `false` to manage them out-of-band. See [docs/operations.md](docs/operations.md#crd-management). |
+| `crds.keep` | `true` | Add `helm.sh/resource-policy: keep` + ArgoCD `Prune=false` so `helm uninstall`/prune never deletes CRDs (which would cascade-delete all CRs). |
 | `leaderElect` | `true` | Enable leader election (required for HA) |
 | `replicaCount` | `1` | Number of replicas |
 | `resources.limits.cpu` | `500m` | CPU limit |
@@ -169,11 +173,7 @@ Load balancing is a single-owner control-plane role: enable it on exactly one (c
 | `serviceMonitor.enabled` | `false` | Create a ServiceMonitor for Prometheus Operator |
 | `prometheusRule.enabled` | `false` | Create a PrometheusRule with alert definitions |
 
-> **CRD upgrades:** Helm does not update CRDs on `helm upgrade`. When upgrading to a new chart version, apply CRDs manually first:
-> ```bash
-> kubectl apply -f charts/cf-edge-operator/crds/
-> helm upgrade cf-edge-operator charts/cf-edge-operator ...
-> ```
+> **CRD lifecycle:** CRDs are chart-managed and gated per feature, so `helm upgrade` updates them in place (no manual `kubectl apply` step) and they survive `helm uninstall`/prune by default (`crds.keep=true`). Upgrading from a pre-consolidation chart requires adopting the existing CustomHostname/Zone CRDs once -- see [docs/operations.md](docs/operations.md#crd-management).
 
 ---
 

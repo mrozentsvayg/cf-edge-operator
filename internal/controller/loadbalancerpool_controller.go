@@ -78,16 +78,35 @@ type LoadBalancerPoolReconciler struct {
 	// is no Zone-style coordinator for pools, so the controller self-requeues.
 	// Set from --drift-interval.
 	RequeueInterval time.Duration
+	// EnablePoolHealth turns on the opt-in pool-health axis (--enable-pool-health):
+	// after the normal sync, each reconcile polls Cloudflare for the pool's health
+	// (an extra read per pool per reconcile) and publishes the loadbalancerpool
+	// health gauges. Off by default; when off no health call is made and no health
+	// series are emitted. The health poll never affects the sync state (see
+	// maybePollPoolHealth).
+	EnablePoolHealth bool
 }
 
 // +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=loadbalancerpools,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=loadbalancerpools/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=loadbalancerpools/finalizers,verbs=update
 // +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=loadbalancermonitors,verbs=get;list;watch
-// +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=accounts,verbs=get;list;watch
+// +kubebuilder:rbac:groups=accounts.cf-edge.io,resources=accounts,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
+// Reconcile drives a LoadBalancerPool to its desired Cloudflare state, then
+// rebuilds the per-account state gauge. The recompute is deferred here --
+// wrapping the inner reconcile -- so it runs on every path (including the
+// not-found/deletion path, so a deleted CR or the last CR for an account leaves
+// no stale series) while keeping the inner reconcile's tail-returns intact. Load
+// balancing has no Zone-style coordinator, so each controller recomputes its own
+// aggregate; see lbStateGauge.
 func (r *LoadBalancerPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	defer r.recomputeStateGauge(ctx)
+	return r.reconcile(ctx, req)
+}
+
+func (r *LoadBalancerPoolReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	var pool lbv1beta1.LoadBalancerPool
@@ -155,7 +174,7 @@ func (r *LoadBalancerPoolReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		// re-enqueue us once the monitor comes online, backed by the periodic
 		// self-requeue.
 		return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, &pool, metav1.ConditionFalse,
-			"WaitingForMonitor",
+			reasonWaitingForMonitor,
 			fmt.Sprintf("Monitor %q not ready yet", pool.Spec.MonitorRef.Name))
 	}
 
@@ -167,7 +186,7 @@ func (r *LoadBalancerPoolReconciler) reconcileCloudflareState(ctx context.Contex
 	mgmt := effectiveManagementPolicy(pool.Spec.ManagementPolicy, r.ManagementPolicy)
 
 	var existing *load_balancers.Pool
-	attempts, err := cfRetry(ctx, cfResourceLoadBalancerPool, cfOpGet, r.CFAPIMaxRetries, func() error {
+	attempts, err := cfRetry(ctx, cfResourceLoadBalancerPool, cfOpList, r.CFAPIMaxRetries, func() error {
 		var callErr error
 		existing, callErr = r.findPoolByCRName(ctx, ai, pool)
 		return callErr
@@ -182,7 +201,7 @@ func (r *LoadBalancerPoolReconciler) reconcileCloudflareState(ctx context.Contex
 			log.Info("loadbalancerpool - not creating (managementPolicy=observe)", "name", pool.Name)
 			pool.Status.ConsecutiveErrors = 0
 			return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, pool, metav1.ConditionFalse,
-				"WaitingForExternal", "Pool not yet provisioned in Cloudflare")
+				reasonWaitingForExternal, "Pool not yet provisioned in Cloudflare")
 		}
 		return r.handleCreate(ctx, ai, pool, monitorID)
 	}
@@ -216,6 +235,12 @@ func (r *LoadBalancerPoolReconciler) reconcileCloudflareState(ctx context.Contex
 		}
 	}
 
+	// Opt-in pool-health poll (independent of the sync above; see
+	// maybePollPoolHealth). Runs on the existing-pool path only -- a pool created
+	// this reconcile has no Cloudflare health yet and gets polled on its next
+	// self-requeue, once it has settled.
+	r.maybePollPoolHealth(ctx, ai, pool)
+
 	return r.markReady(ctx, pool)
 }
 
@@ -224,7 +249,7 @@ func (r *LoadBalancerPoolReconciler) handleCreate(ctx context.Context, ai *accou
 
 	if r.DryRun {
 		log.Info("loadbalancerpool - not creating (dry-run)", "name", pool.Name)
-		return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, pool, metav1.ConditionFalse, "DryRun", "not creating (dry-run)")
+		return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, pool, metav1.ConditionFalse, reasonDryRun, "not creating (dry-run)")
 	}
 
 	params := buildPoolNewParams(ai.AccountID, pool, monitorID)
@@ -288,6 +313,59 @@ func (r *LoadBalancerPoolReconciler) editPool(ctx context.Context, ai *accountIn
 	return resp, nil
 }
 
+// maybePollPoolHealth polls Cloudflare pool health and publishes the health
+// gauges when the opt-in axis is enabled and the pool has a Cloudflare ID. It is
+// the gate that keeps the off path truly zero-cost: with EnablePoolHealth false
+// no PoolHealth.Get call is made and no health series is emitted.
+func (r *LoadBalancerPoolReconciler) maybePollPoolHealth(ctx context.Context, ai *accountInfo, pool *lbv1beta1.LoadBalancerPool) {
+	if !r.EnablePoolHealth || pool.Status.ID == "" {
+		return
+	}
+	r.pollPoolHealth(ctx, ai, pool)
+}
+
+// pollPoolHealth fetches the pool's Cloudflare health and publishes the four
+// loadbalancerpool health gauges. It is an INDEPENDENT observability axis from
+// the sync reconcile: a failed poll records an api error (operation="health") and
+// returns without touching the sync state -- no setError, no Ready flip, no
+// consecutiveErrors bump. The health gauges are left at their last value (stale);
+// staleness is visible via api_errors_by_code_total{operation="health"}, so they
+// are deliberately not zeroed on a transient failure.
+//
+// The cloudflare-go v6.8.0 SDK mis-flattens pop_health, so the poll decodes the
+// raw JSON (resp.JSON.RawJSON) itself; see cfPoolHealth in pool_health.go.
+func (r *LoadBalancerPoolReconciler) pollPoolHealth(ctx context.Context, ai *accountInfo, pool *lbv1beta1.LoadBalancerPool) {
+	log := logf.FromContext(ctx)
+
+	var resp *load_balancers.PoolHealthGetResponse
+	_, err := cfRetry(ctx, cfResourceLoadBalancerPool, cfOpHealth, r.CFAPIMaxRetries, func() error {
+		start := time.Now()
+		var callErr error
+		resp, callErr = ai.Client.LoadBalancers.Pools.Health.Get(ctx, pool.Status.ID,
+			load_balancers.PoolHealthGetParams{AccountID: cloudflare.F(ai.AccountID)},
+			option.WithRequestTimeout(r.CFAPITimeout))
+		recordCFCall(cfResourceLoadBalancerPool, cfOpHealth, start, &callErr)
+		return callErr
+	})
+	if err != nil {
+		// Poll-failure isolation: the error is already recorded on the api metrics;
+		// do not disturb the sync state or the last-known health gauges.
+		log.V(1).Info("loadbalancerpool - health poll failed, sync state unaffected (gauges left stale)",
+			"name", pool.Name, "id", pool.Status.ID, "reason", err)
+		return
+	}
+
+	health, err := decodePoolHealth([]byte(resp.JSON.RawJSON()))
+	if err != nil {
+		log.V(1).Info("loadbalancerpool - health decode failed, sync state unaffected (gauges left stale)",
+			"name", pool.Name, "id", pool.Status.ID, "reason", err)
+		return
+	}
+
+	tally := tallyPoolHealth(health, pool.Spec.CheckRegions)
+	poolHealthGaugeSet.publish(pool.Spec.AccountRef.Name, pool.Name, tally)
+}
+
 func (r *LoadBalancerPoolReconciler) handleDelete(ctx context.Context, ai *accountInfo, pool *lbv1beta1.LoadBalancerPool) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -301,7 +379,7 @@ func (r *LoadBalancerPoolReconciler) handleDelete(ctx context.Context, ai *accou
 		policy := effectiveDeletePolicy(pool.Spec.DeletePolicy, r.DeletePolicy)
 		if policy == DeletePolicyOwnOnly {
 			var current *load_balancers.Pool
-			_, err := cfRetry(ctx, cfResourceLoadBalancerPool, cfOpGet, r.CFAPIMaxRetries, func() error {
+			_, err := cfRetry(ctx, cfResourceLoadBalancerPool, cfOpList, r.CFAPIMaxRetries, func() error {
 				var callErr error
 				current, callErr = r.findPoolByCRName(ctx, ai, pool)
 				return callErr
@@ -358,15 +436,15 @@ func (r *LoadBalancerPoolReconciler) findPoolByCRName(ctx context.Context, ai *a
 	for pager.Next() {
 		p := pager.Current()
 		if p.Name == pool.Name {
-			recordCFCall(cfResourceLoadBalancerPool, cfOpGet, start, &noErr)
+			recordCFCall(cfResourceLoadBalancerPool, cfOpList, start, &noErr)
 			return &p, nil
 		}
 	}
 	if err := pager.Err(); err != nil {
-		recordCFCall(cfResourceLoadBalancerPool, cfOpGet, start, &err)
+		recordCFCall(cfResourceLoadBalancerPool, cfOpList, start, &err)
 		return nil, err
 	}
-	recordCFCall(cfResourceLoadBalancerPool, cfOpGet, start, &noErr)
+	recordCFCall(cfResourceLoadBalancerPool, cfOpList, start, &noErr)
 	return nil, nil
 }
 
@@ -400,7 +478,7 @@ func (r *LoadBalancerPoolReconciler) buildAccountClient(ctx context.Context, poo
 
 func (r *LoadBalancerPoolReconciler) markReady(ctx context.Context, pool *lbv1beta1.LoadBalancerPool) (ctrl.Result, error) {
 	pool.Status.ConsecutiveErrors = 0
-	return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, pool, metav1.ConditionTrue, "Reconciled", "Pool is synchronized with Cloudflare")
+	return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, pool, metav1.ConditionTrue, reasonReconciled, "Pool is synchronized with Cloudflare")
 }
 
 // setError records a reconcile failure and schedules a self-requeue so the pool
@@ -427,6 +505,43 @@ func (r *LoadBalancerPoolReconciler) setCondition(ctx context.Context, pool *lbv
 func (r *LoadBalancerPoolReconciler) paceWrite() {
 	if r.CFAPIWriteDelay > 0 {
 		time.Sleep(r.CFAPIWriteDelay)
+	}
+}
+
+// recomputeStateGauge rebuilds the loadbalancerpools state gauge from every
+// LoadBalancerPool CR in the cache, keyed by owning account CR. Called (deferred)
+// on every reconcile so the per-account state counts stay current and a deleted
+// CR -- or the last CR for an account -- leaves no stale series. Best-effort: a
+// cache-list error is logged at V(1) and retried on the next reconcile. See
+// lbStateGauge for the in-place-rebuild mechanism.
+func (r *LoadBalancerPoolReconciler) recomputeStateGauge(ctx context.Context) {
+	var list lbv1beta1.LoadBalancerPoolList
+	if err := r.List(ctx, &list); err != nil {
+		logf.FromContext(ctx).V(1).Info("loadbalancerpool - state gauge recompute skipped, list failed", "reason", err)
+		return
+	}
+	counts := make(map[string]map[string]int, len(list.Items))
+	// liveKeys is the set of pool-health owner keys that still have a CR, used to
+	// prune health series for deleted pools. Only built (and pruned) under the
+	// opt-in flag, so the off path stays free of any pool-health bookkeeping.
+	var liveKeys map[string]bool
+	if r.EnablePoolHealth {
+		liveKeys = make(map[string]bool, len(list.Items))
+	}
+	for i := range list.Items {
+		pool := &list.Items[i]
+		owner := pool.Spec.AccountRef.Name
+		if counts[owner] == nil {
+			counts[owner] = make(map[string]int, len(lbStateLabels))
+		}
+		counts[owner][lbReadyState(pool.Status.Conditions)]++
+		if liveKeys != nil {
+			liveKeys[poolHealthKey(owner, pool.Name)] = true
+		}
+	}
+	lbGaugePool.set(counts)
+	if liveKeys != nil {
+		poolHealthGaugeSet.prune(liveKeys)
 	}
 }
 
@@ -520,6 +635,17 @@ func buildOriginParams(origins []lbv1beta1.LoadBalancerPoolOrigin) []load_balanc
 				op.Weight = cloudflare.F(w)
 			}
 		}
+		// Port is managed only when the CR specifies a non-zero value. 0 means "use
+		// the protocol default"; Cloudflare then resolves and echoes the actual port,
+		// so sending/comparing 0 would drift-loop. Leave-alone when 0.
+		if o.Port > 0 {
+			op.Port = cloudflare.F(int64(o.Port))
+		}
+		// VirtualNetworkID is managed only when set (required for internal/reserved
+		// addresses). Empty = leave Cloudflare's value.
+		if o.VirtualNetworkID != "" {
+			op.VirtualNetworkID = cloudflare.F(o.VirtualNetworkID)
+		}
 		// Header is managed only when set (non-nil). When managed, always send
 		// the Host list -- even if empty (which clears the override) -- so the
 		// value written matches what originsDrifted compares against. Cloudflare
@@ -530,6 +656,63 @@ func buildOriginParams(origins []lbv1beta1.LoadBalancerPoolOrigin) []load_balanc
 			})
 		}
 		out = append(out, op)
+	}
+	return out
+}
+
+// buildOriginSteering returns the CF origin_steering param and true when the CR
+// expresses a policy. Leave-alone: unset (nil, or empty policy) keeps Cloudflare's
+// value, so it is sent -- and drift-checked -- only when set.
+func buildOriginSteering(pool *lbv1beta1.LoadBalancerPool) (load_balancers.OriginSteeringParam, bool) {
+	os := pool.Spec.OriginSteering
+	if os == nil || os.Policy == "" {
+		return load_balancers.OriginSteeringParam{}, false
+	}
+	return load_balancers.OriginSteeringParam{
+		Policy: cloudflare.F(load_balancers.OriginSteeringPolicy(os.Policy)),
+	}, true
+}
+
+// buildLoadShedding returns the CF load_shedding param and true when the CR
+// expresses at least one subfield. load_shedding is an optional pointer: nil means
+// the operator does not manage shedding, so an incident-time out-of-band shed
+// survives. When set, each subfield is leave-alone -- sent, and drift-checked, only
+// when expressed (non-empty percent string or non-empty policy) -- matching the
+// operator's per-subfield coexist convention (see buildLocationStrategy). Percent
+// strings are CRD-pattern-validated floats, so ParseFloat cannot fail (the error is
+// intentionally discarded).
+func buildLoadShedding(ls *lbv1beta1.LoadBalancerPoolLoadShedding) (load_balancers.LoadSheddingParam, bool) {
+	if ls == nil {
+		return load_balancers.LoadSheddingParam{}, false
+	}
+	var p load_balancers.LoadSheddingParam
+	set := false
+	if ls.DefaultPercent != "" {
+		v, _ := strconv.ParseFloat(ls.DefaultPercent, 64)
+		p.DefaultPercent = cloudflare.F(v)
+		set = true
+	}
+	if ls.DefaultPolicy != "" {
+		p.DefaultPolicy = cloudflare.F(load_balancers.LoadSheddingDefaultPolicy(ls.DefaultPolicy))
+		set = true
+	}
+	if ls.SessionPercent != "" {
+		v, _ := strconv.ParseFloat(ls.SessionPercent, 64)
+		p.SessionPercent = cloudflare.F(v)
+		set = true
+	}
+	if ls.SessionPolicy != "" {
+		p.SessionPolicy = cloudflare.F(load_balancers.LoadSheddingSessionPolicy(ls.SessionPolicy))
+		set = true
+	}
+	return p, set
+}
+
+// buildCheckRegions converts the CR's check-region codes to the CF enum slice.
+func buildCheckRegions(regions []string) []load_balancers.CheckRegion {
+	out := make([]load_balancers.CheckRegion, 0, len(regions))
+	for _, r := range regions {
+		out = append(out, load_balancers.CheckRegion(r))
 	}
 	return out
 }
@@ -565,6 +748,14 @@ func buildPoolNewParams(accountID string, pool *lbv1beta1.LoadBalancerPool, moni
 	if pool.Spec.Description != "" {
 		p.Description = cloudflare.F(pool.Spec.Description)
 	}
+	if os, ok := buildOriginSteering(pool); ok {
+		p.OriginSteering = cloudflare.F(os)
+	}
+	if ls, ok := buildLoadShedding(pool.Spec.LoadShedding); ok {
+		p.LoadShedding = cloudflare.F(ls)
+	}
+	// check_regions is create-then-edit: Cloudflare rejects it on create, so it is
+	// applied by buildPoolEditParams only (see poolDrifted).
 	return p
 }
 
@@ -600,6 +791,18 @@ func buildPoolEditParams(accountID string, pool *lbv1beta1.LoadBalancerPool, mon
 	}
 	if pool.Spec.Description != "" {
 		p.Description = cloudflare.F(pool.Spec.Description)
+	}
+	if os, ok := buildOriginSteering(pool); ok {
+		p.OriginSteering = cloudflare.F(os)
+	}
+	if ls, ok := buildLoadShedding(pool.Spec.LoadShedding); ok {
+		p.LoadShedding = cloudflare.F(ls)
+	}
+	// check_regions is edit-only (Cloudflare rejects it on create). Sent when the CR
+	// expresses it; empty leaves Cloudflare's default (all regions), matching the
+	// leave-alone convention. Paired with the poolDrifted check.
+	if len(pool.Spec.CheckRegions) > 0 {
+		p.CheckRegions = cloudflare.F(buildCheckRegions(pool.Spec.CheckRegions))
 	}
 	return p
 }
@@ -643,6 +846,23 @@ func poolDrifted(cf *load_balancers.Pool, pool *lbv1beta1.LoadBalancerPool, moni
 			return true
 		}
 	}
+	if os := pool.Spec.OriginSteering; os != nil && os.Policy != "" {
+		if string(cf.OriginSteering.Policy) != os.Policy {
+			return true
+		}
+	}
+	// check_regions: enforced when the CR expresses it; compared order-insensitively
+	// (Cloudflare may reorder). Empty = leave-alone (matches buildPoolEditParams).
+	if len(pool.Spec.CheckRegions) > 0 {
+		if !unorderedStringSlicesEqual(checkRegionsToStrings(cf.CheckRegions), pool.Spec.CheckRegions) {
+			return true
+		}
+	}
+	if ls := pool.Spec.LoadShedding; ls != nil {
+		if loadSheddingDrifted(cf.LoadShedding, ls) {
+			return true
+		}
+	}
 	// Compare origins by (name, address, enabled, weight, header) tuple.
 	if originsDrifted(cf.Origins, pool.Spec.Origins) {
 		return true
@@ -675,6 +895,14 @@ func originsDrifted(cf []load_balancers.Origin, spec []lbv1beta1.LoadBalancerPoo
 				return true
 			}
 		}
+		// Port managed only when the CR sets a non-zero value (see buildOriginParams).
+		if s.Port > 0 && c.Port != int64(s.Port) {
+			return true
+		}
+		// VirtualNetworkID managed only when set.
+		if s.VirtualNetworkID != "" && c.VirtualNetworkID != s.VirtualNetworkID {
+			return true
+		}
 		// Header is managed only when set (non-nil); when managed we send and
 		// compare the Host list. cf.Header.Host is []string (CF's Host alias).
 		if s.Header != nil && !stringSlicesEqual(c.Header.Host, s.Header.Host) {
@@ -682,4 +910,38 @@ func originsDrifted(cf []load_balancers.Origin, spec []lbv1beta1.LoadBalancerPoo
 		}
 	}
 	return false
+}
+
+// loadSheddingDrifted compares the CF-observed load_shedding against the CR,
+// honoring the leave-alone rule: each subfield is compared only when the CR
+// expresses it. Percent strings are CRD-pattern-validated floats, so ParseFloat
+// cannot fail (the error is intentionally discarded). Callers gate on ls != nil.
+func loadSheddingDrifted(cf load_balancers.LoadShedding, ls *lbv1beta1.LoadBalancerPoolLoadShedding) bool {
+	if ls.DefaultPercent != "" {
+		if v, _ := strconv.ParseFloat(ls.DefaultPercent, 64); cf.DefaultPercent != v {
+			return true
+		}
+	}
+	if ls.DefaultPolicy != "" && string(cf.DefaultPolicy) != ls.DefaultPolicy {
+		return true
+	}
+	if ls.SessionPercent != "" {
+		if v, _ := strconv.ParseFloat(ls.SessionPercent, 64); cf.SessionPercent != v {
+			return true
+		}
+	}
+	if ls.SessionPolicy != "" && string(cf.SessionPolicy) != ls.SessionPolicy {
+		return true
+	}
+	return false
+}
+
+// checkRegionsToStrings converts CF check-region enums to plain strings for
+// order-insensitive comparison against the CR's spec.checkRegions.
+func checkRegionsToStrings(regions []load_balancers.CheckRegion) []string {
+	out := make([]string, 0, len(regions))
+	for _, r := range regions {
+		out = append(out, string(r))
+	}
+	return out
 }

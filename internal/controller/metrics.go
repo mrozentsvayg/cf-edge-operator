@@ -29,6 +29,11 @@ const (
 	cfOpRecreate = "recreate"
 	cfOpUpdate   = "update"
 	cfOpDelete   = "delete"
+	// cfOpHealth labels the opt-in pool-health poll (PoolHealth.Get) on the shared
+	// api_errors_by_code / api_duration / api_retries families, keeping the health
+	// axis distinguishable from the sync operations above. Emitted only when
+	// --enable-pool-health is set.
+	cfOpHealth = "health"
 
 	driftSourceCFList  = "cf_list"
 	driftSourceK8sList = "k8s_list"
@@ -88,6 +93,114 @@ var (
 		Name: "cf_edge_operator_zone_initialized",
 		Help: "1 if Zone CR has been initialized (zone name resolved from Cloudflare API), 0 otherwise.",
 	}, []string{"zone_cr"})
+
+	// accountInitialized is 1 after the Account CR has been validated (credentials
+	// confirmed against the Cloudflare account), 0 otherwise. The load-balancing
+	// analog of zoneInitialized; set from the Account controller and labeled by
+	// account_cr (the Account CR name).
+	accountInitialized = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "cf_edge_operator_account_initialized",
+		Help: "1 if Account CR has been initialized (credentials validated against the Cloudflare account), 0 otherwise.",
+	}, []string{"account_cr"})
+
+	// loadBalancers counts LoadBalancer CRs by owning zone CR and state. States are
+	// mutually exclusive (see lbReadyState); the sum across states equals the total
+	// LoadBalancer CRs referencing that zone. The load-balancing analog of
+	// customHostnames. LoadBalancers are zone-scoped, so the owner label is zone_cr.
+	// The "partial" state is LB-only (an LB serving with some pool refs unresolved);
+	// the pool and monitor gauges never emit it.
+	loadBalancers = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "cf_edge_operator_loadbalancers",
+		Help: "Number of LoadBalancer CRs by zone CR and state (ready, partial, waiting, dryrun, error).",
+	}, []string{"zone_cr", "state"})
+
+	// loadBalancerNetworksDrift counts LoadBalancer CRs whose spec.networks diverges
+	// from the Cloudflare-observed networks, by owning zone CR. Networks are enforced
+	// only at create (Cloudflare's Edit API does not accept networks), so post-create
+	// divergence is surfaced -- not auto-corrected -- here, on the NetworksSynced
+	// status condition, and via a log line on the transition into drift. A value of 0
+	// (or an absent series) means every LB for that zone is in sync. Recomputed each
+	// reconcile from the NetworksSynced conditions, mirroring the loadBalancers state
+	// gauge; stale owners are removed when their last LB is deleted.
+	loadBalancerNetworksDrift = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "cf_edge_operator_loadbalancer_networks_drift",
+		Help: "Number of LoadBalancer CRs whose spec.networks diverges from Cloudflare, by zone CR (create-enforced; drift is surfaced, not auto-corrected).",
+	}, []string{"zone_cr"})
+
+	// loadBalancerPools counts LoadBalancerPool CRs by owning account CR and state.
+	// Pools are account-scoped, so the owner label is account_cr. Sum across states
+	// equals the total pools referencing that account.
+	loadBalancerPools = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "cf_edge_operator_loadbalancerpools",
+		Help: "Number of LoadBalancerPool CRs by account CR and state (ready, waiting, dryrun, error).",
+	}, []string{"account_cr", "state"})
+
+	// loadBalancerMonitors counts LoadBalancerMonitor CRs by owning account CR and
+	// state. Monitors are account-scoped leaf resources: they do not wait on another
+	// CR, but they can still enter the "waiting" state under managementPolicy=observe
+	// (WaitingForExternal), where the operator waits for the monitor to appear in
+	// Cloudflare instead of creating it. The state label set is kept uniform across
+	// all three load-balancing gauges for consistency.
+	loadBalancerMonitors = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "cf_edge_operator_loadbalancermonitors",
+		Help: "Number of LoadBalancerMonitor CRs by account CR and state (ready, waiting, dryrun, error).",
+	}, []string{"account_cr", "state"})
+
+	// ---- Pool health (opt-in runtime axis) --------------------------------
+	//
+	// The four gauges below are the CF-side health view of a pool, populated only
+	// when --enable-pool-health is set. They are an INDEPENDENT axis from the
+	// loadbalancerpools sync-state gauge above: sync tracks whether the operator
+	// has reconciled the CR to Cloudflare; these track what Cloudflare's health
+	// checks observe. Value semantics are threshold-free -- raw CF health booleans
+	// tallied by region so a consumer derives fully/partial/down in PromQL. Series
+	// appear only when Set (which only happens under the flag), so an operator
+	// without the flag surfaces no health series. See pool_health.go for the decode,
+	// tally, and stale-series cleanup.
+
+	// loadBalancerPoolHealth counts, per pool, how many of the regions Cloudflare
+	// health-checked are in each status (healthy, unhealthy, unknown). The sum
+	// across statuses equals the number of regions checked. Emitted for every
+	// polled pool -- including pools with spec.checkRegions unset (all-DC probing),
+	// whose region set is unbounded and therefore only summarized here, not labeled
+	// per region. This is the bounded baseline (3 series per pool) and encodes the
+	// unknown status (a region Cloudflare reports as indeterminate).
+	loadBalancerPoolHealth = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "cf_edge_operator_loadbalancerpool_health",
+		Help: "Number of Cloudflare-checked regions for a pool in each health status (healthy, unhealthy, unknown), by account CR and pool CR. Opt-in (--enable-pool-health).",
+	}, []string{"account_cr", "pool_cr", "status"})
+
+	// loadBalancerPoolHealthRegion reports a pool's per-region health status,
+	// emitted ONLY for pools with spec.checkRegions set (a CR-declared, bounded
+	// dimension of at most 13 regions). For each declared region exactly one status
+	// series holds 1 and the others 0, so the sum per region is always 1. A pool
+	// with checkRegions unset probes from every data center (an unbounded region
+	// set), so it gets no per-region series -- only the summarized
+	// loadBalancerPoolHealth above.
+	loadBalancerPoolHealthRegion = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "cf_edge_operator_loadbalancerpool_health_region",
+		Help: "Per-region health status of a pool (1 for the current status, 0 otherwise), by account CR, pool CR, region, and status. Emitted only for pools with spec.checkRegions set. Opt-in (--enable-pool-health).",
+	}, []string{"account_cr", "pool_cr", "region", "status"})
+
+	// loadBalancerPoolOriginHealth counts, per origin, how many of the regions
+	// Cloudflare health-checked report that origin in each status. The origin label
+	// is the origin ADDRESS as observed in the health response; two origins sharing
+	// an address collapse to one series (documented caveat). Emitted for every
+	// polled pool, the origin-level analog of loadBalancerPoolHealth.
+	loadBalancerPoolOriginHealth = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "cf_edge_operator_loadbalancerpool_origin_health",
+		Help: "Number of Cloudflare-checked regions reporting an origin in each health status (healthy, unhealthy, unknown), by account CR, pool CR, origin address, and status. Opt-in (--enable-pool-health).",
+	}, []string{"account_cr", "pool_cr", "origin", "status"})
+
+	// loadBalancerPoolOriginHealthRegion reports an origin's per-region health
+	// status, emitted ONLY for pools with spec.checkRegions set. For each
+	// (origin, declared region) exactly one status series holds 1 and the others 0.
+	// The origin label is the origin address (same same-address caveat as
+	// loadBalancerPoolOriginHealth).
+	loadBalancerPoolOriginHealthRegion = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "cf_edge_operator_loadbalancerpool_origin_health_region",
+		Help: "Per-region health status of an origin (1 for the current status, 0 otherwise), by account CR, pool CR, origin address, region, and status. Emitted only for pools with spec.checkRegions set. Opt-in (--enable-pool-health).",
+	}, []string{"account_cr", "pool_cr", "origin", "region", "status"})
 
 	// cfAPICallDuration observes Cloudflare API call latency by resource and operation.
 	// resource: "customhostname" or "zone"; also "account", "loadbalancer", "loadbalancerpool",
@@ -149,6 +262,15 @@ func init() {
 		hostnameStatusGauge,
 		zoneCustomHostnames,
 		zoneInitialized,
+		accountInitialized,
+		loadBalancers,
+		loadBalancerNetworksDrift,
+		loadBalancerPools,
+		loadBalancerMonitors,
+		loadBalancerPoolHealth,
+		loadBalancerPoolHealthRegion,
+		loadBalancerPoolOriginHealth,
+		loadBalancerPoolOriginHealthRegion,
 		cfAPICallDuration,
 		cfAPIErrorsByCode,
 		cfAPIRetriesTotal,
@@ -156,7 +278,30 @@ func init() {
 		driftBufferOverflowTotal,
 		driftDetectionErrorsTotal,
 	)
-	// Pre-initialize counters and histograms so they appear in /metrics from startup.
+	// NOTE: CustomHostname/Zone and LoadBalancer-family series are NOT pre-initialized
+	// here -- each family's label pre-seeding is gated behind its feature flag via
+	// PreInitCustomHostnameMetrics (--enable-customhostname) and
+	// PreInitLoadBalancerMetrics (--enable-loadbalancing), so an operator surfaces
+	// only the metric series for the features it enables. The owner-keyed gauges
+	// (customHostnames, zoneInitialized, accountInitialized, loadBalancers,
+	// loadBalancerNetworksDrift, loadBalancerPools, loadBalancerMonitors) are not
+	// pre-seeded at all -- their zone_cr / account_cr label values are dynamic, so
+	// they are populated at reconcile time by the controllers that own them. The
+	// pool-health gauges (loadBalancerPoolHealth and friends) and the operation
+	// "health" series on the shared api_* families are likewise never pre-seeded:
+	// they are opt-in (--enable-pool-health) with dynamic labels, so they surface
+	// only once a pool is actually polled, keeping the off path free of any series.
+}
+
+// PreInitCustomHostnameMetrics pre-initializes the CustomHostname and Zone metric
+// series so dashboards can plot from t=0 without a "no data" gap. Called from main
+// only when --enable-customhostname is set; the metric vectors themselves are
+// already registered in init(). Kept out of init() so an operator with custom
+// hostname management disabled (e.g. a pure load-balancing control cluster) never
+// surfaces these series. Zone series are pre-seeded here rather than under the
+// load-balancing gate: the Zone controller's only bulk Cloudflare interaction is
+// the custom hostname drift list, which is custom-hostname-specific.
+func PreInitCustomHostnameMetrics() {
 	for _, op := range []string{cfOpList, cfOpGet, cfOpCreate, cfOpUpdate, cfOpDelete} {
 		cfAPICallDuration.WithLabelValues(cfResourceCustomHostname, op)
 	}
@@ -169,27 +314,28 @@ func init() {
 		cfAPIRetriesTotal.WithLabelValues(cfResourceCustomHostname, op)
 	}
 	cfAPIRetriesTotal.WithLabelValues(cfResourceZone, cfOpGet)
-	// NOTE: LoadBalancer-family series are NOT pre-initialized here -- they are
-	// gated behind --enable-loadbalancer via PreInitLoadBalancerMetrics so that
-	// per-cluster deployments (load balancing disabled) expose the exact same
-	// metric series as before the feature existed.
 }
 
 // PreInitLoadBalancerMetrics pre-initializes the load-balancing metric series
 // (LoadBalancer / LoadBalancerPool / LoadBalancerMonitor / Account) so
 // dashboards can plot from t=0 without a "no data" gap. Called from main only
-// when --enable-loadbalancer is set; the metric vectors themselves are already
+// when --enable-loadbalancing is set; the metric vectors themselves are already
 // registered in init(). Kept out of init() so a per-cluster operator (load
 // balancing disabled) never surfaces these series.
 func PreInitLoadBalancerMetrics() {
+	// LoadBalancer / Pool / Monitor are located by a paginated list (find-by-name /
+	// find-by-hostname) wrapped in cfRetry and recorded as op=list, not a point get,
+	// so op=get is not pre-seeded for them (only Account does a point get, below). The
+	// find (list) and the single-call write ops (create/update/delete) retry through
+	// cfRetry, so their retry series are pre-seeded.
 	for _, res := range []string{cfResourceLoadBalancerMon, cfResourceLoadBalancerPool, cfResourceLoadBalancer} {
-		for _, op := range []string{cfOpList, cfOpGet, cfOpCreate, cfOpUpdate, cfOpDelete} {
+		for _, op := range []string{cfOpList, cfOpCreate, cfOpUpdate, cfOpDelete} {
 			cfAPICallDuration.WithLabelValues(res, op)
 		}
 		for _, op := range []string{cfOpAdopt, cfOpCreate, cfOpRecreate, cfOpUpdate, cfOpDelete} {
 			operationsTotal.WithLabelValues(res, op)
 		}
-		for _, op := range []string{cfOpGet, cfOpCreate, cfOpUpdate, cfOpDelete} {
+		for _, op := range []string{cfOpList, cfOpCreate, cfOpUpdate, cfOpDelete} {
 			cfAPIRetriesTotal.WithLabelValues(res, op)
 		}
 	}
@@ -353,4 +499,124 @@ func cleanExpiredSSLProvisioning() {
 			delete(sslProvisioningCache, key)
 		}
 	}
+}
+
+// ---- Load-balancing aggregate state gauges -----------------------------
+
+// Load-balancing CR state label values for the loadbalancers /
+// loadbalancerpools / loadbalancermonitors gauges. Mutually exclusive; the sum
+// across the states equals the total CRs for that owner. Derived from the Ready
+// condition by lbReadyState.
+const (
+	lbStateReady   = "ready"   // Ready=True (reason Reconciled): synchronized with Cloudflare
+	lbStatePartial = "partial" // Ready=True (reason Partial): LB-only, serving with >=1 pool ref unresolved
+	lbStateWaiting = "waiting" // Ready=False, soft wait on a dependency (no error counted)
+	lbStateDryRun  = "dryrun"  // Ready=False, writes suppressed by --dry-run
+	lbStateError   = "error"   // Ready=False, a reconcile failure (a setError reason)
+)
+
+// lbStateLabels is the state set published for the pool and monitor gauges. Every
+// state is always written (0 or positive) so a state that empties reads 0 rather
+// than leaving a stale series, and alerts always have a series to match. It omits
+// "partial", which only a LoadBalancer can reach: pools and monitors never set
+// reason Partial, so their gauges must never emit a partial series (always-0),
+// mirroring how each gauge seeds only the states its resource can actually enter.
+var lbStateLabels = []string{lbStateReady, lbStateWaiting, lbStateDryRun, lbStateError}
+
+// lbStateLabelsLB is the state set published for the loadbalancers gauge -- the
+// pool/monitor set plus the LB-only "partial" state.
+var lbStateLabelsLB = []string{lbStateReady, lbStatePartial, lbStateWaiting, lbStateDryRun, lbStateError}
+
+// lbStateGauge wraps a load-balancing aggregate state gauge with the bookkeeping
+// to rebuild it in place from the full CR set on every reconcile, without
+// leaving stale series.
+//
+// Load balancing has no Zone-style coordinator: each LoadBalancer / Pool /
+// Monitor controller reconciles a single CR and self-requeues (RequeueInterval).
+// So each controller recomputes its own owner -> state counts from its full
+// (cache-backed) CR list on every reconcile and calls set(), mirroring how the
+// Zone controller recomputes customHostnames each drift cycle.
+//
+// set() publishes in place -- it Sets each state for every present owner rather
+// than Reset()ing the vector, so a concurrent /metrics scrape never observes a
+// half-rebuilt gauge (matching customHostnames, which also Sets in place). An
+// owner whose last CR was deleted is dropped via DeletePartialMatch; this is the
+// load-balancing analog of the Zone controller's customHostnames.DeletePartialMatch
+// on Zone deletion. There is no owner-deletion event to hook here (the zone_cr /
+// account_cr owner is not a CR this controller watches), so vanished owners are
+// found by diffing against the previously published owner set.
+//
+// Each gauge has exactly one writer controller whose reconciles are serialized
+// (MaxConcurrentReconciles defaults to 1), so the only concurrent access is the
+// scrape goroutine, which never touches prevOwners. The mutex guards prevOwners
+// for defense in depth and documents the shared state.
+type lbStateGauge struct {
+	gauge       *prometheus.GaugeVec
+	ownerLabel  string
+	stateLabels []string
+	mu          sync.Mutex
+	prevOwners  map[string]bool
+}
+
+var (
+	lbGaugeLoadBalancer = &lbStateGauge{gauge: loadBalancers, ownerLabel: "zone_cr", stateLabels: lbStateLabelsLB, prevOwners: map[string]bool{}}
+	lbGaugePool         = &lbStateGauge{gauge: loadBalancerPools, ownerLabel: "account_cr", stateLabels: lbStateLabels, prevOwners: map[string]bool{}}
+	lbGaugeMonitor      = &lbStateGauge{gauge: loadBalancerMonitors, ownerLabel: "account_cr", stateLabels: lbStateLabels, prevOwners: map[string]bool{}}
+)
+
+// set publishes freshly computed owner -> state -> count values. Every present
+// owner gets each of the gauge's state series seeded (0 or positive); owners
+// published on a prior call but absent now have their series removed. counts holds
+// only owners that currently have at least one CR.
+func (g *lbStateGauge) set(counts map[string]map[string]int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for owner, states := range counts {
+		for _, s := range g.stateLabels {
+			g.gauge.WithLabelValues(owner, s).Set(float64(states[s]))
+		}
+	}
+	for owner := range g.prevOwners {
+		if _, ok := counts[owner]; !ok {
+			g.gauge.DeletePartialMatch(prometheus.Labels{g.ownerLabel: owner})
+		}
+	}
+	next := make(map[string]bool, len(counts))
+	for owner := range counts {
+		next[owner] = true
+	}
+	g.prevOwners = next
+}
+
+// lbNetworksDriftGauge tracks the owner set previously published to
+// loadBalancerNetworksDrift so a zone whose last LoadBalancer was deleted has its
+// series removed, mirroring lbStateGauge's stale-owner cleanup. This gauge is
+// written only by the LoadBalancer controller's (serialized) recompute; the mutex
+// guards prevOwners against the concurrent scrape goroutine.
+var lbNetworksDriftGauge = struct {
+	mu         sync.Mutex
+	prevOwners map[string]bool
+}{prevOwners: map[string]bool{}}
+
+// setNetworksDriftGauge publishes per-zone counts of networks-drifted LoadBalancer
+// CRs and removes series for zones no longer present. counts must include every
+// zone that currently has at least one LB (value 0 when none are drifted) so a
+// synced zone reads 0 rather than leaving a stale series. It is the networks-drift
+// analog of lbStateGauge.set.
+func setNetworksDriftGauge(counts map[string]int) {
+	lbNetworksDriftGauge.mu.Lock()
+	defer lbNetworksDriftGauge.mu.Unlock()
+	for owner, n := range counts {
+		loadBalancerNetworksDrift.WithLabelValues(owner).Set(float64(n))
+	}
+	for owner := range lbNetworksDriftGauge.prevOwners {
+		if _, ok := counts[owner]; !ok {
+			loadBalancerNetworksDrift.DeleteLabelValues(owner)
+		}
+	}
+	next := make(map[string]bool, len(counts))
+	for owner := range counts {
+		next[owner] = true
+	}
+	lbNetworksDriftGauge.prevOwners = next
 }

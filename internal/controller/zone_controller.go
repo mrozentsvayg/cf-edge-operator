@@ -53,8 +53,17 @@ import (
 type ZoneReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// EnableCustomHostname gates the custom-hostname-specific work in this controller.
+	// The Zone controller always validates credentials and resolves the zone ID (needed
+	// by both custom hostname management and load balancing), but it performs the custom
+	// hostname drift bulk-list -- and enqueues drifted CustomHostname CRs -- only when
+	// custom hostname management is enabled. A pure load-balancing control cluster runs
+	// the Zone controller with this false, so it never lists custom hostnames from
+	// Cloudflare. Set from --enable-customhostname.
+	EnableCustomHostname bool
 	// CustomHostnameEvents receives CRs that need reconciliation due to drift detected
 	// during the bulk Cloudflare list. The CustomHostname controller watches this channel.
+	// Nil when EnableCustomHostname is false (no custom hostname drift is performed).
 	CustomHostnameEvents chan<- event.GenericEvent
 	// DryRun mirrors the operator-wide dry-run flag for logging purposes.
 	DryRun bool
@@ -138,18 +147,24 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		cf = r.buildCFClient(apiToken)
 	}
 
-	// Per-resource drift detection. Each resource type is in its own file
-	// (zone_*_drift.go) and can fail independently without affecting others.
+	// Custom hostname drift detection (custom-hostname-specific). Skipped when custom
+	// hostname management is disabled: the zone controller still runs as shared
+	// credential/zone-identity substrate for load balancing, but a pure load-balancing
+	// cluster must not list custom hostnames from Cloudflare. Each resource type lives
+	// in its own file (zone_*_drift.go) and can fail independently.
 	// NOTE: Error is logged and counted (driftDetectionErrorsTotal) inside
 	// detectCustomHostnameDrift -- not returned. The zone requeues on DriftInterval
 	// regardless, so controller-runtime error tracking/backoff is unnecessary.
-	if err := r.detectCustomHostnameDrift(ctx, cf, &zone); err != nil {
-		log.V(1).Info("custom hostname - drift detection failed", "zoneID", zone.Spec.ID, "reason", err)
-	}
+	if r.EnableCustomHostname {
+		if err := r.detectCustomHostnameDrift(ctx, cf, &zone); err != nil {
+			log.V(1).Info("custom hostname - drift detection failed", "zoneID", zone.Spec.ID, "reason", err)
+		}
 
-	// Clean up expired SSL provisioning gauge entries. Runs every drift cycle (~30s)
-	// to bound the cardinality of the per-hostname gauge.
-	cleanExpiredSSLProvisioning()
+		// Clean up expired SSL provisioning gauge entries. Runs every drift cycle (~30s)
+		// to bound the cardinality of the per-hostname gauge. Only custom hostname
+		// reconciles populate this cache, so it is gated with the drift list.
+		cleanExpiredSSLProvisioning()
+	}
 
 	return ctrl.Result{RequeueAfter: r.DriftInterval}, nil
 }
@@ -256,13 +271,19 @@ const zoneRefField = ".spec.zoneRef.name"
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ZoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(),
-		&saasv1beta1.CustomHostname{}, zoneRefField,
-		func(o client.Object) []string {
-			ch := o.(*saasv1beta1.CustomHostname)
-			return []string{ch.Spec.ZoneRef.Name}
-		}); err != nil {
-		return fmt.Errorf("failed to create zoneRef index: %w", err)
+	// The zoneRef index -- and the CustomHostname informer it implies -- is only
+	// needed for custom hostname drift detection. When custom hostname management is
+	// disabled the zone controller runs purely as load-balancing substrate, so it
+	// neither indexes nor watches CustomHostname objects.
+	if r.EnableCustomHostname {
+		if err := mgr.GetFieldIndexer().IndexField(context.Background(),
+			&saasv1beta1.CustomHostname{}, zoneRefField,
+			func(o client.Object) []string {
+				ch := o.(*saasv1beta1.CustomHostname)
+				return []string{ch.Spec.ZoneRef.Name}
+			}); err != nil {
+			return fmt.Errorf("failed to create zoneRef index: %w", err)
+		}
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&domainsv1beta1.Zone{}).

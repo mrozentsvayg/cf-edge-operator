@@ -30,6 +30,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
+    - jsonPath: .status.unresolvedPoolRefs.length()
+      name: Unresolved
+      type: integer
     - jsonPath: .status.createCount
       name: Creates
       type: integer
@@ -73,6 +76,19 @@ spec:
               the regional Pool CRs and this LoadBalancer are managed together by one
               (control-cluster) operator, so every ref is a local CR.
             properties:
+              adaptiveRouting:
+                description: |-
+                  AdaptiveRouting configures zero-downtime failover across pools. Optional:
+                  unset leaves Cloudflare's setting intact; set enforces it.
+                properties:
+                  failoverAcrossPools:
+                    description: |-
+                      FailoverAcrossPools extends zero-downtime failover to healthy origins in
+                      alternate pools when no healthy origin exists in the same pool, following the
+                      traffic/origin steering order. Cloudflare defaults this to false (failover
+                      stays within a pool). Leave unset to keep Cloudflare's value.
+                    type: boolean
+                type: object
               countryPools:
                 additionalProperties:
                   items:
@@ -138,6 +154,17 @@ spec:
                   the CF dashboard.
                 maxLength: 1024
                 type: string
+              enabled:
+                default: true
+                description: |-
+                  Enabled controls whether the load balancer serves traffic. A disabled LB
+                  keeps its configuration but stops resolving to any pool. Defaults to true;
+                  the operator always manages this flag (an out-of-band disable is corrected
+                  back to the CR's value), unifying the enabled representation across
+                  LoadBalancer, LoadBalancerPool, and pool origins.
+                  NOTE: Cloudflare's create API does not accept enabled, so the controller
+                  applies it via a follow-up edit (create-then-edit).
+                type: boolean
               fallbackPoolRef:
                 description: |-
                   FallbackPoolRef is the pool CF sends traffic to when EVERY other pool
@@ -166,6 +193,35 @@ spec:
                 x-kubernetes-validations:
                 - message: hostname is immutable
                   rule: self == oldSelf
+              locationStrategy:
+                description: |-
+                  LocationStrategy controls location-based steering for non-proxied requests.
+                  Optional: unset leaves Cloudflare's setting intact; set enforces it.
+                properties:
+                  mode:
+                    description: |-
+                      Mode is the authoritative location used when ECS is not preferred, absent,
+                      or its GeoIP lookup fails.
+                        - "pop": use the Cloudflare PoP location.
+                        - "resolver_ip": use the DNS resolver GeoIP location (falling back to the PoP).
+                    enum:
+                    - pop
+                    - resolver_ip
+                    type: string
+                  preferECS:
+                    description: |-
+                      PreferECS controls whether the EDNS Client Subnet (ECS) GeoIP should be
+                      preferred as the authoritative location.
+                        - "always" / "never": always or never prefer ECS.
+                        - "proximity": prefer ECS only when SteeringPolicy=proximity.
+                        - "geo": prefer ECS only when SteeringPolicy=geo.
+                    enum:
+                    - always
+                    - never
+                    - proximity
+                    - geo
+                    type: string
+                type: object
               managementPolicy:
                 description: |-
                   ManagementPolicy overrides the operator-wide --management-policy for
@@ -175,6 +231,14 @@ spec:
                 - create
                 - observe
                 type: string
+              networks:
+                description: |-
+                  Networks is the list of network identifiers (e.g. private-network scopes)
+                  the load balancer is available on. Optional: unset leaves Cloudflare's
+                  setting intact.
+                items:
+                  type: string
+                type: array
               popPools:
                 additionalProperties:
                   items:
@@ -208,6 +272,59 @@ spec:
                   Load-balancer features (health checks, most steering policies)
                   require proxied=true.
                 type: boolean
+              randomSteering:
+                description: |-
+                  RandomSteering configures pool weights for weighted steering policies
+                  (SteeringPolicy=random / least_outstanding_requests / least_connections).
+                  Optional: unset leaves Cloudflare's setting intact; set enforces it.
+                properties:
+                  defaultWeight:
+                    description: |-
+                      DefaultWeight is the weight for pools not named in PoolWeights, relative to
+                      the other pools. Expressed as a string in the range 0.0-1.0 to preserve
+                      fractional precision (Cloudflare accepts a float).
+                    pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
+                    type: string
+                  poolWeights:
+                    description: |-
+                      PoolWeights assigns per-pool weights, each keyed by a namespace-aware pool
+                      reference (resolved to a CF pool ID from the referenced Pool CR's Status.ID).
+                      Modeled as a list of {poolRef, weight} rather than a raw map so the resolver
+                      can treat these refs like the other pool-ref slots (an unresolved weighted
+                      pool degrades the LB, same as a default/geo ref).
+                    items:
+                      description: LoadBalancerPoolWeight assigns a random-steering
+                        weight to a referenced pool.
+                      properties:
+                        poolRef:
+                          description: PoolRef references the LoadBalancerPool CR
+                            this weight applies to.
+                          properties:
+                            name:
+                              description: Name of the LoadBalancerPool CR (which
+                                is also the CF pool name).
+                              minLength: 1
+                              type: string
+                            namespace:
+                              description: |-
+                                Namespace of the LoadBalancerPool CR. Defaults to this LoadBalancer's
+                                namespace if omitted.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        weight:
+                          description: |-
+                            Weight is the pool's weight relative to other pools, expressed as a string
+                            in the range 0.0-1.0 to preserve fractional precision.
+                          pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
+                          type: string
+                      required:
+                      - poolRef
+                      - weight
+                      type: object
+                    type: array
+                type: object
               regionPools:
                 additionalProperties:
                   items:
@@ -249,6 +366,80 @@ spec:
                 - ip_cookie
                 - header
                 type: string
+              sessionAffinityAttributes:
+                description: |-
+                  SessionAffinityAttributes tunes session affinity behavior. Only meaningful
+                  when SessionAffinity is not "none" (enforced by a CEL rule). When
+                  SessionAffinity="header", Headers must be non-empty.
+                properties:
+                  drainDuration:
+                    description: |-
+                      DrainDuration is the drain duration in seconds, applied when session
+                      affinity is enabled. 0 leaves Cloudflare's default.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  headers:
+                    description: |-
+                      Headers is the list of HTTP header names session affinity is based on when
+                      SessionAffinity="header". At least one header name is required in that mode
+                      (enforced by a CEL rule on the spec). To pin specific cookies, use an item
+                      of the form "cookie:<name-1>,<name-2>".
+                    items:
+                      type: string
+                    type: array
+                  requireAllHeaders:
+                    description: |-
+                      RequireAllHeaders, when SessionAffinity="header", controls how the Headers
+                      list is matched: true requires all listed headers to be present to create a
+                      session; false requires at least one. Leave unset to keep Cloudflare's value.
+                    type: boolean
+                  samesite:
+                    description: |-
+                      Samesite configures the SameSite attribute on the affinity cookie. "Auto"
+                      resolves to "Lax" or "None" depending on whether Always Use HTTPS is enabled;
+                      when using "None", Secure must not be "Never".
+                    enum:
+                    - Auto
+                    - Lax
+                    - None
+                    - Strict
+                    type: string
+                  secure:
+                    description: |-
+                      Secure configures the Secure attribute on the affinity cookie. "Always" sets
+                      it, "Never" omits it, and "Auto" sets it based on whether Always Use HTTPS is
+                      enabled.
+                    enum:
+                    - Auto
+                    - Always
+                    - Never
+                    type: string
+                  zeroDowntimeFailover:
+                    description: |-
+                      ZeroDowntimeFailover configures failover between origins within a pool while
+                      session affinity is enabled.
+                        - "none": no failover for pinned sessions (default).
+                        - "temporary": send traffic elsewhere until the pinned origin is healthy.
+                        - "sticky": update the affinity cookie and pin to the new origin.
+                    enum:
+                    - none
+                    - temporary
+                    - sticky
+                    type: string
+                type: object
+              sessionAffinityTtl:
+                description: |-
+                  SessionAffinityTtl is the time, in seconds, until a client's session
+                  expires after creation. Only meaningful when SessionAffinity is not "none"
+                  (enforced by a CEL rule). The accepted range is policy-dependent: Cloudflare
+                  requires 1800-604800 for cookie / ip_cookie affinity and 30-3600 for header
+                  affinity, so the schema envelope is intentionally broad -- pick a value valid
+                  for the chosen SessionAffinity.
+                format: int32
+                maximum: 604800
+                minimum: 30
+                type: integer
               steeringPolicy:
                 default: dynamic_latency
                 description: |-
@@ -302,6 +493,20 @@ spec:
             - hostname
             - zoneRef
             type: object
+            x-kubernetes-validations:
+            - message: sessionAffinity=header requires sessionAffinityAttributes.headers
+                to be non-empty
+              rule: '!has(self.sessionAffinity) || self.sessionAffinity != ''header''
+                || (has(self.sessionAffinityAttributes) && has(self.sessionAffinityAttributes.headers)
+                && size(self.sessionAffinityAttributes.headers) > 0)'
+            - message: sessionAffinityTtl is only valid when sessionAffinity is set
+                and not 'none'
+              rule: '!has(self.sessionAffinityTtl) || (has(self.sessionAffinity) &&
+                self.sessionAffinity != ''none'')'
+            - message: sessionAffinityAttributes is only valid when sessionAffinity
+                is set and not 'none'
+              rule: '!has(self.sessionAffinityAttributes) || (has(self.sessionAffinity)
+                && self.sessionAffinity != ''none'')'
           status:
             description: LoadBalancerStatus is the observed state of a LoadBalancer.
             properties:
@@ -391,6 +596,16 @@ spec:
               resolvedFallbackPoolID:
                 description: ResolvedFallbackPoolID is the CF pool ID for spec.fallbackPoolRef.
                 type: string
+              unresolvedPoolRefs:
+                description: |-
+                  UnresolvedPoolRefs lists the referenced pool names (from any ref slot --
+                  default, fallback, geo, or random-steering weights) that had no ready Pool
+                  CR on the last reconcile. A non-empty list means the LB is serving in a
+                  degraded/partial state (some pools dropped); it converges as those pools
+                  become ready. Surfaced for observability -- see the Unresolved printcolumn.
+                items:
+                  type: string
+                type: array
             type: object
         required:
         - spec

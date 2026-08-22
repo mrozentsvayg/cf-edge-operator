@@ -85,6 +85,31 @@ spec:
                 required:
                 - name
                 type: object
+              checkRegions:
+                description: |-
+                  CheckRegions restricts which Cloudflare regions health-check this pool's
+                  origins. Empty means Cloudflare probes from all regions (the default). Region
+                  codes are CF's macro-regions; ALL_REGIONS is Enterprise-only and, if used,
+                  must be the sole entry (enforced by a CEL rule on the spec). Applied via a
+                  follow-up edit (Cloudflare rejects check_regions on create).
+                items:
+                  enum:
+                  - WNAM
+                  - ENAM
+                  - WEU
+                  - EEU
+                  - NSAM
+                  - SSAM
+                  - OC
+                  - ME
+                  - NAF
+                  - SAF
+                  - SAS
+                  - SEAS
+                  - NEAS
+                  - ALL_REGIONS
+                  type: string
+                type: array
               deletePolicy:
                 description: |-
                   DeletePolicy overrides the operator-wide --delete-policy for this CR.
@@ -116,6 +141,44 @@ spec:
                   float in its API.
                 pattern: ^-?([0-8]?[0-9](\.[0-9]+)?|90(\.0+)?)$
                 type: string
+              loadShedding:
+                description: |-
+                  LoadShedding configures how the pool sheds traffic. Optional pointer: unset
+                  means the operator does not manage load shedding (an incident-time manual
+                  shed set out-of-band survives). When set, each subfield is managed only when
+                  specified (leave-alone per subfield): a subfield left empty keeps Cloudflare's
+                  current value rather than being reset.
+                properties:
+                  defaultPercent:
+                    description: |-
+                      DefaultPercent is the percent of new-session and non-affinity traffic to
+                      shed, per DefaultPolicy. Expressed as a string in the range 0.0-100.0 to
+                      preserve fractional precision (Cloudflare accepts a float).
+                    pattern: ^(100(\.0+)?|[0-9]{1,2}(\.[0-9]+)?)$
+                    type: string
+                  defaultPolicy:
+                    description: |-
+                      DefaultPolicy is the policy used when shedding new-session traffic.
+                        - "random": shed a random percent of requests.
+                        - "hash": hash CF-Connecting-IP and shed all requests from a percent of IPs.
+                    enum:
+                    - random
+                    - hash
+                    type: string
+                  sessionPercent:
+                    description: |-
+                      SessionPercent is the percent of existing sessions to shed, per
+                      SessionPolicy. Expressed as a string in the range 0.0-100.0.
+                    pattern: ^(100(\.0+)?|[0-9]{1,2}(\.[0-9]+)?)$
+                    type: string
+                  sessionPolicy:
+                    description: |-
+                      SessionPolicy is the policy used when shedding existing sessions. Only "hash"
+                      is supported (to avoid exponential decay).
+                    enum:
+                    - hash
+                    type: string
+                type: object
               longitude:
                 description: |-
                   Longitude sets the pool's geographic longitude for latitude/longitude-based
@@ -149,6 +212,11 @@ spec:
                   to a monitor CR, reads its Status.ID, and passes the CF monitor ID to
                   CF. If the monitor CR isn't ready yet (Status.ID empty), the pool
                   reconcile requeues.
+
+                  future LoadBalancerMonitorGroup CRD. When that lands, a pool will reference
+                  either a monitor or a monitor group via a monitorGroupRef field, constrained
+                  to at-most-one of {monitorRef, monitorGroupRef}. A monitorless pool stays
+                  valid today (no monitor is attached).
                 properties:
                   name:
                     description: Name of the LoadBalancerMonitor CR.
@@ -168,6 +236,26 @@ spec:
                   their centralized notifications, but still functional.
                 maxLength: 1024
                 type: string
+              originSteering:
+                description: |-
+                  OriginSteering controls how origins are selected for new sessions and
+                  traffic without session affinity. Optional: unset leaves Cloudflare's
+                  setting intact; set enforces it.
+                properties:
+                  policy:
+                    description: |-
+                      Policy is the origin-steering policy.
+                        - "random": select an origin randomly.
+                        - "hash": select an origin by hashing the CF-Connecting-IP address.
+                        - "least_outstanding_requests": weight by outstanding requests.
+                        - "least_connections": weight by open connections.
+                    enum:
+                    - random
+                    - hash
+                    - least_outstanding_requests
+                    - least_connections
+                    type: string
+                type: object
               origins:
                 description: |-
                   Origins is the set of backend endpoints this pool balances traffic
@@ -181,7 +269,8 @@ spec:
                       description: |-
                         Address is the IP address or publicly-resolvable hostname of the
                         origin. Hostnames MUST resolve directly to the origin -- a
-                        Cloudflare-proxied CNAME won't work.
+                        Cloudflare-proxied CNAME won't work. To use an internal/reserved address,
+                        VirtualNetworkID must also be set.
                       minLength: 1
                       type: string
                     enabled:
@@ -215,6 +304,22 @@ spec:
                       maxLength: 255
                       minLength: 1
                       type: string
+                    port:
+                      description: |-
+                        Port is the upstream port for connections to this origin. 0 (the default)
+                        means the protocol's default port is used. Modeled so the operator no longer
+                        clobbers an out-of-band port on every update.
+                      format: int32
+                      maximum: 65535
+                      minimum: 0
+                      type: integer
+                    virtualNetworkID:
+                      description: |-
+                        VirtualNetworkID is the virtual network subnet ID the origin belongs to.
+                        Required when Address is an internal/reserved address; the virtual network
+                        must belong to the same Cloudflare account. Modeled so the operator no longer
+                        clobbers an out-of-band value on every update.
+                      type: string
                     weight:
                       description: |-
                         Weight is the origin's weight for the pool's origin_steering policy.
@@ -237,6 +342,9 @@ spec:
             x-kubernetes-validations:
             - message: latitude and longitude must be set together (both or neither)
               rule: '!has(self.latitude) == !has(self.longitude)'
+            - message: 'checkRegions: ALL_REGIONS must be the only entry when used'
+              rule: '!has(self.checkRegions) || size(self.checkRegions) <= 1 || !(''ALL_REGIONS''
+                in self.checkRegions)'
           status:
             description: LoadBalancerPoolStatus is the observed state of a LoadBalancerPool.
             properties:

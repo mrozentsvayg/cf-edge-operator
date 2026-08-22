@@ -215,6 +215,146 @@ If the SSL status is `pending_issuance` or `pending_deployment`, DCV has passed 
 
 ---
 
+## CfEdgeOperatorAccountNotInitialized
+
+**Severity:** critical
+
+**Meaning:** An Account CR has not been initialized for 10 minutes. The one-time credential validation against the Cloudflare account (`accounts.Get`) has not succeeded, so no LoadBalancerPool or LoadBalancerMonitor referencing this Account can reconcile. This only fires on fresh Accounts or after `credentialsRef` changes -- the `account_initialized` metric is sticky, so a transient CF failure after a successful validation does not clear it.
+
+> This alert renders only when the load-balancing control-plane role is enabled (`features.loadBalancing.enabled=true`).
+
+**Investigate:**
+
+```bash
+# Check Account CR status conditions
+kubectl get accounts -n <operator-namespace>
+kubectl describe account <account_cr> -n <operator-namespace>
+
+# Check that the referenced secret exists and has the right key
+kubectl get secret <credentialsRef.name> -n <operator-namespace>
+
+# Operator logs for the account initialization errors
+kubectl logs -n <operator-namespace> -l app.kubernetes.io/name=cf-edge-operator \
+  | grep -E "(API token fetch failed|initialization failed|account)"
+```
+
+**Common causes:**
+
+| Log message | Cause | Resolution |
+|-------------|-------|------------|
+| `account - API token fetch failed` | Secret missing, wrong name, or key absent | Verify `spec.credentialsRef.name` and `spec.credentialsRef.key` match the actual secret |
+| `account - initialization failed` | Invalid API token, wrong account ID, or CF API degradation | Verify `spec.id` matches the account in the CF dashboard; check the token has account-scoped Load Balancing permissions |
+
+**Resolve:**
+
+Fix the secret name, account ID, or API token. The Account reconciler retries with backoff (capped at 30s); `account_initialized` is set to 1 on the first successful `accounts.Get` and stays set.
+
+---
+
+## CfEdgeOperatorLoadBalancersError
+
+**Severity:** warning
+
+**Meaning:** One or more LoadBalancer, LoadBalancerPool, or LoadBalancerMonitor CRs have consecutive reconcile failures (`status.consecutiveErrors > 0`, `Ready=False`). The operator retries with exponential backoff; this alert fires when the condition persists for 15 minutes. The alert's `__name__` label (`cf_edge_operator_loadbalancers` / `loadbalancerpools` / `loadbalancermonitors`) identifies which kind is failing.
+
+> This alert renders only when the load-balancing control-plane role is enabled (`features.loadBalancing.enabled=true`).
+
+**Investigate:**
+
+```bash
+# List LoadBalancer / Pool / Monitor CRs with reconcile failures
+for kind in loadbalancers loadbalancerpools loadbalancermonitors; do
+  kubectl get "$kind" -A -o json | \
+    jq -r --arg k "$kind" '.items[] | select((.status.consecutiveErrors // 0) > 0) |
+      [$k, .metadata.namespace, .metadata.name, .status.consecutiveErrors,
+       (.status.conditions[]? | select(.type=="Ready") | .message)] | @tsv'
+done
+
+# Inspect a specific CR
+kubectl describe loadbalancer <name> -n <namespace>
+
+# Operator logs around the failure
+kubectl logs -n <operator-namespace> -l app.kubernetes.io/name=cf-edge-operator \
+  | grep -E "(ERROR|loadbalancer)"
+```
+
+**Common causes:**
+
+| Symptom | Cause | Resolution |
+|---------|-------|------------|
+| `403 Forbidden` from Cloudflare API | Token revoked or lacks Load Balancing permissions | Rotate the token in the Zone/Account secret; it needs the account-scoped Load Balancing and zone Load Balancer permissions |
+| `429 Too Many Requests` | CF API rate limit | Transient; operator backs off automatically. Check for unusual reconcile volume. |
+| `500` / `zone not found` | CF API service degradation | Check https://www.cloudflarestatus.com; operator recovers when CF is healthy. |
+| Kubernetes API errors | RBAC or network issue | Check operator RBAC and cluster network connectivity. |
+
+**Resolve:**
+
+Fix the underlying issue (token, permissions, RBAC, network). `consecutiveErrors` resets to 0 on the next successful reconcile.
+
+---
+
+## CfEdgeOperatorLoadBalancersWaiting
+
+**Severity:** warning
+
+**Meaning:** One or more LoadBalancer, LoadBalancerPool, or LoadBalancerMonitor CRs have been `Ready=False` in the `waiting` state for 30 minutes. Waiting folds two cases, distinguished by the `Ready` condition reason:
+
+- A **soft wait on an unresolved dependency** -- a dangling or misconfigured `monitorRef` or `fallbackPoolRef` whose referenced CR is missing or has not yet provisioned in Cloudflare (`WaitingForMonitor`, `WaitingForFallbackPool`).
+- **Observe mode** (`managementPolicy=observe`), where the operator waits for the resource to appear in Cloudflare instead of creating it (`WaitingForExternal`).
+
+> This alert renders only when the load-balancing control-plane role is enabled (`features.loadBalancing.enabled=true`).
+
+**Investigate:**
+
+```bash
+# List waiting CRs and their Ready reason across all three kinds
+for kind in loadbalancers loadbalancerpools loadbalancermonitors; do
+  kubectl get "$kind" -A -o json | \
+    jq -r --arg k "$kind" '.items[] |
+      (.status.conditions[]? | select(.type=="Ready" and .status=="False")) as $c |
+      [$k, .metadata.namespace, .metadata.name, $c.reason, $c.message] | @tsv'
+done
+
+# Inspect a specific CR
+kubectl describe loadbalancer <name> -n <namespace>
+```
+
+**Resolve:**
+
+- **`WaitingForMonitor` / `WaitingForFallbackPool`:** ensure the referenced Pool/Monitor CR exists in the expected namespace and is `Ready=True` (it must have a `status.id`). A LoadBalancer needs a resolvable `fallbackPoolRef` plus at least one resolvable default pool before CF will accept the config.
+- **`WaitingForExternal`:** the CR is in observe mode; the operator will not create the resource. Confirm the expected LB/pool/monitor already exists in Cloudflare, or switch `managementPolicy` off `observe` to have the operator create it.
+
+The state clears automatically once the dependency resolves (a cross-object watch re-drives the dependent on the referenced CR's `status.id`).
+
+---
+
+## CfEdgeOperatorLoadBalancersPartial
+
+**Severity:** info
+
+**Meaning:** One or more LoadBalancer CRs have been serving in a `partial` (degraded) state for 1 hour: at least one referenced pool is unresolved (a missing or not-yet-ready Pool CR), so the load balancer serves with a reduced pool set. The LB is `Ready=True` with `reason=Partial` -- it IS serving, so this is informational, not a paging condition. Unresolved refs come from a `defaultPoolRefs`, geo-map, or `randomSteering` weight slot (an unresolved `fallbackPoolRef` instead makes the LB wait -- `CfEdgeOperatorLoadBalancersWaiting` -- rather than serve partially).
+
+> This alert renders only when the load-balancing control-plane role is enabled (`features.loadBalancing.enabled=true`).
+
+**Investigate:**
+
+```bash
+# List partial LoadBalancers and which pool refs are unresolved
+kubectl get loadbalancers -A -o json | \
+  jq -r '.items[] | select((.status.unresolvedPoolRefs // []) | length > 0) |
+    [.metadata.namespace, .metadata.name,
+     (.status.unresolvedPoolRefs | join(","))] | @tsv'
+
+# The Unresolved printcolumn shows the count at a glance
+kubectl get loadbalancers -A
+```
+
+**Resolve:**
+
+For each name in `status.unresolvedPoolRefs`, ensure the referenced LoadBalancerPool CR exists in the expected namespace and is `Ready=True` (it must have a `status.id`). The LB converges to `ready` and drops the entries from `unresolvedPoolRefs` as those pools become ready -- no change to the LoadBalancer CR is needed.
+
+---
+
 ## General Diagnostic Commands
 
 ```bash

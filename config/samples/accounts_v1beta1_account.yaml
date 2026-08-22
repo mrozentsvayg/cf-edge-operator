@@ -1,4 +1,4 @@
-apiVersion: loadbalancing.cf-edge.io/v1beta1
+apiVersion: accounts.cf-edge.io/v1beta1
 kind: Account
 metadata:
   # Referenced by account-scoped resources (LoadBalancerPool, LoadBalancerMonitor)

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -39,7 +40,7 @@ import (
 	"github.com/cloudflare/cloudflare-go/v6/accounts"
 	"github.com/cloudflare/cloudflare-go/v6/option"
 
-	lbv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/loadbalancing/v1beta1"
+	accountsv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/accounts/v1beta1"
 )
 
 // AccountReconciler validates an Account: it confirms the referenced credentials
@@ -62,22 +63,41 @@ type AccountReconciler struct {
 	RequeueInterval time.Duration
 }
 
-// +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=accounts,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=accounts/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=accounts.cf-edge.io,resources=accounts,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=accounts.cf-edge.io,resources=accounts/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 func (r *AccountReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	var account lbv1beta1.Account
+	var account accountsv1beta1.Account
 	if err := r.Get(ctx, req.NamespacedName, &account); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			// Account deleted -- remove the stale metric series.
+			accountInitialized.DeleteLabelValues(req.Name)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Ensure the metric series exists so the CfEdgeOperatorAccountNotInitialized
+	// alert (expr: == 0) can match before the first validation completes. Mirrors
+	// the Zone controller's zoneInitialized handling; setInitialized keeps it
+	// current thereafter.
+	if cond := apimeta.FindStatusCondition(account.Status.Conditions, conditionInitialized); cond != nil && cond.Status == metav1.ConditionTrue {
+		accountInitialized.WithLabelValues(account.Name).Set(1)
+	} else {
+		accountInitialized.WithLabelValues(account.Name).Set(0)
 	}
 
 	cf, err := cfClientFromSecret(ctx, r.Client, account.Spec.CredentialsRef, account.Namespace, r.CFAPITimeout, r.CFBaseURL)
 	if err != nil {
-		log.Error(err, "account - client initialization failed", "account", account.Name)
-		return r.setInitialized(ctx, &account, metav1.ConditionFalse, "CredentialsError", err.Error())
+		// A missing/rotating secret is transient, not a definitive credential
+		// problem. Leave the Initialized condition + metric intact (sticky) --
+		// mirroring the Zone controller, which never touches Initialized on a token
+		// fetch failure -- and requeue. Flipping to False here would false-page the
+		// critical AccountNotInitialized alert on a routine secret rotation.
+		log.Error(err, "account - client initialization failed (transient, keeping last-known Initialized state)", "account", account.Name)
+		return ctrl.Result{RequeueAfter: r.RequeueInterval}, nil
 	}
 
 	// Validate the credentials can reach the account, and record its name.
@@ -93,8 +113,18 @@ func (r *AccountReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return callErr
 	})
 	if err != nil {
-		log.Error(err, "account - validation failed", "account", account.Name, "attempts", attempts)
-		return r.setInitialized(ctx, &account, metav1.ConditionFalse, "ValidationFailed", err.Error())
+		if isDefinitiveValidationFailure(err) {
+			// Definitive failure (a 4xx other than rate limiting -- invalid/revoked
+			// token, missing account, malformed request): the credentials genuinely
+			// cannot validate, so flip Initialized=False + metric=0 to fire the alert.
+			log.Error(err, "account - validation failed (definitive)", "account", account.Name, "attempts", attempts)
+			return r.setInitialized(ctx, &account, metav1.ConditionFalse, "ValidationFailed", err.Error())
+		}
+		// Transient failure (timeout, 5xx, network error, or 429 rate limit): leave
+		// the Initialized condition + metric intact (sticky) so a blip does not flip
+		// a previously-validated Account and false-page the critical alert. Requeue.
+		log.Error(err, "account - validation failed (transient, keeping last-known Initialized state)", "account", account.Name, "attempts", attempts)
+		return ctrl.Result{RequeueAfter: r.RequeueInterval}, nil
 	}
 
 	account.Status.Name = name
@@ -107,7 +137,7 @@ func (r *AccountReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 // periodic re-validation via RequeueInterval so revoked credentials or account
 // changes surface without waiting for a spec change (mirrors the Zone
 // controller's periodic re-drive).
-func (r *AccountReconciler) setInitialized(ctx context.Context, account *lbv1beta1.Account, status metav1.ConditionStatus, reason, message string) (ctrl.Result, error) {
+func (r *AccountReconciler) setInitialized(ctx context.Context, account *accountsv1beta1.Account, status metav1.ConditionStatus, reason, message string) (ctrl.Result, error) {
 	apimeta.SetStatusCondition(&account.Status.Conditions, metav1.Condition{
 		Type:               conditionInitialized,
 		Status:             status,
@@ -118,12 +148,33 @@ func (r *AccountReconciler) setInitialized(ctx context.Context, account *lbv1bet
 	if err := r.Status().Update(ctx, account); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to update account status: %w", err)
 	}
+	if status == metav1.ConditionTrue {
+		accountInitialized.WithLabelValues(account.Name).Set(1)
+	} else {
+		accountInitialized.WithLabelValues(account.Name).Set(0)
+	}
 	return ctrl.Result{RequeueAfter: r.RequeueInterval}, nil
+}
+
+// isDefinitiveValidationFailure reports whether err is a definitive Cloudflare
+// client error -- a 4xx status other than 429 rate limiting -- as opposed to a
+// transient failure (429, 5xx, timeout, cancellation, or a network error). A
+// definitive failure (401/403 invalid or unauthorized token, 404 missing account,
+// 400 malformed request) will not self-heal, so the Account controller flips
+// Initialized=False + metric=0 on it to fire the AccountNotInitialized alert.
+// Transient failures are sticky: a previously-validated Account keeps its
+// condition and metric so a blip does not false-page the critical alert.
+func isDefinitiveValidationFailure(err error) bool {
+	var cfErr *cloudflare.Error
+	if errors.As(err, &cfErr) {
+		return cfErr.StatusCode >= 400 && cfErr.StatusCode < 500 && cfErr.StatusCode != 429
+	}
+	return false
 }
 
 // cfClientFromSecret builds a Cloudflare API client from a credentials secret.
 // Shared by the Account, Pool, and Monitor reconcilers.
-func cfClientFromSecret(ctx context.Context, c client.Client, credRef lbv1beta1.SecretRef, secretNS string, cfTimeout time.Duration, cfBaseURL string) (*cloudflare.Client, error) {
+func cfClientFromSecret(ctx context.Context, c client.Client, credRef accountsv1beta1.SecretRef, secretNS string, cfTimeout time.Duration, cfBaseURL string) (*cloudflare.Client, error) {
 	key := credRef.Key
 	if key == "" {
 		key = defaultAPITokenKey
@@ -153,7 +204,7 @@ func cfClientFromSecret(ctx context.Context, c client.Client, credRef lbv1beta1.
 // (no CF resources created), so it only reconciles on spec changes.
 func (r *AccountReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&lbv1beta1.Account{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&accountsv1beta1.Account{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("account").
 		WithOptions(controller.Options{
 			RateLimiter: workqueue.NewTypedWithMaxWaitRateLimiter(

@@ -39,8 +39,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	crconfig "sigs.k8s.io/controller-runtime/pkg/config"
+	crtlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	accountsv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/accounts/v1beta1"
 	domainsv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/domains/v1beta1"
 	lbv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/loadbalancing/v1beta1"
 )
@@ -65,10 +67,30 @@ type lbMockServer struct {
 	// -succeeded create. Exercises cfCreateGuarded's adopt-on-retry path.
 	failMonitorCreateOnce bool
 
+	// accountStatusOverride maps an account ID to a forced HTTP status for
+	// handleAccountGet: a value >= 400 responds with that error, a value < 400
+	// (e.g. 200) is treated as a valid account. Used by the account_initialized
+	// sticky tests to simulate transient (5xx) vs definitive (403) validation
+	// failures against an otherwise-valid account, isolated from the shared
+	// account ID.
+	accountStatusOverride map[string]int
+
 	// lbUpdateCount counts LoadBalancer PUT (update) calls. Used by the TTL
 	// regression test to assert an LB does not drift-loop (repeated PUTs) after
 	// it has settled.
 	lbUpdateCount int
+
+	// poolHealth maps a pool CF id to the pool-health GET result object (pool_id +
+	// pop_health), served RawJSON-shaped so the operator decodes the region map the
+	// v6.8.0 SDK mis-flattens. A pool with no seeded entry responds with an empty
+	// pop_health.
+	poolHealth map[string]map[string]any
+	// poolHealthFail forces handlePoolHealth to respond with the given HTTP status
+	// (>= 400) for a pool id, exercising poll-failure isolation.
+	poolHealthFail map[string]int
+	// poolHealthGetCount counts pool-health GET calls, used to prove the off path
+	// makes no health call.
+	poolHealthGetCount int
 }
 
 // mockMonitor mirrors the CF monitor fields the reconciler reads back. JSON
@@ -105,6 +127,11 @@ type mockPool struct {
 	Latitude          float64      `json:"latitude"`
 	Longitude         float64      `json:"longitude"`
 	Origins           []mockOrigin `json:"origins"`
+	// CheckRegions round-trips the edit-only check_regions field so a pool that
+	// declares spec.checkRegions converges instead of drift-looping: the operator
+	// rejects it on create and sends it via a follow-up edit (see
+	// buildPoolEditParams), which handlePoolUpdate must then echo back.
+	CheckRegions []string `json:"check_regions,omitempty"`
 	// LoadShedding is an example of a Cloudflare-side field the operator does
 	// NOT model. Under PATCH (partial edit) it must survive an operator update
 	// that touches only the modeled fields. The operator never sends it.
@@ -129,27 +156,66 @@ type mockLB struct {
 	DefaultPools    []string            `json:"default_pools"`
 	FallbackPool    string              `json:"fallback_pool"`
 	Proxied         bool                `json:"proxied"`
+	Enabled         bool                `json:"enabled"`
 	SteeringPolicy  string              `json:"steering_policy"`
 	SessionAffinity string              `json:"session_affinity"`
 	TTL             float64             `json:"ttl"`
 	Description     string              `json:"description"`
+	Networks        []string            `json:"networks"`
 	RegionPools     map[string][]string `json:"region_pools"`
 	CountryPools    map[string][]string `json:"country_pools"`
 	PopPools        map[string][]string `json:"pop_pools"`
+	// Optional nested features. Pointers with omitempty so an LB that never
+	// expresses them round-trips as absent (the SDK then decodes CF zero-values,
+	// mirroring real Cloudflare's "unset" reply).
+	AdaptiveRouting           *mockAdaptiveRouting           `json:"adaptive_routing,omitempty"`
+	LocationStrategy          *mockLocationStrategy          `json:"location_strategy,omitempty"`
+	RandomSteering            *mockRandomSteering            `json:"random_steering,omitempty"`
+	SessionAffinityAttributes *mockSessionAffinityAttributes `json:"session_affinity_attributes,omitempty"`
+	SessionAffinityTTL        float64                        `json:"session_affinity_ttl,omitempty"`
 	// Rules is an example of a Cloudflare-side field the operator does NOT model.
 	// Under PATCH (partial edit) it must survive an operator update that touches
 	// only the modeled fields. The operator never sends it.
 	Rules json.RawMessage `json:"rules,omitempty"`
 }
 
-func newLBMockServer(accountID, zoneID, zoneName string) *lbMockServer {
+type mockAdaptiveRouting struct {
+	FailoverAcrossPools bool `json:"failover_across_pools"`
+}
+
+type mockLocationStrategy struct {
+	Mode      string `json:"mode,omitempty"`
+	PreferECS string `json:"prefer_ecs,omitempty"`
+}
+
+type mockRandomSteering struct {
+	DefaultWeight float64            `json:"default_weight,omitempty"`
+	PoolWeights   map[string]float64 `json:"pool_weights,omitempty"`
+}
+
+type mockSessionAffinityAttributes struct {
+	DrainDuration        float64  `json:"drain_duration,omitempty"`
+	Headers              []string `json:"headers,omitempty"`
+	RequireAllHeaders    *bool    `json:"require_all_headers,omitempty"`
+	Samesite             string   `json:"samesite,omitempty"`
+	Secure               string   `json:"secure,omitempty"`
+	ZeroDowntimeFailover string   `json:"zero_downtime_failover,omitempty"`
+}
+
+// newLBMockServer builds the load-balancing API mock configured for the shared
+// test account and zone (every caller uses the same fixtures, so these are taken
+// from the package constants rather than parameters).
+func newLBMockServer() *lbMockServer {
 	m := &lbMockServer{
-		accountID: accountID,
-		zoneID:    zoneID,
-		zoneName:  zoneName,
-		monitors:  make(map[string]mockMonitor),
-		pools:     make(map[string]mockPool),
-		lbs:       make(map[string]mockLB),
+		accountID:             lbAccountID,
+		zoneID:                lbZoneID,
+		zoneName:              lbZoneName,
+		monitors:              make(map[string]mockMonitor),
+		pools:                 make(map[string]mockPool),
+		lbs:                   make(map[string]mockLB),
+		accountStatusOverride: make(map[string]int),
+		poolHealth:            make(map[string]map[string]any),
+		poolHealthFail:        make(map[string]int),
 	}
 	mux := http.NewServeMux()
 
@@ -168,6 +234,7 @@ func newLBMockServer(accountID, zoneID, zoneName string) *lbMockServer {
 	mux.HandleFunc("POST /accounts/{accountID}/load_balancers/pools", m.handlePoolCreate)
 	mux.HandleFunc("PATCH /accounts/{accountID}/load_balancers/pools/{id}", m.handlePoolUpdate)
 	mux.HandleFunc("DELETE /accounts/{accountID}/load_balancers/pools/{id}", m.handlePoolDelete)
+	mux.HandleFunc("GET /accounts/{accountID}/load_balancers/pools/{id}/health", m.handlePoolHealth)
 
 	// Load balancers (zone-scoped). Update is PATCH (partial edit).
 	mux.HandleFunc("GET /zones/{zoneID}/load_balancers", m.handleLBList)
@@ -246,11 +313,28 @@ func (m *lbMockServer) handleAccountGet(w http.ResponseWriter, r *http.Request) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	id := r.PathValue("accountID")
+	if code, ok := m.accountStatusOverride[id]; ok {
+		if code >= 400 {
+			writeCFError(w, code, "forced account status")
+			return
+		}
+		writeResult(w, http.StatusOK, map[string]any{"id": id, "name": "Test Account", "type": "standard"})
+		return
+	}
 	if id != m.accountID {
 		writeCFError(w, http.StatusNotFound, "account not found")
 		return
 	}
 	writeResult(w, http.StatusOK, map[string]any{"id": id, "name": "Test Account", "type": "standard"})
+}
+
+// setAccountStatus forces handleAccountGet to respond for the given account ID
+// with a specific HTTP status: >= 400 returns that error, < 400 marks the account
+// valid. Used by the account_initialized sticky tests.
+func (m *lbMockServer) setAccountStatus(id string, code int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.accountStatusOverride[id] = code
 }
 
 // --- monitors ---
@@ -400,6 +484,48 @@ func (m *lbMockServer) handlePoolDelete(w http.ResponseWriter, r *http.Request) 
 	writeResult(w, http.StatusOK, map[string]any{"id": id})
 }
 
+// handlePoolHealth serves GET .../pools/{id}/health. The result is the CF pool
+// health shape (pool_id + pop_health map), which the operator decodes from the
+// raw JSON because the SDK mis-flattens pop_health. A forced-fail entry responds
+// with an error; an unseeded pool responds with an empty pop_health.
+func (m *lbMockServer) handlePoolHealth(w http.ResponseWriter, r *http.Request) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.poolHealthGetCount++
+	id := r.PathValue("id")
+	if code, ok := m.poolHealthFail[id]; ok && code >= 400 {
+		writeCFError(w, code, "forced pool health status")
+		return
+	}
+	if result, ok := m.poolHealth[id]; ok {
+		writeResult(w, http.StatusOK, result)
+		return
+	}
+	writeResult(w, http.StatusOK, map[string]any{"pool_id": id, "pop_health": map[string]any{}})
+}
+
+// seedPoolHealth stores the pool-health result object served for a pool id.
+func (m *lbMockServer) seedPoolHealth(id string, result map[string]any) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.poolHealth[id] = result
+}
+
+// setPoolHealthFail forces handlePoolHealth to respond with an HTTP error for a
+// pool id (>= 400), used to exercise poll-failure isolation.
+func (m *lbMockServer) setPoolHealthFail(id string, code int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.poolHealthFail[id] = code
+}
+
+// poolHealthGets returns the number of pool-health GET calls served.
+func (m *lbMockServer) poolHealthGets() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.poolHealthGetCount
+}
+
 // --- load balancers ---
 
 func (m *lbMockServer) handleLBList(w http.ResponseWriter, r *http.Request) {
@@ -432,6 +558,11 @@ func (m *lbMockServer) handleLBCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfIgnoreTTLWhenProxied(&rec)
+	// Model Cloudflare's server-side default: enabled is not accepted by the create
+	// API (absent from LoadBalancerNewParams), so a newly created LB is enabled.
+	// The operator applies any explicit disable via a follow-up edit (create-then-
+	// edit), which the drift path exercises.
+	rec.Enabled = true
 	rec.ID = m.nextID("lb")
 	m.lbs[rec.ID] = rec
 	writeResult(w, http.StatusCreated, rec)
@@ -487,6 +618,12 @@ func (m *lbMockServer) seedPool(rec mockPool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.pools[rec.ID] = rec
+}
+
+func (m *lbMockServer) seedLB(rec mockLB) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lbs[rec.ID] = rec
 }
 
 func (m *lbMockServer) setFailMonitorCreateOnce() {
@@ -640,6 +777,49 @@ func (m *lbMockServer) setLBRules(name string, rules json.RawMessage) {
 	}
 }
 
+// setLBNetworks sets the CF-side networks on the LB with the given name,
+// simulating an out-of-band change to a create-only-write field so the operator
+// surfaces (but does not correct) the divergence.
+func (m *lbMockServer) setLBNetworks(name string, networks []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, l := range m.lbs {
+		if l.Name == name {
+			l.Networks = networks
+			m.lbs[id] = l
+			return
+		}
+	}
+}
+
+// setLBEnabled flips the CF-side enabled flag on the LB with the given name,
+// simulating an out-of-band enable/disable that the operator must re-enforce.
+func (m *lbMockServer) setLBEnabled(name string, enabled bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, l := range m.lbs {
+		if l.Name == name {
+			l.Enabled = enabled
+			m.lbs[id] = l
+			return
+		}
+	}
+}
+
+// mutateLB applies fn to the CF LB with the given name (hostname), simulating an
+// out-of-band change to CF-side state for drift tests.
+func (m *lbMockServer) mutateLB(name string, fn func(*mockLB)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, l := range m.lbs {
+		if l.Name == name {
+			fn(&l)
+			m.lbs[id] = l
+			return
+		}
+	}
+}
+
 // lbReplaceID reassigns the CF id of the LB with the given name (hostname),
 // keeping the record otherwise intact. Simulates an external recreate so
 // deletePolicy=own-only sees a status.ID mismatch and refuses to delete.
@@ -669,10 +849,11 @@ const (
 	lbPolicyNS = "lb-policy-test"
 	lbDryRunNS = "lb-dryrun-test"
 
-	lbAccountID    = "a1111111111111111111111111111111"
-	lbBadAccountID = "b2222222222222222222222222222222"
-	lbZoneID       = "c3333333333333333333333333333333"
-	lbZoneName     = "lb.example.com"
+	lbAccountID       = "a1111111111111111111111111111111"
+	lbBadAccountID    = "b2222222222222222222222222222222"
+	lbStickyAccountID = "d4444444444444444444444444444444"
+	lbZoneID          = "c3333333333333333333333333333333"
+	lbZoneName        = "lb.example.com"
 
 	lbSecretName  = "cf-secret"
 	lbAccountName = "lb-account"
@@ -702,7 +883,7 @@ func readyCondition(conds []metav1.Condition) *metav1.Condition {
 // Namespace scoping isolates managers so multiple LB managers (main / dry-run /
 // delete-policy) can coexist in one envtest process without reconciling each
 // other's objects.
-func startLBManager(ns string, dryRun bool, requeue time.Duration, baseURL string) {
+func startLBManager(ns string, dryRun bool, requeue time.Duration, baseURL string, enablePoolHealth bool) {
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:  scheme.Scheme,
 		Metrics: metricsserver.Options{BindAddress: "0"},
@@ -752,11 +933,13 @@ func startLBManager(ns string, dryRun bool, requeue time.Duration, baseURL strin
 		CFAPIMaxRetries:   1,
 		CFBaseURL:         baseURL,
 		RequeueInterval:   requeue,
+		EnablePoolHealth:  enablePoolHealth,
 	}).SetupWithManager(mgr)).To(Succeed())
 
 	Expect((&LoadBalancerReconciler{
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
+		Recorder:          mgr.GetEventRecorderFor("loadbalancer"),
 		OperatorNamespace: ns,
 		ManagementPolicy:  ManagementPolicyManage,
 		DeletePolicy:      DeletePolicyAlways,
@@ -787,11 +970,11 @@ func createLBFixtures(ns string, zone bool) {
 		Data:       map[string][]byte{"apiToken": []byte("test-token")},
 	})).To(Succeed())
 
-	Expect(k8sClient.Create(ctx, &lbv1beta1.Account{
+	Expect(k8sClient.Create(ctx, &accountsv1beta1.Account{
 		ObjectMeta: metav1.ObjectMeta{Name: lbAccountName, Namespace: ns},
-		Spec: lbv1beta1.AccountSpec{
+		Spec: accountsv1beta1.AccountSpec{
 			ID:             lbAccountID,
-			CredentialsRef: lbv1beta1.SecretRef{Name: lbSecretName, Key: "apiToken"},
+			CredentialsRef: accountsv1beta1.SecretRef{Name: lbSecretName, Key: "apiToken"},
 		},
 	})).To(Succeed())
 
@@ -804,6 +987,30 @@ func createLBFixtures(ns string, zone bool) {
 			},
 		})).To(Succeed())
 	}
+}
+
+// accountInitializedSeriesExists reports whether a cf_edge_operator_account_initialized
+// series currently exists for the given Account CR. Gathering from the registry
+// (rather than testutil.ToFloat64, which would recreate a missing series at 0)
+// lets a test distinguish a deleted series from a zero-valued one.
+func accountInitializedSeriesExists(name string) bool {
+	families, err := crtlmetrics.Registry.Gather()
+	if err != nil {
+		return false
+	}
+	for _, mf := range families {
+		if mf.GetName() != "cf_edge_operator_account_initialized" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetName() == "account_cr" && l.GetValue() == name {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 const (
@@ -821,19 +1028,19 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 	var lbMock *lbMockServer
 
 	BeforeAll(func() {
-		lbMock = newLBMockServer(lbAccountID, lbZoneID, lbZoneName)
+		lbMock = newLBMockServer()
 		createLBFixtures(lbTestNS, true)
 
 		// A second, deliberately-invalid Account for the validation-failure case.
-		Expect(k8sClient.Create(ctx, &lbv1beta1.Account{
+		Expect(k8sClient.Create(ctx, &accountsv1beta1.Account{
 			ObjectMeta: metav1.ObjectMeta{Name: "lb-account-bad", Namespace: lbTestNS},
-			Spec: lbv1beta1.AccountSpec{
+			Spec: accountsv1beta1.AccountSpec{
 				ID:             lbBadAccountID,
-				CredentialsRef: lbv1beta1.SecretRef{Name: lbSecretName, Key: "apiToken"},
+				CredentialsRef: accountsv1beta1.SecretRef{Name: lbSecretName, Key: "apiToken"},
 			},
 		})).To(Succeed())
 
-		startLBManager(lbTestNS, false, 2*time.Second, lbMock.URL())
+		startLBManager(lbTestNS, false, 2*time.Second, lbMock.URL(), false)
 	})
 
 	AfterAll(func() {
@@ -844,7 +1051,7 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 	Context("Account validation", func() {
 		It("marks a valid Account Initialized=True", func() {
 			Eventually(func() bool {
-				var a lbv1beta1.Account
+				var a accountsv1beta1.Account
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: lbAccountName, Namespace: lbTestNS}, &a); err != nil {
 					return false
 				}
@@ -852,14 +1059,17 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				return c != nil && c.Status == metav1.ConditionTrue
 			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
 
-			var a lbv1beta1.Account
+			var a accountsv1beta1.Account
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lbAccountName, Namespace: lbTestNS}, &a)).To(Succeed())
 			Expect(a.Status.Name).To(Equal("Test Account"))
+
+			// cf_edge_operator_account_initialized reflects the validated state.
+			Expect(testutil.ToFloat64(accountInitialized.WithLabelValues(lbAccountName))).To(Equal(float64(1)))
 		})
 
 		It("marks an unknown Account Initialized=False with ValidationFailed", func() {
 			Eventually(func() string {
-				var a lbv1beta1.Account
+				var a accountsv1beta1.Account
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: "lb-account-bad", Namespace: lbTestNS}, &a); err != nil {
 					return ""
 				}
@@ -869,6 +1079,89 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				}
 				return c.Reason
 			}, lbEventuallyTimeout, lbPollInterval).Should(Equal("ValidationFailed"))
+
+			// A failed validation reports account_initialized=0 for the alert.
+			Expect(testutil.ToFloat64(accountInitialized.WithLabelValues("lb-account-bad"))).To(Equal(float64(0)))
+		})
+
+		It("clears cf_edge_operator_account_initialized when the Account is deleted", func() {
+			const name = "lb-account-ephemeral"
+			Expect(k8sClient.Create(ctx, &accountsv1beta1.Account{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: lbTestNS},
+				Spec: accountsv1beta1.AccountSpec{
+					ID:             lbAccountID,
+					CredentialsRef: accountsv1beta1.SecretRef{Name: lbSecretName, Key: "apiToken"},
+				},
+			})).To(Succeed())
+			// The controller publishes this Account's series once it reconciles.
+			Eventually(func() bool {
+				return accountInitializedSeriesExists(name)
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			Expect(k8sClient.Delete(ctx, &accountsv1beta1.Account{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: lbTestNS},
+			})).To(Succeed())
+			// Deletion removes the series (no stale account_initialized).
+			Eventually(func() bool {
+				return accountInitializedSeriesExists(name)
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeFalse())
+		})
+
+		It("keeps account_initialized on a transient CF failure and flips only on a definitive auth failure", func() {
+			const stickyName = "lb-account-sticky"
+			// A dedicated, isolated account ID so toggling its CF response never
+			// affects the shared account used by the pool/monitor/LB tests.
+			lbMock.setAccountStatus(lbStickyAccountID, 200)
+			Expect(k8sClient.Create(ctx, &accountsv1beta1.Account{
+				ObjectMeta: metav1.ObjectMeta{Name: stickyName, Namespace: lbTestNS},
+				Spec: accountsv1beta1.AccountSpec{
+					ID:             lbStickyAccountID,
+					CredentialsRef: accountsv1beta1.SecretRef{Name: lbSecretName, Key: "apiToken"},
+				},
+			})).To(Succeed())
+
+			// Validated once: Initialized=True + metric=1.
+			Eventually(func() bool {
+				var a accountsv1beta1.Account
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: stickyName, Namespace: lbTestNS}, &a); err != nil {
+					return false
+				}
+				c := apimeta.FindStatusCondition(a.Status.Conditions, conditionInitialized)
+				return c != nil && c.Status == metav1.ConditionTrue
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+			Eventually(func() float64 {
+				return testutil.ToFloat64(accountInitialized.WithLabelValues(stickyName))
+			}, lbEventuallyTimeout, lbPollInterval).Should(Equal(float64(1)))
+
+			// Transient CF failure (5xx): the controller re-validates every requeue,
+			// but a transient failure must NOT flip the condition or metric (sticky).
+			lbMock.setAccountStatus(lbStickyAccountID, 500)
+			Consistently(func() bool {
+				var a accountsv1beta1.Account
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: stickyName, Namespace: lbTestNS}, &a); err != nil {
+					return false
+				}
+				c := apimeta.FindStatusCondition(a.Status.Conditions, conditionInitialized)
+				metricOK := testutil.ToFloat64(accountInitialized.WithLabelValues(stickyName)) == 1
+				return c != nil && c.Status == metav1.ConditionTrue && metricOK
+			}, 3*time.Second, lbPollInterval).Should(BeTrue())
+
+			// Definitive auth failure (403): now flip Initialized=False + metric=0.
+			lbMock.setAccountStatus(lbStickyAccountID, 403)
+			Eventually(func() string {
+				var a accountsv1beta1.Account
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: stickyName, Namespace: lbTestNS}, &a); err != nil {
+					return ""
+				}
+				c := apimeta.FindStatusCondition(a.Status.Conditions, conditionInitialized)
+				if c == nil || c.Status != metav1.ConditionFalse {
+					return ""
+				}
+				return c.Reason
+			}, lbEventuallyTimeout, lbPollInterval).Should(Equal("ValidationFailed"))
+			Eventually(func() float64 {
+				return testutil.ToFloat64(accountInitialized.WithLabelValues(stickyName))
+			}, lbEventuallyTimeout, lbPollInterval).Should(Equal(float64(0)))
 		})
 	})
 
@@ -925,6 +1218,12 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 			Expect(c).NotTo(BeNil())
 			Expect(c.Status).To(Equal(metav1.ConditionTrue))
 			Expect(lbMock.monitorsWithMarker(marker)).To(Equal(1))
+
+			// The deferred state-gauge recompute publishes the ready monitor under
+			// its account owner (Eventually absorbs the one-cycle cache lag).
+			Eventually(func() float64 {
+				return testutil.ToFloat64(loadBalancerMonitors.WithLabelValues(lbAccountName, lbStateReady))
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeNumerically(">=", 1))
 		})
 
 		It("adopts a pre-existing CF monitor by its marker without creating a duplicate", func() {
@@ -1272,6 +1571,252 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 			c := readyCondition(after.Status.Conditions)
 			Expect(c).NotTo(BeNil())
 			Expect(c.Status).To(Equal(metav1.ConditionTrue))
+		})
+	})
+
+	// -- Partial (degraded) sync state --
+	Context("LoadBalancer partial state", func() {
+		It("marks Ready=True + reason Partial with unresolvedPoolRefs, a partial gauge series, and an Event", func() {
+			lb := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-partial", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:  lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname: "lb-partial." + lbZoneName,
+					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{
+						{Name: "pool-fb"},
+						{Name: "pool-partial-missing"},
+					},
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
+
+			// Ready stays True (it IS serving) but the reason is Partial and the
+			// unresolved ref is recorded on status.
+			Eventually(func() bool {
+				var l lbv1beta1.LoadBalancer
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: "lb-partial", Namespace: lbTestNS}, &l); err != nil {
+					return false
+				}
+				c := readyCondition(l.Status.Conditions)
+				if c == nil || c.Status != metav1.ConditionTrue || c.Reason != reasonPartial {
+					return false
+				}
+				return len(l.Status.UnresolvedPoolRefs) == 1 && l.Status.UnresolvedPoolRefs[0] == "pool-partial-missing"
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			// The loadbalancers gauge shows a partial series for this zone.
+			Eventually(func() float64 {
+				return testutil.ToFloat64(loadBalancers.WithLabelValues(lbZoneCRName, lbStatePartial))
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeNumerically(">=", 1))
+
+			// A Kubernetes Event announces the transition into partial.
+			Eventually(func() bool {
+				var events corev1.EventList
+				if err := k8sClient.List(ctx, &events, client.InNamespace(lbTestNS)); err != nil {
+					return false
+				}
+				for _, e := range events.Items {
+					if e.InvolvedObject.Name == "lb-partial" && e.Reason == "Partial" {
+						return true
+					}
+				}
+				return false
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+		})
+
+		It("feeds partial from an unresolved random-steering weighted pool while still serving", func() {
+			lb := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-rs", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:        "lb-rs." + lbZoneName,
+					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+					RandomSteering: &lbv1beta1.LoadBalancerRandomSteering{
+						PoolWeights: []lbv1beta1.LoadBalancerPoolWeight{
+							{PoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "rs-missing"}, Weight: "0.5"},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
+
+			// Default + fallback resolve, so the LB serves; the unresolved weighted
+			// pool degrades it to partial.
+			Eventually(func() bool {
+				var l lbv1beta1.LoadBalancer
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: "lb-rs", Namespace: lbTestNS}, &l); err != nil {
+					return false
+				}
+				c := readyCondition(l.Status.Conditions)
+				if c == nil || c.Status != metav1.ConditionTrue || c.Reason != reasonPartial {
+					return false
+				}
+				return len(l.Status.UnresolvedPoolRefs) == 1 && l.Status.UnresolvedPoolRefs[0] == "rs-missing"
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			Eventually(func() int {
+				return lbMock.lbsWithName("lb-rs." + lbZoneName)
+			}, lbEventuallyTimeout, lbPollInterval).Should(Equal(1))
+		})
+	})
+
+	// -- enabled: always-managed (enforce + surface-on-adopt) --
+	Context("LoadBalancer enabled enforcement", func() {
+		It("re-enables an out-of-band disabled LB (enabled always-managed)", func() {
+			hostname := "lb-enabled." + lbZoneName
+			lb := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-enabled", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:        hostname,
+					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
+
+			Eventually(func() bool {
+				r, ok := lbMock.lbByName(hostname)
+				return ok && r.Enabled
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			// Disable out-of-band; the operator must correct it back to true.
+			lbMock.setLBEnabled(hostname, false)
+			Eventually(func() bool {
+				r, ok := lbMock.lbByName(hostname)
+				return ok && r.Enabled
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+		})
+
+		It("adopts a disabled CF LB, warns via an Event, and re-enforces enabled", func() {
+			hostname := "lb-adopt-enabled." + lbZoneName
+			pool, ok := lbMock.poolByName("pool-fb")
+			Expect(ok).To(BeTrue())
+			// Seed a pre-existing, disabled CF LB for this hostname so the reconcile
+			// adopts it (rather than creating) and re-enforces enabled=true.
+			lbMock.seedLB(mockLB{
+				ID:           "mock-lb-seeded-adopt",
+				Name:         hostname,
+				DefaultPools: []string{pool.ID},
+				FallbackPool: pool.ID,
+				Proxied:      true,
+				Enabled:      false,
+			})
+
+			lb := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-adopt-enabled", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:        hostname,
+					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
+
+			// Adopted (status.ID reuses the seeded id, no duplicate create).
+			Eventually(func() string {
+				var l lbv1beta1.LoadBalancer
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: "lb-adopt-enabled", Namespace: lbTestNS}, &l); err != nil {
+					return ""
+				}
+				return l.Status.ID
+			}, lbEventuallyTimeout, lbPollInterval).Should(Equal("mock-lb-seeded-adopt"))
+			Expect(lbMock.lbsWithName(hostname)).To(Equal(1))
+
+			// enabled re-enforced to true.
+			Eventually(func() bool {
+				r, ok := lbMock.lbByName(hostname)
+				return ok && r.Enabled
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			// A warning Event surfaces the on-adopt enforcement.
+			Eventually(func() bool {
+				var events corev1.EventList
+				if err := k8sClient.List(ctx, &events, client.InNamespace(lbTestNS)); err != nil {
+					return false
+				}
+				for _, e := range events.Items {
+					if e.InvolvedObject.Name == "lb-adopt-enabled" && e.Reason == "EnabledEnforced" {
+						return true
+					}
+				}
+				return false
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+		})
+	})
+
+	// -- networks: create-only-write + drift surfacing (surface-only, Ready unaffected) --
+	Context("LoadBalancer networks drift", func() {
+		It("writes networks on create, surfaces later drift without flipping Ready, and clears on resync", func() {
+			hostname := "lb-net." + lbZoneName
+			lb := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-net", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:        hostname,
+					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+					Networks:        []string{"net-a", "net-b"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
+
+			// Networks written on create; NetworksSynced=True; Ready=True.
+			Eventually(func() bool {
+				r, ok := lbMock.lbByName(hostname)
+				return ok && len(r.Networks) == 2
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+			Eventually(func() bool {
+				var l lbv1beta1.LoadBalancer
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: "lb-net", Namespace: lbTestNS}, &l); err != nil {
+					return false
+				}
+				ns := apimeta.FindStatusCondition(l.Status.Conditions, conditionNetworksSynced)
+				rc := readyCondition(l.Status.Conditions)
+				return ns != nil && ns.Status == metav1.ConditionTrue &&
+					rc != nil && rc.Status == metav1.ConditionTrue
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			// Out-of-band drift (drop net-b). Surface it: NetworksSynced=False,
+			// metric > 0, Ready STILL True.
+			lbMock.setLBNetworks(hostname, []string{"net-a"})
+			Eventually(func() bool {
+				var l lbv1beta1.LoadBalancer
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: "lb-net", Namespace: lbTestNS}, &l); err != nil {
+					return false
+				}
+				ns := apimeta.FindStatusCondition(l.Status.Conditions, conditionNetworksSynced)
+				rc := readyCondition(l.Status.Conditions)
+				return ns != nil && ns.Status == metav1.ConditionFalse &&
+					rc != nil && rc.Status == metav1.ConditionTrue
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+			Eventually(func() float64 {
+				return testutil.ToFloat64(loadBalancerNetworksDrift.WithLabelValues(lbZoneCRName))
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeNumerically(">=", 1))
+
+			// Networks are create-only-write: the operator must NOT push them back.
+			Consistently(func() []string {
+				r, _ := lbMock.lbByName(hostname)
+				return r.Networks
+			}, 3*time.Second, lbPollInterval).Should(Equal([]string{"net-a"}))
+
+			// Resync out-of-band; NetworksSynced clears back to True and the drift
+			// metric for this zone returns to 0.
+			lbMock.setLBNetworks(hostname, []string{"net-a", "net-b"})
+			Eventually(func() bool {
+				var l lbv1beta1.LoadBalancer
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: "lb-net", Namespace: lbTestNS}, &l); err != nil {
+					return false
+				}
+				ns := apimeta.FindStatusCondition(l.Status.Conditions, conditionNetworksSynced)
+				return ns != nil && ns.Status == metav1.ConditionTrue
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+			Eventually(func() float64 {
+				return testutil.ToFloat64(loadBalancerNetworksDrift.WithLabelValues(lbZoneCRName))
+			}, lbEventuallyTimeout, lbPollInterval).Should(Equal(float64(0)))
 		})
 	})
 
@@ -1633,6 +2178,291 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 		})
 	})
 
+	// -- Optional nested LB features: adaptive_routing / location_strategy /
+	//    session_affinity_attributes+ttl (send-iff-expressed + drift + no-loop) --
+	Context("LoadBalancer optional nested features", func() {
+		It("sends adaptive_routing on create+edit and corrects out-of-band drift", func() {
+			hostname := "lb-ar." + lbZoneName
+			lb := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-ar", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:        hostname,
+					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+					AdaptiveRouting: &lbv1beta1.LoadBalancerAdaptiveRouting{FailoverAcrossPools: new(true)},
+				},
+			}
+			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
+
+			// Sent on create: CF stores failover_across_pools=true.
+			Eventually(func() bool {
+				r, ok := lbMock.lbByName(hostname)
+				return ok && r.AdaptiveRouting != nil && r.AdaptiveRouting.FailoverAcrossPools
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			// Out-of-band flip to false -> drift -> corrected back to true (edit).
+			lbMock.mutateLB(hostname, func(rec *mockLB) {
+				rec.AdaptiveRouting = &mockAdaptiveRouting{FailoverAcrossPools: false}
+			})
+			Eventually(func() bool {
+				r, ok := lbMock.lbByName(hostname)
+				return ok && r.AdaptiveRouting != nil && r.AdaptiveRouting.FailoverAcrossPools
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+		})
+
+		It("sends location_strategy on create+edit and corrects out-of-band drift", func() {
+			hostname := "lb-ls." + lbZoneName
+			lb := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-ls", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:          lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:         hostname,
+					DefaultPoolRefs:  []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					FallbackPoolRef:  lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+					LocationStrategy: &lbv1beta1.LoadBalancerLocationStrategy{Mode: "pop", PreferECS: "always"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
+
+			Eventually(func() bool {
+				r, ok := lbMock.lbByName(hostname)
+				return ok && r.LocationStrategy != nil &&
+					r.LocationStrategy.Mode == "pop" && r.LocationStrategy.PreferECS == "always"
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			lbMock.mutateLB(hostname, func(rec *mockLB) {
+				rec.LocationStrategy = &mockLocationStrategy{Mode: "resolver_ip", PreferECS: "never"}
+			})
+			Eventually(func() bool {
+				r, ok := lbMock.lbByName(hostname)
+				return ok && r.LocationStrategy != nil &&
+					r.LocationStrategy.Mode == "pop" && r.LocationStrategy.PreferECS == "always"
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+		})
+
+		It("sends session_affinity_attributes and ttl on create+edit and corrects out-of-band drift", func() {
+			hostname := "lb-sa." + lbZoneName
+			lb := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-sa", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:            lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:           hostname,
+					DefaultPoolRefs:    []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					FallbackPoolRef:    lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+					SessionAffinity:    "cookie",
+					SessionAffinityTtl: 1800,
+					SessionAffinityAttributes: &lbv1beta1.LoadBalancerSessionAffinityAttributes{
+						Samesite:             "Lax",
+						Secure:               "Always",
+						ZeroDowntimeFailover: "temporary",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
+
+			Eventually(func() bool {
+				r, ok := lbMock.lbByName(hostname)
+				return ok && r.SessionAffinity == "cookie" && r.SessionAffinityTTL == 1800 &&
+					r.SessionAffinityAttributes != nil &&
+					r.SessionAffinityAttributes.Samesite == "Lax" &&
+					r.SessionAffinityAttributes.Secure == "Always" &&
+					r.SessionAffinityAttributes.ZeroDowntimeFailover == "temporary"
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			// Out-of-band drift on both the nested attrs object and the ttl scalar.
+			lbMock.mutateLB(hostname, func(rec *mockLB) {
+				rec.SessionAffinityAttributes = &mockSessionAffinityAttributes{Samesite: "Strict", Secure: "Never", ZeroDowntimeFailover: "none"}
+				rec.SessionAffinityTTL = 60
+			})
+			Eventually(func() bool {
+				r, ok := lbMock.lbByName(hostname)
+				return ok && r.SessionAffinityTTL == 1800 &&
+					r.SessionAffinityAttributes != nil &&
+					r.SessionAffinityAttributes.Samesite == "Lax" &&
+					r.SessionAffinityAttributes.Secure == "Always" &&
+					r.SessionAffinityAttributes.ZeroDowntimeFailover == "temporary"
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+		})
+
+		It("does not send adaptive_routing / location_strategy / random_steering when unset and does not drift-loop", func() {
+			hostname := "lb-noopt." + lbZoneName
+			lb := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-noopt", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:        hostname,
+					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
+
+			Eventually(func() bool {
+				_, ok := lbMock.lbByName(hostname)
+				return ok
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			// Not sent on create: the optional nested features are absent CF-side.
+			r, ok := lbMock.lbByName(hostname)
+			Expect(ok).To(BeTrue())
+			Expect(r.AdaptiveRouting).To(BeNil())
+			Expect(r.LocationStrategy).To(BeNil())
+			Expect(r.RandomSteering).To(BeNil())
+
+			// Seed out-of-band values for the un-expressed fields. Leave-alone: the
+			// operator must never compare or correct them, so they persist and no
+			// corrective edit loop is issued.
+			lbMock.mutateLB(hostname, func(rec *mockLB) {
+				rec.AdaptiveRouting = &mockAdaptiveRouting{FailoverAcrossPools: true}
+				rec.LocationStrategy = &mockLocationStrategy{Mode: "resolver_ip"}
+				rec.RandomSteering = &mockRandomSteering{DefaultWeight: 0.4, PoolWeights: map[string]float64{"pool-x": 0.9}}
+			})
+			before := lbMock.lbUpdates()
+			Consistently(func() int {
+				return lbMock.lbUpdates()
+			}, 3*time.Second, lbPollInterval).Should(Equal(before))
+			rr, _ := lbMock.lbByName(hostname)
+			Expect(rr.AdaptiveRouting).NotTo(BeNil())
+			Expect(rr.LocationStrategy).NotTo(BeNil())
+			Expect(rr.RandomSteering).NotTo(BeNil())
+		})
+
+		It("does not send session-affinity attributes/ttl when affinity is none and does not drift-loop", func() {
+			hostname := "lb-sanone." + lbZoneName
+			lb := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-sanone", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:        hostname,
+					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+					SessionAffinity: "none",
+				},
+			}
+			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
+
+			Eventually(func() bool {
+				r, ok := lbMock.lbByName(hostname)
+				return ok && r.SessionAffinity == "none"
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			// affinity=none: attributes/ttl are neither sent nor drift-checked.
+			r, ok := lbMock.lbByName(hostname)
+			Expect(ok).To(BeTrue())
+			Expect(r.SessionAffinityAttributes).To(BeNil())
+			Expect(r.SessionAffinityTTL).To(BeZero())
+
+			// Seed out-of-band attributes + ttl; the operator must leave them and
+			// not issue a corrective edit loop (gated on sessionAffinityActive).
+			lbMock.mutateLB(hostname, func(rec *mockLB) {
+				rec.SessionAffinityAttributes = &mockSessionAffinityAttributes{Samesite: "Strict"}
+				rec.SessionAffinityTTL = 120
+			})
+			before := lbMock.lbUpdates()
+			Consistently(func() int {
+				return lbMock.lbUpdates()
+			}, 3*time.Second, lbPollInterval).Should(Equal(before))
+			rr, _ := lbMock.lbByName(hostname)
+			Expect(rr.SessionAffinityAttributes).NotTo(BeNil())
+			Expect(rr.SessionAffinityTTL).To(Equal(float64(120)))
+		})
+	})
+
+	// -- random_steering: resolved weights sent (create+edit+drift); an unresolved
+	//    weighted pool is omitted from pool_weights and feeds partial --
+	Context("LoadBalancer random steering", func() {
+		It("sends resolved pool weights on create+edit and corrects out-of-band drift", func() {
+			hostname := "lb-rsw." + lbZoneName
+			pool, ok := lbMock.poolByName("pool-fb")
+			Expect(ok).To(BeTrue())
+			lb := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-rsw", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:        hostname,
+					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+					SteeringPolicy:  "random",
+					RandomSteering: &lbv1beta1.LoadBalancerRandomSteering{
+						DefaultWeight: "0.2",
+						PoolWeights: []lbv1beta1.LoadBalancerPoolWeight{
+							{PoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"}, Weight: "0.7"},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
+
+			// Sent on create: default_weight + the resolved pool weight (keyed by CF
+			// pool ID) round-trip.
+			Eventually(func() bool {
+				r, ok := lbMock.lbByName(hostname)
+				return ok && r.RandomSteering != nil &&
+					floatNear(r.RandomSteering.DefaultWeight, 0.2) &&
+					len(r.RandomSteering.PoolWeights) == 1 &&
+					floatNear(r.RandomSteering.PoolWeights[pool.ID], 0.7)
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			// Out-of-band drift on both default_weight and the per-pool weight ->
+			// corrected back (edit).
+			lbMock.mutateLB(hostname, func(rec *mockLB) {
+				rec.RandomSteering = &mockRandomSteering{DefaultWeight: 0.9, PoolWeights: map[string]float64{pool.ID: 0.1}}
+			})
+			Eventually(func() bool {
+				r, ok := lbMock.lbByName(hostname)
+				return ok && r.RandomSteering != nil &&
+					floatNear(r.RandomSteering.DefaultWeight, 0.2) &&
+					len(r.RandomSteering.PoolWeights) == 1 &&
+					floatNear(r.RandomSteering.PoolWeights[pool.ID], 0.7)
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+		})
+
+		It("omits an unresolved weighted pool from pool_weights and records it in unresolvedPoolRefs", func() {
+			hostname := "lb-rspartial." + lbZoneName
+			pool, ok := lbMock.poolByName("pool-fb")
+			Expect(ok).To(BeTrue())
+			lb := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-rspartial", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:        hostname,
+					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+					SteeringPolicy:  "random",
+					RandomSteering: &lbv1beta1.LoadBalancerRandomSteering{
+						PoolWeights: []lbv1beta1.LoadBalancerPoolWeight{
+							{PoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"}, Weight: "0.6"},
+							{PoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "rspartial-missing"}, Weight: "0.4"},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
+
+			// Only the resolved pool appears in pool_weights; the unresolved ref is
+			// dropped (not re-implemented here -- resolution happens in chunk 2).
+			Eventually(func() bool {
+				r, ok := lbMock.lbByName(hostname)
+				return ok && r.RandomSteering != nil &&
+					len(r.RandomSteering.PoolWeights) == 1 &&
+					floatNear(r.RandomSteering.PoolWeights[pool.ID], 0.6)
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			// The unresolved weighted pool degrades the LB to partial and is surfaced
+			// via status.unresolvedPoolRefs (Ready stays True -- it still serves).
+			Eventually(func() bool {
+				var l lbv1beta1.LoadBalancer
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: "lb-rspartial", Namespace: lbTestNS}, &l); err != nil {
+					return false
+				}
+				c := readyCondition(l.Status.Conditions)
+				return c != nil && c.Status == metav1.ConditionTrue && c.Reason == reasonPartial &&
+					len(l.Status.UnresolvedPoolRefs) == 1 && l.Status.UnresolvedPoolRefs[0] == "rspartial-missing"
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+		})
+	})
+
 	// -- Pool latitude/longitude regression (now drift-checked) --
 	Context("LoadBalancerPool lat/long", func() {
 		It("creates a pool with latitude/longitude and converges on change", func() {
@@ -1901,6 +2731,134 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 	})
 })
 
+// --- Opt-in pool-health axis: reconcile-level glue (--enable-pool-health) ---
+//
+// pool_health_test.go drives poll/tally/publish/prune in isolation. This suite is
+// the only one that runs a real manager with EnablePoolHealth ON, so it proves the
+// two reconcile glue points that wire those pieces in:
+//
+//	(1) reconcileCloudflareState calls maybePollPoolHealth on the existing-pool
+//	    path, so a ready pool's Cloudflare health is polled and published; and
+//	(2) recomputeStateGauge prunes a deleted pool's health series (built + pruned
+//	    only under the flag).
+//
+// The main / dry-run / own-only suites all pass enablePoolHealth=false, so without
+// this suite either glue point could be deleted and every test would still pass.
+
+var _ = Describe("LoadBalancerPool health axis", Ordered, func() {
+	const (
+		poolHealthNS      = "lb-poolhealth-test"
+		poolHealthPool    = "pool-health"
+		poolHealthMonitor = "mon-health"
+	)
+	var lbMock *lbMockServer
+
+	BeforeAll(func() {
+		lbMock = newLBMockServer()
+		createLBFixtures(poolHealthNS, false)
+		// Flag ON + a short requeue so the existing-pool path (and thus the health
+		// poll) runs promptly after the pool settles Ready.
+		startLBManager(poolHealthNS, false, 2*time.Second, lbMock.URL(), true)
+	})
+
+	AfterAll(func() {
+		lbMock.Close()
+		// The health gauges live in the process-global registry; drop any residue so
+		// later specs start clean (mirrors pool_health_test.go's end-of-test prune).
+		poolHealthGaugeSet.prune(map[string]bool{})
+	})
+
+	It("polls and publishes pool health from the reconcile path, then prunes on delete", func() {
+		// (a) account + secret (BeforeAll) + monitor + pool -> Ready with a CF ID.
+		mon := &lbv1beta1.LoadBalancerMonitor{
+			ObjectMeta: metav1.ObjectMeta{Name: poolHealthMonitor, Namespace: poolHealthNS},
+			Spec: lbv1beta1.LoadBalancerMonitorSpec{
+				AccountRef: lbv1beta1.AccountRef{Name: lbAccountName},
+				Type:       "https",
+				Path:       "/health",
+			},
+		}
+		Expect(k8sClient.Create(ctx, mon)).To(Succeed())
+
+		pool := &lbv1beta1.LoadBalancerPool{
+			ObjectMeta: metav1.ObjectMeta{Name: poolHealthPool, Namespace: poolHealthNS},
+			Spec: lbv1beta1.LoadBalancerPoolSpec{
+				AccountRef: lbv1beta1.AccountRef{Name: lbAccountName},
+				Origins: []lbv1beta1.LoadBalancerPoolOrigin{
+					{Name: "o1", Address: "10.0.9.1", Enabled: new(true)},
+				},
+				Enabled:    new(true),
+				MonitorRef: &lbv1beta1.LoadBalancerMonitorRef{Name: poolHealthMonitor},
+				// checkRegions exercises the per-region gauges; the mock round-trips
+				// check_regions so the pool converges instead of drift-looping.
+				CheckRegions: []string{"WNAM", "ENAM"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+
+		var poolID string
+		Eventually(func() bool {
+			var p lbv1beta1.LoadBalancerPool
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: poolHealthPool, Namespace: poolHealthNS}, &p); err != nil {
+				return false
+			}
+			c := readyCondition(p.Status.Conditions)
+			poolID = p.Status.ID
+			return poolID != "" && c != nil && c.Status == metav1.ConditionTrue
+		}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+		// (b) Seed the mock health for the pool's CF-assigned ID: one healthy region
+		// (WNAM) + one unhealthy (ENAM), matching spec.checkRegions (mirrors
+		// TestPollPoolHealthThroughSDK).
+		lbMock.seedPoolHealth(poolID, map[string]any{
+			"pool_id": poolID,
+			"pop_health": map[string]any{
+				"WNAM": map[string]any{
+					"healthy": true,
+					"origins": []any{
+						map[string]any{"10.0.9.1": map[string]any{"healthy": true}},
+					},
+				},
+				"ENAM": map[string]any{
+					"healthy": false,
+					"origins": []any{
+						map[string]any{"10.0.9.1": map[string]any{"healthy": false}},
+					},
+				},
+			},
+		})
+
+		base := map[string]string{"account_cr": lbAccountName, "pool_cr": poolHealthPool}
+
+		// (c) Glue point 1: the controller self-requeues at the harness interval, so
+		// the existing-pool path runs maybePollPoolHealth. Prove the poll fired FROM
+		// the reconcile (only this suite calls it) and that the seeded health was
+		// decoded, tallied and published -- including the per-region breakdown.
+		Eventually(func() int {
+			return lbMock.poolHealthGets()
+		}, lbEventuallyTimeout, lbPollInterval).Should(BeNumerically(">", 0))
+
+		Eventually(func() float64 {
+			return gaugeValue("cf_edge_operator_loadbalancerpool_health", merge(base, "status", "healthy"))
+		}, lbEventuallyTimeout, lbPollInterval).Should(Equal(float64(1)))
+		Expect(gaugeValue("cf_edge_operator_loadbalancerpool_health", merge(base, "status", "unhealthy"))).To(Equal(float64(1)))
+		Expect(gaugeValue("cf_edge_operator_loadbalancerpool_health_region", merge(base, "region", "WNAM", "status", "healthy"))).To(Equal(float64(1)))
+		Expect(gaugeValue("cf_edge_operator_loadbalancerpool_health_region", merge(base, "region", "ENAM", "status", "unhealthy"))).To(Equal(float64(1)))
+
+		// (d) Glue point 2: deleting the pool CR makes recomputeStateGauge (deferred
+		// on the delete reconcile, under the flag) prune the health series to zero.
+		Expect(k8sClient.Delete(ctx, pool)).To(Succeed())
+		Eventually(func() bool {
+			var p lbv1beta1.LoadBalancerPool
+			return k8sClient.Get(ctx, types.NamespacedName{Name: poolHealthPool, Namespace: poolHealthNS}, &p) != nil
+		}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+		Eventually(func() int {
+			return countSeries("cf_edge_operator_loadbalancerpool_health", base)
+		}, lbEventuallyTimeout, lbPollInterval).Should(Equal(0))
+	})
+})
+
 // --- DeletePolicy own-only: needs a manager with no periodic self-requeue so a
 // status.ID vs CF-id mismatch stays stable long enough to delete against. ---
 
@@ -1908,12 +2866,12 @@ var _ = Describe("LoadBalancing DeletePolicy own-only", Ordered, func() {
 	var lbMock *lbMockServer
 
 	BeforeAll(func() {
-		lbMock = newLBMockServer(lbAccountID, lbZoneID, lbZoneName)
+		lbMock = newLBMockServer()
 		createLBFixtures(lbPolicyNS, true)
 		// Long requeue: reconciles are driven by create/update/delete events
 		// only, so a settled resource's status.ID does not get re-adopted between
 		// mutating the mock and deleting the CR.
-		startLBManager(lbPolicyNS, false, 10*time.Minute, lbMock.URL())
+		startLBManager(lbPolicyNS, false, 10*time.Minute, lbMock.URL(), false)
 	})
 
 	AfterAll(func() {
@@ -2113,9 +3071,9 @@ var _ = Describe("LoadBalancing DryRun", Ordered, func() {
 	var lbMock *lbMockServer
 
 	BeforeAll(func() {
-		lbMock = newLBMockServer(lbAccountID, lbZoneID, lbZoneName)
+		lbMock = newLBMockServer()
 		createLBFixtures(lbDryRunNS, false)
-		startLBManager(lbDryRunNS, true, 2*time.Second, lbMock.URL())
+		startLBManager(lbDryRunNS, true, 2*time.Second, lbMock.URL(), false)
 	})
 
 	AfterAll(func() {

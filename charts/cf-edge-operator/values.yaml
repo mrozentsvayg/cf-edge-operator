@@ -19,14 +19,14 @@ leaderElect: true
 # Defaults to the release namespace if left empty.
 operatorNamespace: ""
 
-# Default management policy for CustomHostname CRs.
+# Default management policy for all managed resources (CustomHostname and load-balancing CRs).
 # "manage": full lifecycle -- create, update, delete (default).
 # "create": provision if missing, never update (safe coexistence with external-dns).
 # "observe": read-only tracking, no Cloudflare writes.
 # Per-CR spec.managementPolicy overrides this default.
 managementPolicy: "manage"
 
-# Delete policy for CustomHostname CRs.
+# Delete policy for all managed resources (CustomHostname and load-balancing CRs).
 # "always": delete from Cloudflare by ID regardless (default).
 # "own-only": only delete if the current Cloudflare ID matches status.id.
 # "never": release the finalizer without deleting from Cloudflare.
@@ -36,14 +36,47 @@ deletePolicy: "always"
 # Dry-run mode: log what would happen without writing to Cloudflare.
 dryRun: false
 
-# Control-plane role: enable the load-balancing controllers (Account,
-# LoadBalancer, LoadBalancerPool, LoadBalancerMonitor). Load balancing is a
-# single-owner role -- exactly one cluster (the control cluster) should set this
-# true; all others leave it false. When false, the load-balancing CRDs, RBAC,
-# controllers, and metric series are all omitted, so per-cluster deployments are
-# byte-identical to a chart without the feature.
-controlPlane:
-  enabled: false
+# CRD lifecycle. All CRDs (CustomHostname, Zone, and the load-balancing set) are
+# chart-rendered and gated per feature (see features below), so CRD management is
+# symmetric across features. Mirrors cert-manager's crds.enabled/crds.keep model.
+crds:
+  # Let the chart install and manage the CRDs. Set false to manage them out-of-band
+  # (a cluster admin applies config/crd separately); the chart then emits no CRDs.
+  enabled: true
+  # Stamp helm.sh/resource-policy:keep and argocd.argoproj.io/sync-options:Prune=false
+  # onto every CRD so `helm uninstall` and GitOps prune never delete them. Deleting a
+  # CRD cascade-deletes every CR it defines, so keep=true is the safe default: the CRDs
+  # survive an uninstall and must be removed explicitly (kubectl delete crd ...).
+  keep: true
+
+# Feature gates. Each feature is enabled independently; the operator runs only the
+# controllers, RBAC, and metric series for the features that are enabled. The Zone
+# controller is shared substrate (credential/zone-identity validation) and runs
+# whenever either feature below is enabled.
+features:
+  # Custom hostname management: the CustomHostname controller plus the shared Zone
+  # controller. Enabled by default -- this preserves the operator's original behavior.
+  customhostname:
+    enabled: true
+  # Load balancing: the Account, LoadBalancer, LoadBalancerPool, and
+  # LoadBalancerMonitor controllers. This is a single-owner control-plane role --
+  # exactly one cluster (the control cluster) should set this true; all others leave
+  # it false. When false, the load-balancing CRDs, RBAC, controllers, and metric
+  # series are all omitted; the deployment still passes an explicit
+  # --enable-loadbalancing=false flag but starts none of the load-balancing
+  # machinery, so a non-control cluster carries no load-balancing footprint.
+  loadBalancing:
+    enabled: false
+    # Opt-in pool-health axis (--enable-pool-health). When true, each
+    # LoadBalancerPool reconcile makes one extra Cloudflare read (PoolHealth.Get)
+    # and publishes the loadbalancerpool health gauges (region/origin health).
+    # Off by default: the poll and its metric series add cost only when enabled.
+    # Ignored unless loadBalancing.enabled is also true. Cardinality note: adds
+    # per-pool and per-origin series always, plus per-region and per-origin-per-
+    # region series for pools that set spec.checkRegions (bounded to <=13 regions);
+    # pools without checkRegions get only the summarized per-pool/per-origin series.
+    # See docs for the full cardinality and same-address caveats.
+    poolHealth: false
 
 # How often the zone controller bulk-lists Cloudflare custom hostnames to detect
 # external drift (manual dashboard changes, other automation), and how often the
@@ -53,8 +86,9 @@ controlPlane:
 driftInterval: "1m"
 
 # Buffer size of the internal channel used to enqueue drifted CustomHostname CRs.
-# The zone controller sends at most one event per drifted CR per cycle; increase if
-# running many zones with large numbers of custom hostnames.
+# Specific to custom hostname drift detection; the load-balancing controllers self-requeue
+# and do not use this channel. The zone controller sends at most one event per drifted CR
+# per cycle; increase if running many zones with large numbers of custom hostnames.
 driftBuffer: 1024
 
 # Per-request timeout for CF API read calls (zone lookup, CH get/findByHostname).

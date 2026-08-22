@@ -54,9 +54,14 @@ spec:
         {{- if ne (lower (toString .Values.dryRun)) "false" }}
         - --dry-run
         {{- end }}
-        {{- if .Values.controlPlane.enabled }}
-        - --enable-loadbalancer
-        {{- end }}
+        {{- /* Feature flags render as explicit --enable-*=<bool> via the string-safe
+               helpers in _helpers.tpl, so a null or string "false" value never renders
+               as --enable-*= (empty, which ParseBool rejects) and never slips through
+               Helm's non-empty-string truthiness. --enable-pool-health is off unless
+               load balancing is also on (see poolHealthEnabled). */}}
+        - --enable-customhostname={{ include "cf-edge-operator.customhostnameEnabled" . }}
+        - --enable-loadbalancing={{ include "cf-edge-operator.loadBalancingEnabled" . }}
+        - --enable-pool-health={{ include "cf-edge-operator.poolHealthEnabled" . }}
         {{- if ne (lower (toString .Values.leaderElect)) "false" }}
         - --leader-elect
         {{- end }}

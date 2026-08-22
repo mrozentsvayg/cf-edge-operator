@@ -13,6 +13,24 @@ rules:
   - list
   - watch
 - apiGroups:
+  - accounts.cf-edge.io
+  resources:
+  - accounts
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - accounts.cf-edge.io
+  resources:
+  - accounts/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - domains.cf-edge.io
   resources:
   - zones
@@ -30,27 +48,6 @@ rules:
   - domains.cf-edge.io
   resources:
   - zones/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - loadbalancing.cf-edge.io
-  resources:
-  - accounts
-  verbs:
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - loadbalancing.cf-edge.io
-  resources:
-  - accounts/status
-  - loadbalancermonitors/status
-  - loadbalancerpools/status
-  - loadbalancers/status
   verbs:
   - get
   - patch
@@ -76,6 +73,16 @@ rules:
   - loadbalancerpools/finalizers
   - loadbalancers/finalizers
   verbs:
+  - update
+- apiGroups:
+  - loadbalancing.cf-edge.io
+  resources:
+  - loadbalancermonitors/status
+  - loadbalancerpools/status
+  - loadbalancers/status
+  verbs:
+  - get
+  - patch
   - update
 - apiGroups:
   - saas.cf-edge.io

@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	accountsv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/accounts/v1beta1"
 	domainsv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/domains/v1beta1"
 	loadbalancingv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/loadbalancing/v1beta1"
 	saasv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/saas/v1beta1"
@@ -54,6 +55,7 @@ func init() {
 
 	utilruntime.Must(domainsv1beta1.AddToScheme(scheme))
 	utilruntime.Must(saasv1beta1.AddToScheme(scheme))
+	utilruntime.Must(accountsv1beta1.AddToScheme(scheme))
 	utilruntime.Must(loadbalancingv1beta1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
@@ -80,7 +82,9 @@ func main() {
 	var managementPolicy string
 	var deletePolicy string
 	var dryRun bool
-	var enableLoadBalancer bool
+	var enableCustomHostname bool
+	var enableLoadBalancing bool
+	var enablePoolHealth bool
 	var driftInterval time.Duration
 	var driftBuffer int
 	var cfAPITimeout time.Duration
@@ -106,33 +110,48 @@ func main() {
 	flag.StringVar(&operatorNamespace, "operator-namespace", "cf-edge-operator-system",
 		"Namespace where Zone resources are managed. Used to resolve ZoneRef when namespace is omitted.")
 	flag.StringVar(&managementPolicy, "management-policy", "manage",
-		"Default management policy for CustomHostname CRs. "+
+		"Default management policy for all managed resources (CustomHostname and load-balancing CRs). "+
 			"'manage': full lifecycle (create, update, delete). "+
 			"'create': provision if missing, never update (safe coexistence). "+
 			"'observe': read-only tracking, no CF writes. "+
 			"Per-CR spec.managementPolicy overrides this default.")
 	flag.StringVar(&deletePolicy, "delete-policy", "always",
-		"Default delete policy for CustomHostname CRs. "+
+		"Default delete policy for all managed resources (CustomHostname and load-balancing CRs). "+
 			"'always': delete from Cloudflare by ID regardless. "+
 			"'own-only': only delete if the current Cloudflare hostname ID matches status.id. "+
 			"'never': release the finalizer without deleting from Cloudflare. "+
 			"Per-CR spec.deletePolicy overrides this default.")
 	flag.BoolVar(&dryRun, "dry-run", false,
 		"If set, skip all Cloudflare write operations and log what would happen instead.")
-	flag.BoolVar(&enableLoadBalancer, "enable-loadbalancer", false,
+	flag.BoolVar(&enableCustomHostname, "enable-customhostname", true,
+		"Enable the CustomHostname controller (and the shared Zone controller). On by default: "+
+			"custom hostname management is the operator's original role. When off, the CustomHostname "+
+			"controller does not start, the Zone controller skips its custom hostname drift list, and "+
+			"the related metric series are not pre-initialized. Requires the customhostname and zone "+
+			"CRDs and RBAC to be present (chart: features.customhostname.enabled=true).")
+	flag.BoolVar(&enableLoadBalancing, "enable-loadbalancing", false,
 		"Enable the load-balancing controllers (Account, LoadBalancer, LoadBalancerPool, "+
 			"LoadBalancerMonitor). Off by default: load balancing is a single-owner control-plane "+
 			"role, so only the control cluster runs these controllers. When off, none of the "+
-			"controllers start and their metric series are not pre-initialized (per-cluster "+
-			"deployments stay unchanged). Requires the load-balancing CRDs and RBAC to be present "+
-			"(chart: controlPlane.enabled=true).")
+			"controllers start, no load-balancing watches are set up, and their metric series are "+
+			"not pre-initialized (only this flag is passed). Requires the load-balancing CRDs and "+
+			"RBAC to be present (chart: features.loadBalancing.enabled=true).")
+	flag.BoolVar(&enablePoolHealth, "enable-pool-health", false,
+		"Enable the opt-in pool-health axis: each LoadBalancerPool reconcile makes one extra "+
+			"Cloudflare read (PoolHealth.Get) and publishes the loadbalancerpool health gauges. "+
+			"Off by default (zero extra calls, zero health series when off). Only meaningful with "+
+			"--enable-loadbalancing; if set while load balancing is off it is ignored (a warning is "+
+			"logged). Adds cardinality (per-pool, per-origin, and per-region series for pools with "+
+			"spec.checkRegions set) -- see the chart values comment and docs.")
 	flag.DurationVar(&driftInterval, "drift-interval", time.Minute,
 		"How often the zone controller bulk-lists Cloudflare custom hostnames to detect external drift, "+
 			"and how often the load-balancing controllers (Account, LoadBalancer, LoadBalancerPool, "+
 			"LoadBalancerMonitor) self-requeue to re-check external drift and retry transient errors. "+
 			"Lower values reduce the window in which external changes go undetected.")
 	flag.IntVar(&driftBuffer, "drift-buffer", 1024,
-		"Buffer size of the internal channel used to enqueue drifted CustomHostname CRs. "+
+		"Buffer size of the internal channel used to enqueue drifted CustomHostname CRs. This is "+
+			"specific to custom hostname drift detection; the load-balancing controllers self-requeue "+
+			"and do not use this channel. "+
 			"Increase if operating with many zones and very frequent drift cycles.")
 	flag.DurationVar(&cfAPITimeout, "cf-api-timeout", 5*time.Second,
 		"Per-request timeout for single CF API read calls (zone lookup, CustomHostname and load-balancing get/list).")
@@ -186,7 +205,9 @@ func main() {
 		"managementPolicy", managementPolicy,
 		"deletePolicy", deletePolicy,
 		"dryRun", dryRun,
-		"enableLoadBalancer", enableLoadBalancer,
+		"enableCustomHostname", enableCustomHostname,
+		"enableLoadBalancing", enableLoadBalancing,
+		"enablePoolHealth", enablePoolHealth,
 		"driftInterval", driftInterval,
 		"driftBuffer", driftBuffer,
 		"cfAPITimeout", cfAPITimeout,
@@ -282,6 +303,14 @@ func main() {
 	if dryRun {
 		setupLog.Info("DRY-RUN mode enabled -- no Cloudflare write operations will be performed")
 	}
+	// --enable-pool-health is only meaningful with load balancing on: the poll
+	// runs inside the LoadBalancerPool reconcile. If set while load balancing is
+	// off, warn and treat it as off (no-op) so the flag never silently implies a
+	// controller that isn't running.
+	if enablePoolHealth && !enableLoadBalancing {
+		setupLog.Info("WARNING: --enable-pool-health has no effect without --enable-loadbalancing; ignoring it")
+		enablePoolHealth = false
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -356,50 +385,67 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Shared channel: Zone coordinator sends drifted CustomHostname CRs to the worker
-	driftEvents := make(chan event.GenericEvent, driftBuffer)
-
-	if err := (&controller.CustomHostnameReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
-		OperatorNamespace: operatorNamespace,
-		ManagementPolicy:  managementPolicy,
-		DeletePolicy:      deletePolicy,
-		DryRun:            dryRun,
-		SSLDefaults: controller.SSLDefaults{
-			CertificateAuthority: sslCertificateAuthority,
-			MinTLSVersion:        sslMinTLSVersion,
-			Method:               sslMethod,
-			Type:                 sslType,
-		},
-		CFAPITimeout:      cfAPITimeout,
-		CFAPIWriteTimeout: cfAPIWriteTimeout,
-		CFAPIMaxRetries:   cfAPIMaxRetries,
-		CFAPIWriteDelay:   cfAPIWriteDelay,
-	}).SetupWithManager(mgr, driftEvents); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "CustomHostname")
-		os.Exit(1)
+	// CustomHostname management (on by default). The Zone controller's custom
+	// hostname drift list feeds drifted CRs to the CustomHostname controller via a
+	// shared channel; both the channel and the controller are allocated only when
+	// the feature is enabled, so a pure load-balancing control cluster neither
+	// watches CustomHostname objects nor lists custom hostnames from Cloudflare.
+	var driftEvents chan event.GenericEvent
+	if enableCustomHostname {
+		setupLog.Info("CustomHostname controller enabled")
+		controller.PreInitCustomHostnameMetrics()
+		driftEvents = make(chan event.GenericEvent, driftBuffer)
+		if err := (&controller.CustomHostnameReconciler{
+			Client:            mgr.GetClient(),
+			Scheme:            mgr.GetScheme(),
+			OperatorNamespace: operatorNamespace,
+			ManagementPolicy:  managementPolicy,
+			DeletePolicy:      deletePolicy,
+			DryRun:            dryRun,
+			SSLDefaults: controller.SSLDefaults{
+				CertificateAuthority: sslCertificateAuthority,
+				MinTLSVersion:        sslMinTLSVersion,
+				Method:               sslMethod,
+				Type:                 sslType,
+			},
+			CFAPITimeout:      cfAPITimeout,
+			CFAPIWriteTimeout: cfAPIWriteTimeout,
+			CFAPIMaxRetries:   cfAPIMaxRetries,
+			CFAPIWriteDelay:   cfAPIWriteDelay,
+		}).SetupWithManager(mgr, driftEvents); err != nil {
+			setupLog.Error(err, "Failed to create controller", "controller", "CustomHostname")
+			os.Exit(1)
+		}
 	}
-	if err := (&controller.ZoneReconciler{
-		Client:               mgr.GetClient(),
-		Scheme:               mgr.GetScheme(),
-		CustomHostnameEvents: driftEvents,
-		DryRun:               dryRun,
-		DriftInterval:        driftInterval,
-		CFAPITimeout:         cfAPITimeout,
-		CFAPIMaxRetries:      cfAPIMaxRetries,
-		CFAPIBulkTimeout:     cfAPIBulkTimeout,
-		CFAPIBulkMaxRetries:  cfAPIBulkMaxRetries,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "Zone")
-		os.Exit(1)
+	// The Zone controller is shared credential/zone-identity substrate: it validates
+	// zone credentials and resolves the zone ID, which both custom hostname
+	// management and load balancing depend on, so it runs whenever either feature is
+	// enabled. Its custom hostname drift list -- the only custom-hostname-specific
+	// work -- is gated on enableCustomHostname via EnableCustomHostname, so a pure
+	// load-balancing cluster initializes zones without listing custom hostnames.
+	if enableCustomHostname || enableLoadBalancing {
+		if err := (&controller.ZoneReconciler{
+			Client:               mgr.GetClient(),
+			Scheme:               mgr.GetScheme(),
+			EnableCustomHostname: enableCustomHostname,
+			CustomHostnameEvents: driftEvents,
+			DryRun:               dryRun,
+			DriftInterval:        driftInterval,
+			CFAPITimeout:         cfAPITimeout,
+			CFAPIMaxRetries:      cfAPIMaxRetries,
+			CFAPIBulkTimeout:     cfAPIBulkTimeout,
+			CFAPIBulkMaxRetries:  cfAPIBulkMaxRetries,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "Failed to create controller", "controller", "Zone")
+			os.Exit(1)
+		}
 	}
 	// Load-balancing controllers are opt-in (single-owner control-plane role).
 	// When disabled, none of them start and their metric series are not
 	// pre-initialized, so per-cluster deployments are unaffected. driftInterval
 	// is validated > 0 above, so RequeueInterval (the LB self-requeue cadence)
 	// is always positive here.
-	if enableLoadBalancer {
+	if enableLoadBalancing {
 		setupLog.Info("Load-balancing controllers enabled")
 		controller.PreInitLoadBalancerMetrics()
 		if err := (&controller.AccountReconciler{
@@ -441,6 +487,7 @@ func main() {
 			CFAPIMaxRetries:   cfAPIMaxRetries,
 			CFAPIWriteDelay:   cfAPIWriteDelay,
 			RequeueInterval:   driftInterval,
+			EnablePoolHealth:  enablePoolHealth,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "Failed to create controller", "controller", "LoadBalancerPool")
 			os.Exit(1)
@@ -448,6 +495,7 @@ func main() {
 		if err := (&controller.LoadBalancerReconciler{
 			Client:            mgr.GetClient(),
 			Scheme:            mgr.GetScheme(),
+			Recorder:          mgr.GetEventRecorderFor("loadbalancer"),
 			OperatorNamespace: operatorNamespace,
 			ManagementPolicy:  managementPolicy,
 			DeletePolicy:      deletePolicy,

@@ -43,6 +43,7 @@ import (
 	"github.com/cloudflare/cloudflare-go/v6/load_balancers"
 	"github.com/cloudflare/cloudflare-go/v6/option"
 
+	accountsv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/accounts/v1beta1"
 	lbv1beta1 "github.com/mrozentsvayg/cf-edge-operator/api/loadbalancing/v1beta1"
 )
 
@@ -104,10 +105,22 @@ type accountInfo struct {
 // +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=loadbalancermonitors,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=loadbalancermonitors/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=loadbalancermonitors/finalizers,verbs=update
-// +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=accounts,verbs=get;list;watch
+// +kubebuilder:rbac:groups=accounts.cf-edge.io,resources=accounts,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
+// Reconcile drives a LoadBalancerMonitor to its desired Cloudflare state, then
+// rebuilds the per-account state gauge. The recompute is deferred here --
+// wrapping the inner reconcile -- so it runs on every path (including the
+// not-found/deletion path, so a deleted CR or the last CR for an account leaves
+// no stale series) while keeping the inner reconcile's tail-returns intact. Load
+// balancing has no Zone-style coordinator, so each controller recomputes its own
+// aggregate; see lbStateGauge.
 func (r *LoadBalancerMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	defer r.recomputeStateGauge(ctx)
+	return r.reconcile(ctx, req)
+}
+
+func (r *LoadBalancerMonitorReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	var mon lbv1beta1.LoadBalancerMonitor
@@ -175,7 +188,7 @@ func (r *LoadBalancerMonitorReconciler) reconcileCloudflareState(ctx context.Con
 	// monitor. Empty description filter falls through to list; we match by
 	// CR name (see findMonitorByCRName).
 	var existing *load_balancers.Monitor
-	attempts, err := cfRetry(ctx, cfResourceLoadBalancerMon, cfOpGet, r.CFAPIMaxRetries, func() error {
+	attempts, err := cfRetry(ctx, cfResourceLoadBalancerMon, cfOpList, r.CFAPIMaxRetries, func() error {
 		var callErr error
 		existing, callErr = r.findMonitorByCRName(ctx, ai, mon)
 		return callErr
@@ -190,7 +203,7 @@ func (r *LoadBalancerMonitorReconciler) reconcileCloudflareState(ctx context.Con
 			log.Info("loadbalancermonitor - not creating (managementPolicy=observe)", "name", mon.Name)
 			mon.Status.ConsecutiveErrors = 0
 			return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, mon, metav1.ConditionFalse,
-				"WaitingForExternal", "Monitor not yet provisioned in Cloudflare")
+				reasonWaitingForExternal, "Monitor not yet provisioned in Cloudflare")
 		}
 		return r.handleCreate(ctx, ai, mon)
 	}
@@ -237,7 +250,7 @@ func (r *LoadBalancerMonitorReconciler) handleCreate(ctx context.Context, ai *ac
 
 	if r.DryRun {
 		log.Info("loadbalancermonitor - not creating (dry-run)", "name", mon.Name)
-		return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, mon, metav1.ConditionFalse, "DryRun", "not creating (dry-run)")
+		return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, mon, metav1.ConditionFalse, reasonDryRun, "not creating (dry-run)")
 	}
 
 	params := buildMonitorNewParams(ai.AccountID, mon)
@@ -319,7 +332,7 @@ func (r *LoadBalancerMonitorReconciler) handleDelete(ctx context.Context, ai *ac
 		policy := effectiveDeletePolicy(mon.Spec.DeletePolicy, r.DeletePolicy)
 		if policy == DeletePolicyOwnOnly {
 			var current *load_balancers.Monitor
-			_, err := cfRetry(ctx, cfResourceLoadBalancerMon, cfOpGet, r.CFAPIMaxRetries, func() error {
+			_, err := cfRetry(ctx, cfResourceLoadBalancerMon, cfOpList, r.CFAPIMaxRetries, func() error {
 				var callErr error
 				current, callErr = r.findMonitorByCRName(ctx, ai, mon)
 				return callErr
@@ -383,15 +396,15 @@ func (r *LoadBalancerMonitorReconciler) findMonitorByCRName(ctx context.Context,
 	for pager.Next() {
 		m := pager.Current()
 		if descriptionHasMarker(m.Description, marker) {
-			recordCFCall(cfResourceLoadBalancerMon, cfOpGet, start, &noErr)
+			recordCFCall(cfResourceLoadBalancerMon, cfOpList, start, &noErr)
 			return &m, nil
 		}
 	}
 	if err := pager.Err(); err != nil {
-		recordCFCall(cfResourceLoadBalancerMon, cfOpGet, start, &err)
+		recordCFCall(cfResourceLoadBalancerMon, cfOpList, start, &err)
 		return nil, err
 	}
-	recordCFCall(cfResourceLoadBalancerMon, cfOpGet, start, &noErr)
+	recordCFCall(cfResourceLoadBalancerMon, cfOpList, start, &noErr)
 	return nil, nil
 }
 
@@ -408,7 +421,7 @@ func buildAccountClientFromRef(ctx context.Context, c client.Client, operatorNS 
 	if ns == "" {
 		ns = operatorNS
 	}
-	var account lbv1beta1.Account
+	var account accountsv1beta1.Account
 	if err := c.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ns}, &account); err != nil {
 		return nil, fmt.Errorf("account %q not found: %w", ref.Name, err)
 	}
@@ -425,7 +438,7 @@ func buildAccountClientFromRef(ctx context.Context, c client.Client, operatorNS 
 
 func (r *LoadBalancerMonitorReconciler) markReady(ctx context.Context, mon *lbv1beta1.LoadBalancerMonitor) (ctrl.Result, error) {
 	mon.Status.ConsecutiveErrors = 0
-	return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, mon, metav1.ConditionTrue, "Reconciled", "Monitor is synchronized with Cloudflare")
+	return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, mon, metav1.ConditionTrue, reasonReconciled, "Monitor is synchronized with Cloudflare")
 }
 
 // setError records a reconcile failure and schedules a self-requeue so the
@@ -455,6 +468,32 @@ func (r *LoadBalancerMonitorReconciler) paceWrite() {
 	if r.CFAPIWriteDelay > 0 {
 		time.Sleep(r.CFAPIWriteDelay)
 	}
+}
+
+// recomputeStateGauge rebuilds the loadbalancermonitors state gauge from every
+// LoadBalancerMonitor CR in the cache, keyed by owning account CR. Called
+// (deferred) on every reconcile so the per-account state counts stay current and
+// a deleted CR -- or the last CR for an account -- leaves no stale series.
+// Monitors are leaf resources -- they do not wait on another CR -- but the
+// "waiting" series can still be non-zero under managementPolicy=observe
+// (WaitingForExternal). Best-effort: a cache-list error is logged at V(1) and
+// retried on the next reconcile. See lbStateGauge for the in-place-rebuild mechanism.
+func (r *LoadBalancerMonitorReconciler) recomputeStateGauge(ctx context.Context) {
+	var list lbv1beta1.LoadBalancerMonitorList
+	if err := r.List(ctx, &list); err != nil {
+		logf.FromContext(ctx).V(1).Info("loadbalancermonitor - state gauge recompute skipped, list failed", "reason", err)
+		return
+	}
+	counts := make(map[string]map[string]int, len(list.Items))
+	for i := range list.Items {
+		mon := &list.Items[i]
+		owner := mon.Spec.AccountRef.Name
+		if counts[owner] == nil {
+			counts[owner] = make(map[string]int, len(lbStateLabels))
+		}
+		counts[owner][lbReadyState(mon.Status.Conditions)]++
+	}
+	lbGaugeMonitor.set(counts)
 }
 
 // ---- SetupWithManager --------------------------------------------------

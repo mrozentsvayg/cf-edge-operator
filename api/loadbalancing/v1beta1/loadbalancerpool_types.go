@@ -29,6 +29,7 @@ import (
 // fleet (typically by prefixing with the service / namespace, e.g. "web-us-pool").
 //
 // +kubebuilder:validation:XValidation:rule="!has(self.latitude) == !has(self.longitude)",message="latitude and longitude must be set together (both or neither)"
+// +kubebuilder:validation:XValidation:rule="!has(self.checkRegions) || size(self.checkRegions) <= 1 || !('ALL_REGIONS' in self.checkRegions)",message="checkRegions: ALL_REGIONS must be the only entry when used"
 type LoadBalancerPoolSpec struct {
 	// AccountRef references the Account supplying the Cloudflare account ID
 	// and API credentials. Pools are account-scoped in Cloudflare.
@@ -55,6 +56,12 @@ type LoadBalancerPoolSpec struct {
 	// to a monitor CR, reads its Status.ID, and passes the CF monitor ID to
 	// CF. If the monitor CR isn't ready yet (Status.ID empty), the pool
 	// reconcile requeues.
+	//
+	// TODO: Cloudflare monitor groups (pool.monitor_group) are deferred to a
+	// future LoadBalancerMonitorGroup CRD. When that lands, a pool will reference
+	// either a monitor or a monitor group via a monitorGroupRef field, constrained
+	// to at-most-one of {monitorRef, monitorGroupRef}. A monitorless pool stays
+	// valid today (no monitor is attached).
 	// +optional
 	MonitorRef *LoadBalancerMonitorRef `json:"monitorRef,omitempty"`
 
@@ -66,6 +73,29 @@ type LoadBalancerPoolSpec struct {
 	// +kubebuilder:validation:Maximum=1024
 	// +optional
 	MinimumOrigins int32 `json:"minimumOrigins,omitempty"`
+
+	// OriginSteering controls how origins are selected for new sessions and
+	// traffic without session affinity. Optional: unset leaves Cloudflare's
+	// setting intact; set enforces it.
+	// +optional
+	OriginSteering *LoadBalancerPoolOriginSteering `json:"originSteering,omitempty"`
+
+	// CheckRegions restricts which Cloudflare regions health-check this pool's
+	// origins. Empty means Cloudflare probes from all regions (the default). Region
+	// codes are CF's macro-regions; ALL_REGIONS is Enterprise-only and, if used,
+	// must be the sole entry (enforced by a CEL rule on the spec). Applied via a
+	// follow-up edit (Cloudflare rejects check_regions on create).
+	// +kubebuilder:validation:items:Enum=WNAM;ENAM;WEU;EEU;NSAM;SSAM;OC;ME;NAF;SAF;SAS;SEAS;NEAS;ALL_REGIONS
+	// +optional
+	CheckRegions []string `json:"checkRegions,omitempty"`
+
+	// LoadShedding configures how the pool sheds traffic. Optional pointer: unset
+	// means the operator does not manage load shedding (an incident-time manual
+	// shed set out-of-band survives). When set, each subfield is managed only when
+	// specified (leave-alone per subfield): a subfield left empty keeps Cloudflare's
+	// current value rather than being reset.
+	// +optional
+	LoadShedding *LoadBalancerPoolLoadShedding `json:"loadShedding,omitempty"`
 
 	// NotificationEmail is a comma-separated list of email addresses CF
 	// notifies when the pool's health changes. Deprecated by CF in favor of
@@ -119,10 +149,26 @@ type LoadBalancerPoolOrigin struct {
 
 	// Address is the IP address or publicly-resolvable hostname of the
 	// origin. Hostnames MUST resolve directly to the origin -- a
-	// Cloudflare-proxied CNAME won't work.
+	// Cloudflare-proxied CNAME won't work. To use an internal/reserved address,
+	// VirtualNetworkID must also be set.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	Address string `json:"address"`
+
+	// Port is the upstream port for connections to this origin. 0 (the default)
+	// means the protocol's default port is used. Modeled so the operator no longer
+	// clobbers an out-of-band port on every update.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	Port int32 `json:"port,omitempty"`
+
+	// VirtualNetworkID is the virtual network subnet ID the origin belongs to.
+	// Required when Address is an internal/reserved address; the virtual network
+	// must belong to the same Cloudflare account. Modeled so the operator no longer
+	// clobbers an out-of-band value on every update.
+	// +optional
+	VirtualNetworkID string `json:"virtualNetworkID,omitempty"`
 
 	// Enabled controls whether this specific origin receives traffic and is
 	// health-checked. Disabled origins are hidden from steering.
@@ -170,6 +216,50 @@ type LoadBalancerMonitorRef struct {
 	// namespace if omitted.
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
+}
+
+// LoadBalancerPoolOriginSteering configures how origins are selected within the
+// pool for new sessions and traffic without session affinity.
+type LoadBalancerPoolOriginSteering struct {
+	// Policy is the origin-steering policy.
+	//   - "random": select an origin randomly.
+	//   - "hash": select an origin by hashing the CF-Connecting-IP address.
+	//   - "least_outstanding_requests": weight by outstanding requests.
+	//   - "least_connections": weight by open connections.
+	// +kubebuilder:validation:Enum=random;hash;least_outstanding_requests;least_connections
+	// +optional
+	Policy string `json:"policy,omitempty"`
+}
+
+// LoadBalancerPoolLoadShedding configures how the pool sheds traffic. Each subfield
+// is managed independently: the operator sends and drift-checks a subfield only when
+// the CR specifies it, so an unset subfield keeps Cloudflare's current value.
+type LoadBalancerPoolLoadShedding struct {
+	// DefaultPercent is the percent of new-session and non-affinity traffic to
+	// shed, per DefaultPolicy. Expressed as a string in the range 0.0-100.0 to
+	// preserve fractional precision (Cloudflare accepts a float).
+	// +kubebuilder:validation:Pattern="^(100(\\.0+)?|[0-9]{1,2}(\\.[0-9]+)?)$"
+	// +optional
+	DefaultPercent string `json:"defaultPercent,omitempty"`
+
+	// DefaultPolicy is the policy used when shedding new-session traffic.
+	//   - "random": shed a random percent of requests.
+	//   - "hash": hash CF-Connecting-IP and shed all requests from a percent of IPs.
+	// +kubebuilder:validation:Enum=random;hash
+	// +optional
+	DefaultPolicy string `json:"defaultPolicy,omitempty"`
+
+	// SessionPercent is the percent of existing sessions to shed, per
+	// SessionPolicy. Expressed as a string in the range 0.0-100.0.
+	// +kubebuilder:validation:Pattern="^(100(\\.0+)?|[0-9]{1,2}(\\.[0-9]+)?)$"
+	// +optional
+	SessionPercent string `json:"sessionPercent,omitempty"`
+
+	// SessionPolicy is the policy used when shedding existing sessions. Only "hash"
+	// is supported (to avoid exponential decay).
+	// +kubebuilder:validation:Enum=hash
+	// +optional
+	SessionPolicy string `json:"sessionPolicy,omitempty"`
 }
 
 // LoadBalancerPoolStatus is the observed state of a LoadBalancerPool.

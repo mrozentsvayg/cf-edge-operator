@@ -1,0 +1,64 @@
+{{- /*
+Unified CRD emission. All six CRDs live in crds-render/ -- a plain data directory
+loaded via .Files.Glob, NOT Helm's special crds/ dir -- so their lifecycle is
+symmetric across features and driven by the same values:
+
+  crds.enabled -- master switch. false lets you manage the CRDs out-of-band
+                  (cluster admin applies them separately); the chart emits none.
+  crds.keep    -- stamp helm.sh/resource-policy:keep and argocd Prune=false onto
+                  every CRD so a `helm uninstall` or GitOps prune never
+                  cascade-deletes the CRDs (which would delete every CR they
+                  define). This mirrors cert-manager's crds.keep behavior.
+
+Each CRD is additionally gated on the feature that owns it, derived from the API
+group in the filename (<group>_<plural>.yaml):
+
+  saas.cf-edge.io          -> features.customhostname.enabled
+  domains.cf-edge.io       -> shared substrate (Zone); either feature enables it
+  accounts.cf-edge.io      -> features.loadBalancing.enabled (Account credential substrate)
+  loadbalancing.cf-edge.io -> features.loadBalancing.enabled
+
+An unmapped API group is a hard error (fail): a newly generated CRD must be added
+to the mapping here, so it can never render ungated by accident.
+
+The schema body is emitted VERBATIM from the data file, so it stays byte-identical
+to config/crd/bases (verified by `make helm-crd-diff`). .Files.Get does not run the
+template engine over the file, so the crds.keep annotations cannot live inside it;
+instead the wrapper splices them under metadata.annotations by a single string
+replacement. Each data file has exactly one `annotations:` key (metadata.annotations,
+from controller-gen), so the replacement is unambiguous. If a data file ever lacks a
+2-space `annotations:` block (so the splice would silently no-op and the CRD would
+render without the keep/Prune annotations), the wrapper fails with a clear error
+naming the file rather than emitting an unprotected CRD. fromYaml/toYaml is avoided
+deliberately -- it reorders keys and would break the byte-for-byte diff.
+*/ -}}
+{{- if eq (include "cf-edge-operator.crdsEnabled" .) "true" }}
+{{- $ch := eq (include "cf-edge-operator.customhostnameEnabled" .) "true" }}
+{{- $lb := eq (include "cf-edge-operator.loadBalancingEnabled" .) "true" }}
+{{- range $path, $_ := .Files.Glob "crds-render/*.yaml" }}
+{{- $group := index (splitList "_" (base $path)) 0 }}
+{{- $emit := false }}
+{{- if eq $group "saas.cf-edge.io" }}
+{{- $emit = $ch }}
+{{- else if eq $group "domains.cf-edge.io" }}
+{{- $emit = (or $ch $lb) }}
+{{- else if eq $group "accounts.cf-edge.io" }}
+{{- $emit = $lb }}
+{{- else if eq $group "loadbalancing.cf-edge.io" }}
+{{- $emit = $lb }}
+{{- else }}
+{{- fail (printf "crds.yaml: unmapped CRD apiGroup %q (file %s) -- add it to the apiGroup->feature mapping" $group (base $path)) }}
+{{- end }}
+{{- if $emit }}
+{{- $body := $.Files.Get $path }}
+{{- if eq (include "cf-edge-operator.crdsKeep" $) "true" }}
+{{- $stamped := replace "  annotations:\n" "  annotations:\n    helm.sh/resource-policy: keep\n    argocd.argoproj.io/sync-options: Prune=false\n" $body }}
+{{- if eq $stamped $body }}
+{{- fail (printf "crds.yaml: crds.keep=true but no 2-space 'metadata.annotations:' block was found in %s to splice the keep/Prune annotations into -- the CRD would render without them; regenerate the CRD (controller-gen emits metadata.annotations) or adjust the splice" (base $path)) }}
+{{- end }}
+{{- $body = $stamped }}
+{{- end }}
+{{ $body }}
+{{- end }}
+{{- end }}
+{{- end }}

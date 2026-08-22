@@ -382,6 +382,7 @@ var _ = Describe("Integration", Ordered, func() {
 		err = (&ZoneReconciler{
 			Client:               mgr.GetClient(),
 			Scheme:               mgr.GetScheme(),
+			EnableCustomHostname: true,
 			CustomHostnameEvents: chEvents,
 			DriftInterval:        5 * time.Second,
 			CFAPITimeout:         5 * time.Second,

@@ -304,3 +304,166 @@ func TestOriginsDrifted_HostHeader(t *testing.T) {
 		t.Fatal("unmanaged header (nil spec) should not drift")
 	}
 }
+
+func TestBuildOriginParams_PortAndVNet(t *testing.T) {
+	origins := []lbv1beta1.LoadBalancerPoolOrigin{
+		{Name: "default-port", Address: "1.1.1.1"},                                       // port 0, vnet "" -> unmanaged
+		{Name: "explicit", Address: "2.2.2.2", Port: 8443, VirtualNetworkID: "vnet-abc"}, // both managed
+	}
+	out := buildOriginParams(origins)
+	// Port 0 means "protocol default" -> leave-alone, not sent (avoids drift-loop).
+	if out[0].Port.Present {
+		t.Error("origin[0] Port should be absent when 0 (protocol default)")
+	}
+	if out[0].VirtualNetworkID.Present {
+		t.Error("origin[0] VirtualNetworkID should be absent when empty")
+	}
+	if !out[1].Port.Present || out[1].Port.Value != 8443 {
+		t.Errorf("origin[1] Port not wired: present=%v value=%v", out[1].Port.Present, out[1].Port.Value)
+	}
+	if !out[1].VirtualNetworkID.Present || out[1].VirtualNetworkID.Value != "vnet-abc" {
+		t.Errorf("origin[1] VirtualNetworkID not wired: present=%v value=%q", out[1].VirtualNetworkID.Present, out[1].VirtualNetworkID.Value)
+	}
+}
+
+func TestOriginsDrifted_PortAndVNet(t *testing.T) {
+	// Port is managed only when the CR sets a non-zero value.
+	cfPort := []load_balancers.Origin{{Name: "a", Address: "1.1.1.1", Enabled: true, Port: 8443}}
+	// CR omits port (0) -> leave-alone: no drift/clobber even though CF reports 8443.
+	if originsDrifted(cfPort, []lbv1beta1.LoadBalancerPoolOrigin{{Name: "a", Address: "1.1.1.1"}}) {
+		t.Fatal("unset port (0) must be leave-alone -- no drift/clobber")
+	}
+	if originsDrifted(cfPort, []lbv1beta1.LoadBalancerPoolOrigin{{Name: "a", Address: "1.1.1.1", Port: 8443}}) {
+		t.Fatal("matching port should not drift")
+	}
+	if !originsDrifted(cfPort, []lbv1beta1.LoadBalancerPoolOrigin{{Name: "a", Address: "1.1.1.1", Port: 9000}}) {
+		t.Fatal("differing port should drift")
+	}
+	// VirtualNetworkID is managed only when set.
+	cfVNet := []load_balancers.Origin{{Name: "a", Address: "1.1.1.1", Enabled: true, VirtualNetworkID: "vnet-1"}}
+	if originsDrifted(cfVNet, []lbv1beta1.LoadBalancerPoolOrigin{{Name: "a", Address: "1.1.1.1"}}) {
+		t.Fatal("unset vnet must be leave-alone -- no drift")
+	}
+	if !originsDrifted(cfVNet, []lbv1beta1.LoadBalancerPoolOrigin{{Name: "a", Address: "1.1.1.1", VirtualNetworkID: "vnet-2"}}) {
+		t.Fatal("differing vnet should drift")
+	}
+}
+
+func TestBuildOriginSteering(t *testing.T) {
+	if _, ok := buildOriginSteering(newPoolCR(lbv1beta1.LoadBalancerPoolSpec{})); ok {
+		t.Fatal("nil originSteering must not be sent")
+	}
+	if _, ok := buildOriginSteering(newPoolCR(lbv1beta1.LoadBalancerPoolSpec{OriginSteering: &lbv1beta1.LoadBalancerPoolOriginSteering{}})); ok {
+		t.Fatal("empty originSteering policy must not be sent")
+	}
+	p, ok := buildOriginSteering(newPoolCR(lbv1beta1.LoadBalancerPoolSpec{
+		OriginSteering: &lbv1beta1.LoadBalancerPoolOriginSteering{Policy: "least_connections"},
+	}))
+	if !ok || string(p.Policy.Value) != "least_connections" {
+		t.Fatalf("originSteering not wired: ok=%v value=%q", ok, p.Policy.Value)
+	}
+}
+
+func TestPoolDrifted_OriginSteering(t *testing.T) {
+	withOrigin := func(spec lbv1beta1.LoadBalancerPoolSpec) *lbv1beta1.LoadBalancerPool {
+		spec.Origins = []lbv1beta1.LoadBalancerPoolOrigin{{Name: "a", Address: "1.1.1.1"}}
+		return newPoolCR(spec)
+	}
+	cf := &load_balancers.Pool{
+		Name: "us-pool", Enabled: true,
+		Origins:        []load_balancers.Origin{{Name: "a", Address: "1.1.1.1", Enabled: true}},
+		OriginSteering: load_balancers.OriginSteering{Policy: "hash"},
+	}
+	if poolDrifted(cf, withOrigin(lbv1beta1.LoadBalancerPoolSpec{}), "") {
+		t.Fatal("unmanaged originSteering (nil) should not drift")
+	}
+	if poolDrifted(cf, withOrigin(lbv1beta1.LoadBalancerPoolSpec{OriginSteering: &lbv1beta1.LoadBalancerPoolOriginSteering{Policy: "hash"}}), "") {
+		t.Fatal("matching originSteering should not drift")
+	}
+	if !poolDrifted(cf, withOrigin(lbv1beta1.LoadBalancerPoolSpec{OriginSteering: &lbv1beta1.LoadBalancerPoolOriginSteering{Policy: "random"}}), "") {
+		t.Fatal("differing originSteering should drift")
+	}
+}
+
+func TestCheckRegions_CreateThenEdit(t *testing.T) {
+	pool := newPoolCR(lbv1beta1.LoadBalancerPoolSpec{
+		Origins:      []lbv1beta1.LoadBalancerPoolOrigin{{Name: "a", Address: "1.1.1.1"}},
+		CheckRegions: []string{"WNAM", "WEU"},
+	})
+	// check_regions is create-then-edit: PoolNewParams has no CheckRegions field
+	// (Cloudflare rejects it on create), so its absence from create is a compile-time
+	// guarantee -- buildPoolNewParams cannot send it. Verify the edit path wires it.
+	ep := buildPoolEditParams("acct", pool, "")
+	if !ep.CheckRegions.Present || len(ep.CheckRegions.Value) != 2 {
+		t.Fatalf("check_regions not wired into edit params: present=%v len=%d", ep.CheckRegions.Present, len(ep.CheckRegions.Value))
+	}
+	// Empty -> leave-alone (not sent on edit).
+	poolEmpty := newPoolCR(lbv1beta1.LoadBalancerPoolSpec{Origins: pool.Spec.Origins})
+	if buildPoolEditParams("acct", poolEmpty, "").CheckRegions.Present {
+		t.Fatal("empty check_regions must be leave-alone (not sent)")
+	}
+}
+
+func TestPoolDrifted_CheckRegions(t *testing.T) {
+	origins := []lbv1beta1.LoadBalancerPoolOrigin{{Name: "a", Address: "1.1.1.1"}}
+	cf := &load_balancers.Pool{
+		Name: "us-pool", Enabled: true,
+		Origins:      []load_balancers.Origin{{Name: "a", Address: "1.1.1.1", Enabled: true}},
+		CheckRegions: []load_balancers.CheckRegion{"WNAM", "WEU"},
+	}
+	// Same set, different order -> no drift (order-insensitive).
+	if poolDrifted(cf, newPoolCR(lbv1beta1.LoadBalancerPoolSpec{Origins: origins, CheckRegions: []string{"WEU", "WNAM"}}), "") {
+		t.Fatal("same check_regions set in different order should not drift")
+	}
+	if !poolDrifted(cf, newPoolCR(lbv1beta1.LoadBalancerPoolSpec{Origins: origins, CheckRegions: []string{"WNAM", "ENAM"}}), "") {
+		t.Fatal("differing check_regions should drift")
+	}
+	// Empty -> leave-alone (CF value ignored).
+	if poolDrifted(cf, newPoolCR(lbv1beta1.LoadBalancerPoolSpec{Origins: origins}), "") {
+		t.Fatal("empty check_regions must be leave-alone (no drift)")
+	}
+}
+
+func TestBuildLoadShedding(t *testing.T) {
+	if _, ok := buildLoadShedding(nil); ok {
+		t.Fatal("nil loadShedding must not be sent")
+	}
+	if _, ok := buildLoadShedding(&lbv1beta1.LoadBalancerPoolLoadShedding{}); ok {
+		t.Fatal("empty loadShedding (no subfield expressed) must not be sent")
+	}
+	// Only default_percent + default_policy expressed -> per-subfield leave-alone.
+	p, ok := buildLoadShedding(&lbv1beta1.LoadBalancerPoolLoadShedding{DefaultPercent: "55", DefaultPolicy: "hash"})
+	if !ok {
+		t.Fatal("expressed loadShedding must be sent")
+	}
+	if !p.DefaultPercent.Present || p.DefaultPercent.Value != 55 {
+		t.Errorf("default_percent not wired: present=%v value=%v", p.DefaultPercent.Present, p.DefaultPercent.Value)
+	}
+	if !p.DefaultPolicy.Present || string(p.DefaultPolicy.Value) != "hash" {
+		t.Errorf("default_policy not wired: %v", p.DefaultPolicy.Value)
+	}
+	if p.SessionPercent.Present || p.SessionPolicy.Present {
+		t.Error("unexpressed loadShedding subfields must be absent (leave-alone)")
+	}
+}
+
+func TestPoolDrifted_LoadShedding(t *testing.T) {
+	origins := []lbv1beta1.LoadBalancerPoolOrigin{{Name: "a", Address: "1.1.1.1"}}
+	cf := &load_balancers.Pool{
+		Name: "us-pool", Enabled: true,
+		Origins:      []load_balancers.Origin{{Name: "a", Address: "1.1.1.1", Enabled: true}},
+		LoadShedding: load_balancers.LoadShedding{DefaultPercent: 50, DefaultPolicy: "random", SessionPercent: 10, SessionPolicy: "hash"},
+	}
+	// nil -> leave-alone (an incident-time out-of-band shed survives).
+	if poolDrifted(cf, newPoolCR(lbv1beta1.LoadBalancerPoolSpec{Origins: origins}), "") {
+		t.Fatal("nil loadShedding must be leave-alone (no drift)")
+	}
+	// Managed, expressed subfield matches -> no drift (others leave-alone).
+	if poolDrifted(cf, newPoolCR(lbv1beta1.LoadBalancerPoolSpec{Origins: origins, LoadShedding: &lbv1beta1.LoadBalancerPoolLoadShedding{DefaultPercent: "50"}}), "") {
+		t.Fatal("matching load_shedding subfield should not drift")
+	}
+	// Managed, expressed subfield differs -> drift.
+	if !poolDrifted(cf, newPoolCR(lbv1beta1.LoadBalancerPoolSpec{Origins: origins, LoadShedding: &lbv1beta1.LoadBalancerPoolLoadShedding{DefaultPercent: "90"}}), "") {
+		t.Fatal("differing load_shedding default_percent should drift")
+	}
+}
