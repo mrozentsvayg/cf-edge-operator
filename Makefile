@@ -99,8 +99,8 @@ lint: golangci-lint lint-actions lint-shell ## Run all linters (Go, GitHub Actio
 	"$(GOLANGCI_LINT)" run
 
 .PHONY: lint-actions
-lint-actions: actionlint ## Lint GitHub Actions workflow files.
-	"$(ACTIONLINT)" -color
+lint-actions: actionlint shellcheck ## Lint GitHub Actions workflows (incl. embedded run: scripts via the pinned shellcheck).
+	"$(ACTIONLINT)" -color -shellcheck "$(SHELLCHECK)"
 
 .PHONY: lint-shell
 lint-shell: shellcheck ## Shellcheck the repo's shell scripts.
