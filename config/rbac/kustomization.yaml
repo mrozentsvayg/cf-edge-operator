@@ -28,4 +28,16 @@ resources:
 - customhostname_admin_role.yaml
 - customhostname_editor_role.yaml
 - customhostname_viewer_role.yaml
+- account_admin_role.yaml
+- account_editor_role.yaml
+- account_viewer_role.yaml
+- loadbalancer_admin_role.yaml
+- loadbalancer_editor_role.yaml
+- loadbalancer_viewer_role.yaml
+- loadbalancerpool_admin_role.yaml
+- loadbalancerpool_editor_role.yaml
+- loadbalancerpool_viewer_role.yaml
+- loadbalancermonitor_admin_role.yaml
+- loadbalancermonitor_editor_role.yaml
+- loadbalancermonitor_viewer_role.yaml
 

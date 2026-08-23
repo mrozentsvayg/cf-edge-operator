@@ -31,3 +31,6 @@ go.work
 
 # Helm chart packages
 *.tgz
+
+# Claude Code local config + scratch (personal allowlist, worktrees) -- never commit
+.claude/

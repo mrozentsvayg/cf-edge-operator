@@ -4,6 +4,10 @@
 resources:
 - bases/saas.cf-edge.io_customhostnames.yaml
 - bases/domains.cf-edge.io_zones.yaml
+- bases/accounts.cf-edge.io_accounts.yaml
+- bases/loadbalancing.cf-edge.io_loadbalancermonitors.yaml
+- bases/loadbalancing.cf-edge.io_loadbalancerpools.yaml
+- bases/loadbalancing.cf-edge.io_loadbalancers.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

@@ -95,8 +95,12 @@ cover: test ## Run tests and open HTML coverage report.
 	go tool cover -html=cover.out
 
 .PHONY: lint
-lint: golangci-lint lint-actions lint-shell ## Run all linters (Go, GitHub Actions workflows, shell).
+lint: verify-scaffold golangci-lint lint-actions lint-shell ## Run all linters (Go, GitHub Actions workflows, shell) + CRD/RBAC scaffolding.
 	"$(GOLANGCI_LINT)" run
+
+.PHONY: verify-scaffold
+verify-scaffold: ## Verify every CRD + its RBAC helper roles are wired into the kustomize install/deploy paths.
+	bash test/verify-scaffold.sh
 
 .PHONY: lint-actions
 lint-actions: actionlint shellcheck ## Lint GitHub Actions workflows (incl. embedded run: scripts via the pinned shellcheck).

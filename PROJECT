@@ -32,27 +32,36 @@ resources:
     namespaced: true
   controller: true
   domain: cf-edge.io
-  group: saas
-  kind: LoadBalancerMonitor
-  path: github.com/mrozentsvayg/cf-edge-operator/api/saas/v1beta1
+  group: accounts
+  kind: Account
+  path: github.com/mrozentsvayg/cf-edge-operator/api/accounts/v1beta1
   version: v1beta1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
   domain: cf-edge.io
-  group: saas
-  kind: LoadBalancerPool
-  path: github.com/mrozentsvayg/cf-edge-operator/api/saas/v1beta1
-  version: v1beta1
-- api:
-    crdVersion: v1
-    namespaced: true
-  controller: true
-  domain: cf-edge.io
-  group: saas
+  group: loadbalancing
   kind: LoadBalancer
-  path: github.com/mrozentsvayg/cf-edge-operator/api/saas/v1beta1
+  path: github.com/mrozentsvayg/cf-edge-operator/api/loadbalancing/v1beta1
+  version: v1beta1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: cf-edge.io
+  group: loadbalancing
+  kind: LoadBalancerPool
+  path: github.com/mrozentsvayg/cf-edge-operator/api/loadbalancing/v1beta1
+  version: v1beta1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: cf-edge.io
+  group: loadbalancing
+  kind: LoadBalancerMonitor
+  path: github.com/mrozentsvayg/cf-edge-operator/api/loadbalancing/v1beta1
   version: v1beta1
 multigroup: true
 version: "3"
