@@ -155,7 +155,7 @@ build: manifests generate fmt vet ## Build manager binary.
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go
+	go run ./cmd/main.go $(KUBECONTEXT_ARG)
 
 # dev-run: build and run the operator locally against the active kubeconfig.
 # Stops any existing instance first, waits for ports to free, then starts
@@ -183,6 +183,7 @@ dev-run: build ## Build and run locally; stop any existing instance first.
 		--metrics-secure=false \
 		--metrics-bind-address=:$(DEV_METRICS_PORT) \
 		--health-probe-bind-address=:$(DEV_PROBE_PORT) \
+		$(KUBECONTEXT_ARG) \
 		$(ARGS) \
 		> $(DEV_LOG) 2>&1 & echo $$! > /tmp/cf-edge-operator.pid
 	@for i in $$(seq 1 20); do \
@@ -247,21 +248,21 @@ endif
 .PHONY: install
 install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
 	@out="$$( "$(KUSTOMIZE)" build config/crd 2>/dev/null || true )"; \
-	if [ -n "$$out" ]; then echo "$$out" | "$(KUBECTL)" apply -f -; else echo "No CRDs to install; skipping."; fi
+	if [ -n "$$out" ]; then echo "$$out" | "$(KUBECTL)" $(KUBECTL_CTX) apply -f -; else echo "No CRDs to install; skipping."; fi
 
 .PHONY: uninstall
 uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	@out="$$( "$(KUSTOMIZE)" build config/crd 2>/dev/null || true )"; \
-	if [ -n "$$out" ]; then echo "$$out" | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -; else echo "No CRDs to delete; skipping."; fi
+	if [ -n "$$out" ]; then echo "$$out" | "$(KUBECTL)" $(KUBECTL_CTX) delete --ignore-not-found=$(ignore-not-found) -f -; else echo "No CRDs to delete; skipping."; fi
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
 	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
-	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" apply -f -
+	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" $(KUBECTL_CTX) apply -f -
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
+	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" $(KUBECTL_CTX) delete --ignore-not-found=$(ignore-not-found) -f -
 
 ##@ Dependencies
 
@@ -272,6 +273,13 @@ $(LOCALBIN):
 
 ## Tool Binaries
 KUBECTL ?= kubectl
+# KUBECONTEXT optionally pins the kubeconfig context for kubectl (install/uninstall/
+# deploy) and for the out-of-cluster operator (run/dev-run), so these targets never
+# depend on the current-context. Empty = use the current-context. Example:
+#   make install KUBECONTEXT=kind-cf-lb
+KUBECONTEXT ?=
+KUBECTL_CTX = $(if $(KUBECONTEXT),--context $(KUBECONTEXT),)
+KUBECONTEXT_ARG = $(if $(KUBECONTEXT),--kube-context=$(KUBECONTEXT),)
 KIND ?= kind
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen

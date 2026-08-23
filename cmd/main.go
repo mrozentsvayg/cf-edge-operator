@@ -31,6 +31,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -79,6 +80,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var operatorNamespace string
+	var kubeContext string
 	var managementPolicy string
 	var deletePolicy string
 	var dryRun bool
@@ -109,6 +111,10 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.StringVar(&operatorNamespace, "operator-namespace", "cf-edge-operator-system",
 		"Namespace where Zone resources are managed. Used to resolve ZoneRef when namespace is omitted.")
+	flag.StringVar(&kubeContext, "kube-context", "",
+		"Kubeconfig context to use when the operator runs out-of-cluster (e.g. `make run` or local "+
+			"development). Empty uses the kubeconfig's current-context. Ignored in-cluster, where the "+
+			"pod's ServiceAccount (in-cluster config) is always used.")
 	flag.StringVar(&managementPolicy, "management-policy", "manage",
 		"Default management policy for all managed resources (CustomHostname and load-balancing CRs). "+
 			"'manage': full lifecycle (create, update, delete). "+
@@ -223,6 +229,7 @@ func main() {
 		"sslType", sslType,
 		"zapDevel", opts.Development,
 		"zapLogLevel", flag.Lookup("zap-log-level").Value.String(),
+		"kubeContext", kubeContext,
 	)
 	switch managementPolicy {
 	case controller.ManagementPolicyManage, controller.ManagementPolicyCreate, controller.ManagementPolicyObserve:
@@ -362,7 +369,17 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	// GetConfigWithContext honors --kubeconfig / $KUBECONFIG and selects the named
+	// context when running out-of-cluster; an empty kubeContext keeps the
+	// current-context. In-cluster the pod ServiceAccount is used and kubeContext is
+	// ignored.
+	restConfig, err := config.GetConfigWithContext(kubeContext)
+	if err != nil {
+		setupLog.Error(err, "unable to load kubeconfig", "kubeContext", kubeContext)
+		os.Exit(1)
+	}
+
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		HealthProbeBindAddress: probeAddr,

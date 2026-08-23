@@ -27,6 +27,12 @@ make run          # run against your current kubeconfig context
 make test-e2e     # full e2e against a dedicated Kind cluster
 ```
 
+When running out-of-cluster (`make run` / `make dev-run`), pass
+`KUBECONTEXT=<context>` to pin the target cluster instead of relying on the
+current-context (it maps to the operator's `--kube-context` flag); kubectl-based
+targets like `make install` honor the same variable. In-cluster the operator
+always uses its pod ServiceAccount, so `--kube-context` is ignored there.
+
 ## Code generation
 
 CRDs, RBAC, and DeepCopy methods are generated from `+kubebuilder` markers.
