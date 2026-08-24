@@ -112,7 +112,6 @@ type LoadBalancerReconciler struct {
 // +kubebuilder:rbac:groups=loadbalancing.cf-edge.io,resources=loadbalancerpools,verbs=get;list;watch
 // +kubebuilder:rbac:groups=domains.cf-edge.io,resources=zones,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
-// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile drives a LoadBalancer to its desired Cloudflare state, then rebuilds
 // the per-zone state gauge. The recompute is deferred here -- wrapping the inner
@@ -589,6 +588,7 @@ func networksDrifted(conds []metav1.Condition) bool {
 // re-reconciles after RequeueInterval even without a spec change or watch event.
 func (r *LoadBalancerReconciler) setError(ctx context.Context, lb *lbv1beta1.LoadBalancer, reason, message string) (ctrl.Result, error) {
 	lb.Status.ConsecutiveErrors++
+	recordFailureEvent(r.Recorder, lb, lb.Status.Conditions, conditionReady, reason, message)
 	return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, lb, metav1.ConditionFalse, reason, message)
 }
 

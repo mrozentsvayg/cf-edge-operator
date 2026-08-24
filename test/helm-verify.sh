@@ -106,7 +106,7 @@ grep -q "resources: \[customhostnames\]" <<<"$def" || { echo "FAIL: CH RBAC abse
 grep -q "resources: \[zones\]"           <<<"$def" || { echo "FAIL: Zone RBAC absent by default"; exit 1; }
 grep -q "loadbalancing.cf-edge.io"       <<<"$def" && { echo "FAIL: loadbalancing RBAC/CRDs present by default"; exit 1; }
 grep -q "accounts.cf-edge.io"            <<<"$def" && { echo "FAIL: accounts RBAC/CRDs present by default"; exit 1; }
-grep -q "events.k8s.io"                  <<<"$def" && { echo "FAIL: events.k8s.io RBAC present by default (should be LB-gated)"; exit 1; }
+grep -q "apiGroups: \[events.k8s.io\]"    <<<"$def" || { echo "FAIL: events.k8s.io RBAC absent by default (should be unconditional -- every controller emits Events)"; exit 1; }
 # features.loadBalancing.enabled=true adds the flag value, LB RBAC, and the
 # LB CRDs (Account lives in its own accounts.cf-edge.io group, LoadBalancer/
 # Pool/Monitor in loadbalancing.cf-edge.io).
@@ -116,8 +116,8 @@ grep -q "resources: \[accounts\]"            <<<"$cp" || { echo "FAIL: LB RBAC a
 grep -q "name: accounts.accounts.cf-edge.io" <<<"$cp" || { echo "FAIL: accounts CRD absent when loadBalancing enabled"; exit 1; }
 n=$(grep -cE "name: (loadbalancers|loadbalancerpools|loadbalancermonitors)\.loadbalancing\.cf-edge\.io" <<<"$cp")
 [ "$n" = "3" ] || { echo "FAIL: expected 3 loadbalancing CRDs when loadBalancing enabled, got $n"; exit 1; }
-# The LB controller emits Events via events.k8s.io/v1 (mgr.GetEventRecorder), so the
-# manager ClusterRole must grant events.k8s.io when loadBalancing is enabled.
+# events.k8s.io is unconditional (every controller emits Events via events.k8s.io/v1),
+# so it must render in the LB-enabled output too.
 grep -q "apiGroups: \[events.k8s.io\]" <<<"$cp" || { echo "FAIL: events.k8s.io RBAC absent when loadBalancing enabled"; exit 1; }
 # customhostname disabled omits the CH flag value and CH RBAC; with LB also
 # off, the shared Zone RBAC is omitted too.
@@ -125,6 +125,8 @@ choff=$(helm template test "$C"/ --set features.customhostname.enabled=false)
 grep -q "\-\-enable-customhostname=false" <<<"$choff" || { echo "FAIL: --enable-customhostname=false absent when CH disabled"; exit 1; }
 grep -q "resources: \[customhostnames\]"  <<<"$choff" && { echo "FAIL: CH RBAC present when CH disabled"; exit 1; }
 grep -q "resources: \[zones\]"            <<<"$choff" && { echo "FAIL: Zone RBAC present when both CH and LB disabled"; exit 1; }
+# events.k8s.io is unconditional -- present even with every feature disabled.
+grep -q "apiGroups: \[events.k8s.io\]"    <<<"$choff" || { echo "FAIL: events.k8s.io RBAC absent when all features disabled (should be unconditional)"; exit 1; }
 # Zone RBAC returns when LB alone is enabled (Zone is shared substrate).
 lbonly=$(helm template test "$C"/ --set features.customhostname.enabled=false --set features.loadBalancing.enabled=true)
 grep -q "resources: \[customhostnames\]" <<<"$lbonly" && { echo "FAIL: CH RBAC present when CH disabled (LB on)"; exit 1; }

@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -97,7 +98,9 @@ const (
 // Triggered by spec changes and by the Zone coordinator via the event channel on drift detection.
 type CustomHostnameReconciler struct {
 	client.Client
-	Scheme            *runtime.Scheme
+	Scheme *runtime.Scheme
+	// Recorder emits Kubernetes Events on failure transitions (nil disables Events).
+	Recorder          events.EventRecorder
 	OperatorNamespace string
 	// ManagementPolicy is the operator-wide default: "manage", "create", or "observe".
 	ManagementPolicy string
@@ -633,6 +636,7 @@ func (r *CustomHostnameReconciler) setConflict(ctx context.Context, ch *saasv1be
 // setError increments ConsecutiveErrors, sets a Ready=False condition, and updates status.
 func (r *CustomHostnameReconciler) setError(ctx context.Context, ch *saasv1beta1.CustomHostname, reason, message string) error {
 	ch.Status.ConsecutiveErrors++
+	recordFailureEvent(r.Recorder, ch, ch.Status.Conditions, conditionReady, reason, message)
 	return r.setCondition(ctx, ch, metav1.ConditionFalse, reason, message)
 }
 

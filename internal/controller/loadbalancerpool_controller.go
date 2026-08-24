@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -63,7 +64,9 @@ const (
 // this pool's refs to a CF pool ID (via status.ID).
 type LoadBalancerPoolReconciler struct {
 	client.Client
-	Scheme            *runtime.Scheme
+	Scheme *runtime.Scheme
+	// Recorder emits Kubernetes Events on failure transitions (nil disables Events).
+	Recorder          events.EventRecorder
 	OperatorNamespace string
 	ManagementPolicy  string
 	DeletePolicy      string
@@ -485,6 +488,7 @@ func (r *LoadBalancerPoolReconciler) markReady(ctx context.Context, pool *lbv1be
 // re-reconciles after RequeueInterval even without a spec change or watch event.
 func (r *LoadBalancerPoolReconciler) setError(ctx context.Context, pool *lbv1beta1.LoadBalancerPool, reason, message string) (ctrl.Result, error) {
 	pool.Status.ConsecutiveErrors++
+	recordFailureEvent(r.Recorder, pool, pool.Status.Conditions, conditionReady, reason, message)
 	return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, pool, metav1.ConditionFalse, reason, message)
 }
 

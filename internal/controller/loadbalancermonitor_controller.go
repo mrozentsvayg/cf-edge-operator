@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -67,7 +68,9 @@ const (
 // to make reconciliation idempotent across restarts and CF-side deletions.
 type LoadBalancerMonitorReconciler struct {
 	client.Client
-	Scheme            *runtime.Scheme
+	Scheme *runtime.Scheme
+	// Recorder emits Kubernetes Events on failure transitions (nil disables Events).
+	Recorder          events.EventRecorder
 	OperatorNamespace string
 	// ManagementPolicy is the operator-wide default: manage / create / observe.
 	ManagementPolicy string
@@ -445,6 +448,7 @@ func (r *LoadBalancerMonitorReconciler) markReady(ctx context.Context, mon *lbv1
 // monitor re-reconciles after RequeueInterval even without a spec change.
 func (r *LoadBalancerMonitorReconciler) setError(ctx context.Context, mon *lbv1beta1.LoadBalancerMonitor, reason, message string) (ctrl.Result, error) {
 	mon.Status.ConsecutiveErrors++
+	recordFailureEvent(r.Recorder, mon, mon.Status.Conditions, conditionReady, reason, message)
 	return ctrl.Result{RequeueAfter: r.RequeueInterval}, r.setCondition(ctx, mon, metav1.ConditionFalse, reason, message)
 }
 

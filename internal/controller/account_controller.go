@@ -27,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -52,7 +53,9 @@ import (
 // a Pool/Monitor reconcile.
 type AccountReconciler struct {
 	client.Client
-	Scheme            *runtime.Scheme
+	Scheme *runtime.Scheme
+	// Recorder emits Kubernetes Events on failure transitions (nil disables Events).
+	Recorder          events.EventRecorder
 	OperatorNamespace string
 	CFAPITimeout      time.Duration
 	CFAPIMaxRetries   int
@@ -154,6 +157,9 @@ func (r *AccountReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 // init, a changed account name, or a definitive failure) -- steady-state
 // re-validations return earlier without re-writing status.
 func (r *AccountReconciler) setInitialized(ctx context.Context, account *accountsv1beta1.Account, status metav1.ConditionStatus, reason, message string) (ctrl.Result, error) {
+	if status == metav1.ConditionFalse {
+		recordFailureEvent(r.Recorder, account, account.Status.Conditions, conditionInitialized, reason, message)
+	}
 	apimeta.SetStatusCondition(&account.Status.Conditions, metav1.Condition{
 		Type:               conditionInitialized,
 		Status:             status,

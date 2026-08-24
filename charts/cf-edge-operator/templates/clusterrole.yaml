@@ -10,6 +10,13 @@ rules:
 - apiGroups: [""]
   resources: [secrets]
   verbs: [get, list, watch]
+# Every controller emits Kubernetes Events on failure/degradation transitions via the
+# events.k8s.io/v1 API (mgr.GetEventRecorder). This is a generic capability, not
+# feature-specific, so the grant is unconditional -- an unused grant is inert. Note a
+# core "" events grant does NOT authorize the events.k8s.io group.
+- apiGroups: [events.k8s.io]
+  resources: [events]
+  verbs: [create, patch]
 {{- if eq (include "cf-edge-operator.customhostnameEnabled" .) "true" }}
 # CustomHostname controller.
 - apiGroups: [saas.cf-edge.io]
@@ -55,10 +62,4 @@ rules:
 - apiGroups: [loadbalancing.cf-edge.io]
   resources: [loadbalancers/finalizers, loadbalancerpools/finalizers, loadbalancermonitors/finalizers]
   verbs: [update]
-# The LoadBalancer controller emits Kubernetes Events (EnabledEnforced, Partial) via
-# the events.k8s.io/v1 API (mgr.GetEventRecorder), so it needs create/patch on
-# events.k8s.io -- a core "" events grant does not authorize the events.k8s.io group.
-- apiGroups: [events.k8s.io]
-  resources: [events]
-  verbs: [create, patch]
 {{- end }}

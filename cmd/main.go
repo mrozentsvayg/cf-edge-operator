@@ -415,6 +415,7 @@ func main() {
 		if err := (&controller.CustomHostnameReconciler{
 			Client:            mgr.GetClient(),
 			Scheme:            mgr.GetScheme(),
+			Recorder:          mgr.GetEventRecorder("customhostname"),
 			OperatorNamespace: operatorNamespace,
 			ManagementPolicy:  managementPolicy,
 			DeletePolicy:      deletePolicy,
@@ -468,6 +469,7 @@ func main() {
 		if err := (&controller.AccountReconciler{
 			Client:            mgr.GetClient(),
 			Scheme:            mgr.GetScheme(),
+			Recorder:          mgr.GetEventRecorder("account"),
 			OperatorNamespace: operatorNamespace,
 			CFAPITimeout:      cfAPITimeout,
 			CFAPIMaxRetries:   cfAPIMaxRetries,
@@ -479,6 +481,7 @@ func main() {
 		if err := (&controller.LoadBalancerMonitorReconciler{
 			Client:            mgr.GetClient(),
 			Scheme:            mgr.GetScheme(),
+			Recorder:          mgr.GetEventRecorder("loadbalancermonitor"),
 			OperatorNamespace: operatorNamespace,
 			ManagementPolicy:  managementPolicy,
 			DeletePolicy:      deletePolicy,
@@ -495,6 +498,7 @@ func main() {
 		if err := (&controller.LoadBalancerPoolReconciler{
 			Client:            mgr.GetClient(),
 			Scheme:            mgr.GetScheme(),
+			Recorder:          mgr.GetEventRecorder("loadbalancerpool"),
 			OperatorNamespace: operatorNamespace,
 			ManagementPolicy:  managementPolicy,
 			DeletePolicy:      deletePolicy,
