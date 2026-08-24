@@ -58,8 +58,11 @@ type AccountReconciler struct {
 	CFAPIMaxRetries   int
 	CFBaseURL         string
 	// RequeueInterval is how often a reconciled Account re-validates its
-	// credentials and retries after a transient validation failure. Mirrors the
-	// Zone controller's periodic re-validation; set from --drift-interval.
+	// credentials against Cloudflare (and retries after a transient validation
+	// failure); set from --drift-interval. Periodic re-validation keeps
+	// account_initialized fresh so a revoked token surfaces without a spec change;
+	// a re-validation that finds no change is silent and does not re-write status,
+	// so steady state is quiet.
 	RequeueInterval time.Duration
 }
 
@@ -127,16 +130,29 @@ func (r *AccountReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{RequeueAfter: r.RequeueInterval}, nil
 	}
 
+	// Only write status + log on a real change: the first successful validation, or
+	// a changed account name. A steady-state re-validation (already Initialized,
+	// same name) is fully silent -- no log line at any level and no no-op status
+	// write every RequeueInterval -- matching the sibling controllers on a no-op
+	// reconcile (Zone's init-once guard; the LoadBalancer controllers' readyReasonIs).
+	// The top-of-reconcile block keeps account_initialized fresh, and a definitive
+	// failure above already flipped the condition + metric, so there is nothing to
+	// do on a no-op re-validation.
+	if apimeta.IsStatusConditionTrue(account.Status.Conditions, conditionInitialized) && account.Status.Name == name {
+		return ctrl.Result{RequeueAfter: r.RequeueInterval}, nil
+	}
+
 	account.Status.Name = name
 	log.Info("account - initialized", "account", account.Name, "accountID", account.Spec.ID, "name", name)
 	return r.setInitialized(ctx, &account, metav1.ConditionTrue, "AccountValidated",
 		fmt.Sprintf("Account credentials validated (%s)", name))
 }
 
-// setInitialized records the Account's validation outcome and schedules a
-// periodic re-validation via RequeueInterval so revoked credentials or account
-// changes surface without waiting for a spec change (mirrors the Zone
-// controller's periodic re-drive).
+// setInitialized records the Account's validation outcome and schedules the next
+// re-validation via RequeueInterval so revoked credentials or account changes
+// surface without waiting for a spec change. Called only on a real change (first
+// init, a changed account name, or a definitive failure) -- steady-state
+// re-validations return earlier without re-writing status.
 func (r *AccountReconciler) setInitialized(ctx context.Context, account *accountsv1beta1.Account, status metav1.ConditionStatus, reason, message string) (ctrl.Result, error) {
 	apimeta.SetStatusCondition(&account.Status.Conditions, metav1.Condition{
 		Type:               conditionInitialized,
