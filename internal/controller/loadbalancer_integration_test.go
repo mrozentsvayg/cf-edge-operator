@@ -517,6 +517,16 @@ func (m *lbMockServer) handlePoolUpdate(w http.ResponseWriter, r *http.Request) 
 		writeCFError(w, http.StatusBadRequest, "read error")
 		return
 	}
+	// Model Cloudflare's rejection of monitor="" (412 code 1004): a detach must be an
+	// explicit JSON null, never an empty string. Without this the mock would silently
+	// accept "" and hide the monitorless-pool / detach bug (only live CF 412s).
+	var probe map[string]json.RawMessage
+	if json.Unmarshal(body, &probe) == nil {
+		if mv, ok := probe["monitor"]; ok && string(mv) == `""` {
+			writeCFError(w, http.StatusPreconditionFailed, "monitor id is invalid (code 1004)")
+			return
+		}
+	}
 	var rec mockPool
 	if err := applyPatch(existing, body, &rec); err != nil {
 		writeCFError(w, http.StatusBadRequest, "invalid json")
@@ -3010,7 +3020,8 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				return r.Monitor
 			}, lbEventuallyTimeout, lbPollInterval).Should(Equal(monID))
 
-			// Remove the ref -> operator sends monitor:"" on edit -> CF detaches.
+			// Remove the ref -> operator sends monitor:null on edit -> CF detaches
+			// ("" would 412; the mock rejects it).
 			var current lbv1beta1.LoadBalancerPool
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "pool-detach", Namespace: lbTestNS}, &current)).To(Succeed())
 			patch := client.MergeFrom(current.DeepCopy())
@@ -3024,6 +3035,45 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				}
 				return r.Monitor
 			}, lbEventuallyTimeout, lbPollInterval).Should(Equal(""))
+		})
+
+		It("edits a monitorless pool without a 412 (monitor sent as null, never \"\")", func() {
+			pool := &lbv1beta1.LoadBalancerPool{
+				ObjectMeta: metav1.ObjectMeta{Name: "pool-monitorless", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerPoolSpec{
+					AccountRef: lbv1beta1.AccountRef{Name: lbAccountName},
+					Origins: []lbv1beta1.LoadBalancerPoolOrigin{
+						{Name: "o1", Address: "10.0.12.1", Enabled: new(true)},
+					},
+					Enabled: new(true),
+					// no MonitorRef -> monitorless
+				},
+			}
+			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+			Eventually(func() bool {
+				_, ok := lbMock.poolByName("pool-monitorless")
+				return ok
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			// Force an edit on the monitorless pool by adding an origin. Before the fix
+			// the edit sent monitor="" and Cloudflare 412'd (the mock now models that);
+			// the fix sends monitor:null, a safe no-op when the pool has none.
+			var current lbv1beta1.LoadBalancerPool
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "pool-monitorless", Namespace: lbTestNS}, &current)).To(Succeed())
+			patch := client.MergeFrom(current.DeepCopy())
+			current.Spec.Origins = append(current.Spec.Origins,
+				lbv1beta1.LoadBalancerPoolOrigin{Name: "o2", Address: "10.0.12.2", Enabled: new(true)})
+			Expect(k8sClient.Patch(ctx, &current, patch)).To(Succeed())
+
+			Eventually(func() int {
+				r, ok := lbMock.poolByName("pool-monitorless")
+				if !ok {
+					return -1
+				}
+				return len(r.Origins)
+			}, lbEventuallyTimeout, lbPollInterval).Should(Equal(2))
+			r, _ := lbMock.poolByName("pool-monitorless")
+			Expect(r.Monitor).To(Equal(""))
 		})
 	})
 

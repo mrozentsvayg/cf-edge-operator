@@ -298,12 +298,21 @@ func (r *LoadBalancerPoolReconciler) editPool(ctx context.Context, ai *accountIn
 	// un-modeled Cloudflare pool config (load_shedding, origin_steering, ...)
 	// intact. Structural fields the CR owns (origins, monitor) are still sent.
 	params := buildPoolEditParams(ai.AccountID, pool, monitorID)
+
+	// A pool with no monitorRef (monitorID "") must send monitor as an explicit JSON
+	// null -- Cloudflare rejects monitor="" (412 code 1004), which the typed param
+	// cannot avoid. null detaches an attached monitor and is a safe no-op when the
+	// pool already has none, so it also unblocks edits to monitorless pools.
+	opts := []option.RequestOption{option.WithRequestTimeout(r.CFAPIWriteTimeout)}
+	if monitorID == "" {
+		opts = append(opts, option.WithJSONSet("monitor", nil))
+	}
+
 	var resp *load_balancers.Pool
 	attempts, err := cfRetry(ctx, cfResourceLoadBalancerPool, cfOpUpdate, r.CFAPIMaxRetries, func() error {
 		start := time.Now()
 		var callErr error
-		resp, callErr = ai.Client.LoadBalancers.Pools.Edit(ctx, cfID, params,
-			option.WithRequestTimeout(r.CFAPIWriteTimeout))
+		resp, callErr = ai.Client.LoadBalancers.Pools.Edit(ctx, cfID, params, opts...)
 		recordCFCall(cfResourceLoadBalancerPool, cfOpUpdate, start, &callErr)
 		return callErr
 	})
@@ -774,11 +783,15 @@ func buildPoolEditParams(accountID string, pool *lbv1beta1.LoadBalancerPool, mon
 	} else {
 		p.Enabled = cloudflare.F(true)
 	}
-	// Monitor is always sent on edit (structural ref): monitorID is the resolved
-	// CF monitor ID, or "" when the CR has no monitorRef -- sending "" detaches a
-	// previously-attached monitor. The WaitingForMonitor path returns before any
-	// edit, so we never send "" for a ref that is merely unresolved.
-	p.Monitor = cloudflare.F(monitorID)
+	// Monitor: send the resolved CF monitor ID only when the CR references one.
+	// When monitorID is "" (no monitorRef, or a detach) the monitor is NOT set here
+	// -- Cloudflare rejects monitor="" (412 code 1004). editPool instead injects an
+	// explicit JSON null, which detaches an attached monitor and is a safe no-op when
+	// the pool already has none. The WaitingForMonitor path returns before any edit,
+	// so "" never means a merely-unresolved ref.
+	if monitorID != "" {
+		p.Monitor = cloudflare.F(monitorID)
+	}
 	if pool.Spec.MinimumOrigins > 0 {
 		p.MinimumOrigins = cloudflare.F(int64(pool.Spec.MinimumOrigins))
 	}
