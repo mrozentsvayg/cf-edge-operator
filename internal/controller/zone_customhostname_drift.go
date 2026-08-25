@@ -64,7 +64,7 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 
 	// Count CR states for this zone. States are mutually exclusive: conflict > ready > unhealthy > pending.
 	// See crState() for the classification logic.
-	stateCounts := map[string]int{"ready": 0, "pending": 0, "unhealthy": 0, "conflict": 0}
+	stateCounts := map[string]int{chStateReady: 0, chStatePending: 0, chStateUnhealthy: 0, chStateConflict: 0}
 
 	// Enqueue CRs that have drifted from Cloudflare state, and build a set of
 	// known CR hostnames for orphan detection in the next pass.
@@ -135,7 +135,19 @@ func (r *ZoneReconciler) detectCustomHostnameDrift(ctx context.Context, cf *clou
 	managedCount, orphanCount := 0, 0
 	// Pre-initialize common CF statuses to 0 so stale series decay when a status
 	// is no longer present (e.g. active_redeploying -> active).
-	cfStatusCounts := map[string]int{"active": 0, "pending": 0, "active_redeploying": 0, "blocked": 0, "moved": 0, "deleted": 0}
+	// Pre-seed the common CF activation statuses so their series appear at zero on
+	// startup. Keys come from the SDK enum (the same type cfCH.Status yields at the
+	// increment below), so the pre-seed can't drift from the values that populate it.
+	// Curated subset of custom_hostnames.CustomHostnameListResponseStatus* -- the
+	// rarer pending_*/test_* variants are left to appear on demand.
+	cfStatusCounts := map[string]int{
+		string(custom_hostnames.CustomHostnameListResponseStatusActive):            0,
+		string(custom_hostnames.CustomHostnameListResponseStatusPending):           0,
+		string(custom_hostnames.CustomHostnameListResponseStatusActiveRedeploying): 0,
+		string(custom_hostnames.CustomHostnameListResponseStatusBlocked):           0,
+		string(custom_hostnames.CustomHostnameListResponseStatusMoved):             0,
+		string(custom_hostnames.CustomHostnameListResponseStatusDeleted):           0,
+	}
 	for hostname, cfCH := range cfHostnames {
 		if crHostnames[hostname] {
 			managedCount++
@@ -326,23 +338,34 @@ func timePtrEqual(mt *metav1.Time, gt time.Time) bool {
 	return mt.Time.Equal(gt)
 }
 
+// CustomHostname aggregate-state values for the customHostnames gauge. crState()
+// (the classifier) and the gauge's state-count map must use the same vocabulary,
+// so it is defined once here. (Distinct from Cloudflare's hostname activation
+// statuses, which share the "pending" string but are a separate domain.)
+const (
+	chStateReady     = "ready"
+	chStatePending   = "pending"
+	chStateUnhealthy = "unhealthy"
+	chStateConflict  = "conflict"
+)
+
 // crState classifies a CustomHostname CR into one of four mutually exclusive states
 // used for the customHostnames gauge. Priority: conflict > ready > unhealthy > pending.
 // ready is checked before unhealthy: Ready=True means CF confirmed the hostname active,
 // which is more authoritative than the operator-side error counter.
 func crState(ch *saasv1beta1.CustomHostname) string {
 	if isHostnameConflict(ch) {
-		return "conflict"
+		return chStateConflict
 	}
 	for _, cond := range ch.Status.Conditions {
 		if cond.Type == conditionReady && cond.Status == metav1.ConditionTrue {
-			return "ready"
+			return chStateReady
 		}
 	}
 	if ch.Status.ConsecutiveErrors > 0 {
-		return "unhealthy"
+		return chStateUnhealthy
 	}
-	return "pending"
+	return chStatePending
 }
 
 // isHostnameConflict reports whether the CR has been marked as a duplicate hostname conflict.

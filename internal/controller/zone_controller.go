@@ -109,9 +109,9 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		if client.IgnoreNotFound(err) == nil {
 			// Zone deleted -- remove stale metric series.
 			zoneInitialized.DeleteLabelValues(req.Name)
-			customHostnames.DeletePartialMatch(prometheus.Labels{"zone_cr": req.Name})
-			zoneCustomHostnames.DeletePartialMatch(prometheus.Labels{"zone_cr": req.Name})
-			sslProvisioningDuration.DeletePartialMatch(prometheus.Labels{"zone_cr": req.Name})
+			customHostnames.DeletePartialMatch(prometheus.Labels{labelZoneCR: req.Name})
+			zoneCustomHostnames.DeletePartialMatch(prometheus.Labels{labelZoneCR: req.Name})
+			sslProvisioningDuration.DeletePartialMatch(prometheus.Labels{labelZoneCR: req.Name})
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}

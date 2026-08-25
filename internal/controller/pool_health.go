@@ -282,14 +282,14 @@ func (g *poolHealthGauges) publish(accountCR, poolCR string, t poolHealthTally) 
 	if p, ok := g.prev[key]; ok {
 		for addr := range p.origins {
 			if !newOrigins[addr] {
-				loadBalancerPoolOriginHealth.DeletePartialMatch(prometheus.Labels{"account_cr": accountCR, "pool_cr": poolCR, "origin": addr})
-				loadBalancerPoolOriginHealthRegion.DeletePartialMatch(prometheus.Labels{"account_cr": accountCR, "pool_cr": poolCR, "origin": addr})
+				loadBalancerPoolOriginHealth.DeletePartialMatch(prometheus.Labels{labelAccountCR: accountCR, labelPoolCR: poolCR, labelOrigin: addr})
+				loadBalancerPoolOriginHealthRegion.DeletePartialMatch(prometheus.Labels{labelAccountCR: accountCR, labelPoolCR: poolCR, labelOrigin: addr})
 			}
 		}
 		for region := range p.regions {
 			if !newRegions[region] {
-				loadBalancerPoolHealthRegion.DeletePartialMatch(prometheus.Labels{"account_cr": accountCR, "pool_cr": poolCR, "region": region})
-				loadBalancerPoolOriginHealthRegion.DeletePartialMatch(prometheus.Labels{"account_cr": accountCR, "pool_cr": poolCR, "region": region})
+				loadBalancerPoolHealthRegion.DeletePartialMatch(prometheus.Labels{labelAccountCR: accountCR, labelPoolCR: poolCR, labelRegion: region})
+				loadBalancerPoolOriginHealthRegion.DeletePartialMatch(prometheus.Labels{labelAccountCR: accountCR, labelPoolCR: poolCR, labelRegion: region})
 			}
 		}
 	}
@@ -310,7 +310,7 @@ func (g *poolHealthGauges) prune(liveKeys map[string]bool) {
 			continue
 		}
 		accountCR, poolCR := splitPoolHealthKey(key)
-		labels := prometheus.Labels{"account_cr": accountCR, "pool_cr": poolCR}
+		labels := prometheus.Labels{labelAccountCR: accountCR, labelPoolCR: poolCR}
 		loadBalancerPoolHealth.DeletePartialMatch(labels)
 		loadBalancerPoolHealthRegion.DeletePartialMatch(labels)
 		loadBalancerPoolOriginHealth.DeletePartialMatch(labels)

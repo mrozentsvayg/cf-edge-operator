@@ -45,6 +45,12 @@ linters:
           - dupl
           - lll
         path: internal/*
+      # goconst's single-source-of-truth value is a production concern; in tests,
+      # repeated fixture literals read better inline than via shared constants
+      # (and would create false coupling between unrelated tests).
+      - linters:
+          - goconst
+        path: _test\.go
     paths:
       - third_party$
       - builtin$

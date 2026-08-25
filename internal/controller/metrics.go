@@ -39,6 +39,22 @@ const (
 	driftSourceK8sList = "k8s_list"
 )
 
+// Prometheus metric label KEYS. These names are shared across the metric vector
+// definitions (the []string{...} label sets) and the call sites that reference
+// them (prometheus.Labels{...} and lbStateGauge.ownerLabel), so each label name
+// has a single source of truth.
+const (
+	labelResource  = "resource"
+	labelAccountCR = "account_cr"
+	labelZoneCR    = "zone_cr"
+	labelPoolCR    = "pool_cr"
+	labelState     = "state"
+	labelStatus    = "status"
+	labelRegion    = "region"
+	labelOrigin    = "origin"
+	labelOperation = "operation"
+)
+
 var (
 	// operationsTotal counts successful CF operations by resource and type.
 	// The same vocabulary applies to CustomHostname and the load-balancing resources:
@@ -49,7 +65,7 @@ var (
 	operationsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "cf_edge_operator_operations_total",
 		Help: "Total number of successful Cloudflare operations by resource and type.",
-	}, []string{"resource", "operation"})
+	}, []string{labelResource, labelOperation})
 
 	// sslProvisioningDuration records the time from CF hostname creation to ssl.status == active.
 	// Labels: zone_cr (Zone CR name), hostname (the custom hostname), method (DCV method).
@@ -60,7 +76,7 @@ var (
 	sslProvisioningDuration = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "cf_edge_operator_ssl_provisioning_duration_seconds",
 		Help: "Time from Cloudflare hostname creation to ssl.status becoming active, by zone CR, hostname, and DCV method.",
-	}, []string{"zone_cr", "hostname", "method"})
+	}, []string{labelZoneCR, "hostname", "method"})
 
 	// customHostnames counts CustomHostname CRs by zone and state.
 	// States are mutually exclusive: conflict > ready > unhealthy > pending.
@@ -68,7 +84,7 @@ var (
 	customHostnames = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "cf_edge_operator_customhostnames",
 		Help: "Number of CustomHostname CRs by zone CR and state (ready, pending, unhealthy, conflict).",
-	}, []string{"zone_cr", "state"})
+	}, []string{labelZoneCR, labelState})
 
 	// hostnameStatus counts managed Cloudflare custom hostnames by zone CR and CF
 	// activation status (active, pending, active_redeploying, blocked, moved, deleted, etc.).
@@ -76,7 +92,7 @@ var (
 	hostnameStatusGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "cf_edge_operator_customhostname_status",
 		Help: "Number of managed Cloudflare custom hostnames by zone CR and CF activation status.",
-	}, []string{"zone_cr", "status"})
+	}, []string{labelZoneCR, labelStatus})
 
 	// zoneCustomHostnames counts Cloudflare custom hostnames by zone CR and type.
 	// managed: hostname has an associated CR; orphan: hostname has no associated CR.
@@ -84,7 +100,7 @@ var (
 	zoneCustomHostnames = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "cf_edge_operator_zone_customhostnames",
 		Help: "Number of Cloudflare custom hostnames by zone CR and type (managed, orphan, drifted, total).",
-	}, []string{"zone_cr", "type"})
+	}, []string{labelZoneCR, "type"})
 
 	// zoneInitialized is 1 after the Zone CR has been initialized (zone name resolved
 	// from Cloudflare API), 0 otherwise. Set once on first successful zone GET; not
@@ -92,7 +108,7 @@ var (
 	zoneInitialized = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "cf_edge_operator_zone_initialized",
 		Help: "1 if Zone CR has been initialized (zone name resolved from Cloudflare API), 0 otherwise.",
-	}, []string{"zone_cr"})
+	}, []string{labelZoneCR})
 
 	// accountInitialized is 1 after the Account CR has been validated (credentials
 	// confirmed against the Cloudflare account), 0 otherwise. The load-balancing
@@ -101,7 +117,7 @@ var (
 	accountInitialized = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "cf_edge_operator_account_initialized",
 		Help: "1 if Account CR has been initialized (credentials validated against the Cloudflare account), 0 otherwise.",
-	}, []string{"account_cr"})
+	}, []string{labelAccountCR})
 
 	// loadBalancers counts LoadBalancer CRs by owning zone CR and state. States are
 	// mutually exclusive (see lbReadyState); the sum across states equals the total
@@ -112,7 +128,7 @@ var (
 	loadBalancers = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "cf_edge_operator_loadbalancers",
 		Help: "Number of LoadBalancer CRs by zone CR and state (ready, partial, waiting, dryrun, error).",
-	}, []string{"zone_cr", "state"})
+	}, []string{labelZoneCR, labelState})
 
 	// loadBalancerNetworksDrift counts LoadBalancer CRs whose spec.networks diverges
 	// from the Cloudflare-observed networks, by owning zone CR. Networks are enforced
@@ -125,7 +141,7 @@ var (
 	loadBalancerNetworksDrift = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "cf_edge_operator_loadbalancer_networks_drift",
 		Help: "Number of LoadBalancer CRs whose spec.networks diverges from Cloudflare, by zone CR (create-enforced; drift is surfaced, not auto-corrected).",
-	}, []string{"zone_cr"})
+	}, []string{labelZoneCR})
 
 	// loadBalancerPools counts LoadBalancerPool CRs by owning account CR and state.
 	// Pools are account-scoped, so the owner label is account_cr. Sum across states
@@ -133,7 +149,7 @@ var (
 	loadBalancerPools = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "cf_edge_operator_loadbalancerpools",
 		Help: "Number of LoadBalancerPool CRs by account CR and state (ready, waiting, dryrun, error).",
-	}, []string{"account_cr", "state"})
+	}, []string{labelAccountCR, labelState})
 
 	// loadBalancerMonitors counts LoadBalancerMonitor CRs by owning account CR and
 	// state. Monitors are account-scoped leaf resources: they do not wait on another
@@ -144,7 +160,7 @@ var (
 	loadBalancerMonitors = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "cf_edge_operator_loadbalancermonitors",
 		Help: "Number of LoadBalancerMonitor CRs by account CR and state (ready, waiting, dryrun, error).",
-	}, []string{"account_cr", "state"})
+	}, []string{labelAccountCR, labelState})
 
 	// ---- Pool health (opt-in runtime axis) --------------------------------
 	//
@@ -168,7 +184,7 @@ var (
 	loadBalancerPoolHealth = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "cf_edge_operator_loadbalancerpool_health",
 		Help: "Number of Cloudflare-checked regions for a pool in each health status (healthy, unhealthy, unknown), by account CR and pool CR. Opt-in (--enable-pool-health).",
-	}, []string{"account_cr", "pool_cr", "status"})
+	}, []string{labelAccountCR, labelPoolCR, labelStatus})
 
 	// loadBalancerPoolHealthRegion reports a pool's per-region health status,
 	// emitted ONLY for pools with spec.checkRegions set (a CR-declared, bounded
@@ -180,7 +196,7 @@ var (
 	loadBalancerPoolHealthRegion = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "cf_edge_operator_loadbalancerpool_health_region",
 		Help: "Per-region health status of a pool (1 for the current status, 0 otherwise), by account CR, pool CR, region, and status. Emitted only for pools with spec.checkRegions set. Opt-in (--enable-pool-health).",
-	}, []string{"account_cr", "pool_cr", "region", "status"})
+	}, []string{labelAccountCR, labelPoolCR, labelRegion, labelStatus})
 
 	// loadBalancerPoolOriginHealth counts, per origin, how many of the regions
 	// Cloudflare health-checked report that origin in each status. The origin label
@@ -190,7 +206,7 @@ var (
 	loadBalancerPoolOriginHealth = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "cf_edge_operator_loadbalancerpool_origin_health",
 		Help: "Number of Cloudflare-checked regions reporting an origin in each health status (healthy, unhealthy, unknown), by account CR, pool CR, origin address, and status. Opt-in (--enable-pool-health).",
-	}, []string{"account_cr", "pool_cr", "origin", "status"})
+	}, []string{labelAccountCR, labelPoolCR, labelOrigin, labelStatus})
 
 	// loadBalancerPoolOriginHealthRegion reports an origin's per-region health
 	// status, emitted ONLY for pools with spec.checkRegions set. For each
@@ -200,7 +216,7 @@ var (
 	loadBalancerPoolOriginHealthRegion = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "cf_edge_operator_loadbalancerpool_origin_health_region",
 		Help: "Per-region health status of an origin (1 for the current status, 0 otherwise), by account CR, pool CR, origin address, region, and status. Emitted only for pools with spec.checkRegions set. Opt-in (--enable-pool-health).",
-	}, []string{"account_cr", "pool_cr", "origin", "region", "status"})
+	}, []string{labelAccountCR, labelPoolCR, labelOrigin, labelRegion, labelStatus})
 
 	// cfAPICallDuration observes Cloudflare API call latency by resource and operation.
 	// resource: "customhostname" or "zone"; also "account", "loadbalancer", "loadbalancerpool",
@@ -212,14 +228,14 @@ var (
 		Name:    "cf_edge_operator_api_duration_seconds",
 		Help:    "Cloudflare API call duration in seconds, by resource and operation.",
 		Buckets: []float64{.05, .1, .25, .5, 1, 2.5, 5, 7.5, 10, 15, 20},
-	}, []string{"resource", "operation"})
+	}, []string{labelResource, labelOperation})
 
 	// cfAPIErrorsByCode counts Cloudflare API errors by resource, operation, and HTTP status code.
 	// Only appears in /metrics when errors have occurred.
 	cfAPIErrorsByCode = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "cf_edge_operator_api_errors_by_code_total",
 		Help: "Cloudflare API errors by resource, operation, and HTTP status code.",
-	}, []string{"resource", "operation", "status_code"})
+	}, []string{labelResource, labelOperation, "status_code"})
 
 	// driftBufferDepth reports the current number of items in a drift event channel
 	// at the end of each zone reconcile cycle. Labeled by resource type. Approaching
@@ -227,7 +243,7 @@ var (
 	driftBufferDepth = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "cf_edge_operator_drift_buffer_depth",
 		Help: "Current number of items in the drift event channel buffer, by resource type.",
-	}, []string{"resource"})
+	}, []string{labelResource})
 
 	// driftBufferOverflowTotal counts how many times a drift event send blocked
 	// because the channel buffer was full. Labeled by resource type. Non-zero means
@@ -235,7 +251,7 @@ var (
 	driftBufferOverflowTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "cf_edge_operator_drift_buffer_overflow_total",
 		Help: "Number of times the drift event buffer was full, by resource type.",
-	}, []string{"resource"})
+	}, []string{labelResource})
 
 	// driftDetectionErrorsTotal counts drift detection failures by resource type and
 	// error source. source=cf_list: CF API list call failed. source=k8s_list: k8s CR
@@ -243,7 +259,7 @@ var (
 	driftDetectionErrorsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "cf_edge_operator_drift_detection_errors_total",
 		Help: "Number of drift detection failures, by resource type and error source.",
-	}, []string{"resource", "source"})
+	}, []string{labelResource, "source"})
 
 	// cfAPIRetriesTotal counts retry attempts for single (non-paginated) CF API calls.
 	// Incremented per retry attempt (attempt > 0). Non-zero means first attempts are
@@ -251,7 +267,7 @@ var (
 	cfAPIRetriesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "cf_edge_operator_api_retries_total",
 		Help: "Number of retry attempts for Cloudflare API calls, by resource and operation.",
-	}, []string{"resource", "operation"})
+	}, []string{labelResource, labelOperation})
 )
 
 func init() {
@@ -356,8 +372,7 @@ func recordCFCall(resource, operation string, start time.Time, err *error) {
 		} else if errors.Is(*err, context.Canceled) {
 			statusCode = "canceled"
 		} else {
-			var cfErr *cloudflare.Error
-			if errors.As(*err, &cfErr) {
+			if cfErr, ok := errors.AsType[*cloudflare.Error](*err); ok {
 				statusCode = strconv.Itoa(cfErr.StatusCode)
 			}
 		}
@@ -559,9 +574,9 @@ type lbStateGauge struct {
 }
 
 var (
-	lbGaugeLoadBalancer = &lbStateGauge{gauge: loadBalancers, ownerLabel: "zone_cr", stateLabels: lbStateLabelsLB, prevOwners: map[string]bool{}}
-	lbGaugePool         = &lbStateGauge{gauge: loadBalancerPools, ownerLabel: "account_cr", stateLabels: lbStateLabels, prevOwners: map[string]bool{}}
-	lbGaugeMonitor      = &lbStateGauge{gauge: loadBalancerMonitors, ownerLabel: "account_cr", stateLabels: lbStateLabels, prevOwners: map[string]bool{}}
+	lbGaugeLoadBalancer = &lbStateGauge{gauge: loadBalancers, ownerLabel: labelZoneCR, stateLabels: lbStateLabelsLB, prevOwners: map[string]bool{}}
+	lbGaugePool         = &lbStateGauge{gauge: loadBalancerPools, ownerLabel: labelAccountCR, stateLabels: lbStateLabels, prevOwners: map[string]bool{}}
+	lbGaugeMonitor      = &lbStateGauge{gauge: loadBalancerMonitors, ownerLabel: labelAccountCR, stateLabels: lbStateLabels, prevOwners: map[string]bool{}}
 )
 
 // set publishes freshly computed owner -> state -> count values. Every present

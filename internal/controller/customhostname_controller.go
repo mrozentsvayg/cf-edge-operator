@@ -198,16 +198,15 @@ func (r *CustomHostnameReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			fmt.Sprintf("originServer %q must belong to zone %q", ch.Spec.OriginServer, zi.Domain))
 	}
 
-	// NOTE: Requeue after finalizer add to get a fresh object with the finalizer persisted.
-	// Continuing in the same cycle risks a race where another controller deletes the
-	// object between the update and the next operation.
 	if !controllerutil.ContainsFinalizer(&ch, finalizerName) {
 		controllerutil.AddFinalizer(&ch, finalizerName)
 		if err := r.Update(ctx, &ch); err != nil {
 			return ctrl.Result{}, err
 		}
 		log.V(1).Info("custom hostname - finalizer added", "hostname", ch.Spec.Hostname)
-		return ctrl.Result{Requeue: true}, nil
+		// The finalizer-add Update mutates only metadata (no generation bump), so
+		// fastWritePredicate would filter its event; fall through to reconcile in the
+		// same pass rather than scheduling a requeue.
 	}
 
 	// Conflict detection: reject if another CR already owns this hostname in Cloudflare.

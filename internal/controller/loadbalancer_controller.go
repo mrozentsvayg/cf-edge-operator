@@ -175,7 +175,7 @@ func (r *LoadBalancerReconciler) reconcile(ctx context.Context, req ctrl.Request
 			return ctrl.Result{}, err
 		}
 		log.V(1).Info("loadbalancer - finalizer added", "hostname", lb.Spec.Hostname)
-		return ctrl.Result{Requeue: true}, nil
+		// Fall through to reconcile in the same pass rather than scheduling a requeue.
 	}
 
 	// Resolve referenced pools from local Pool CRs (best-effort: unresolved

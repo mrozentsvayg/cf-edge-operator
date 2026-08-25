@@ -187,8 +187,7 @@ func (r *AccountReconciler) setInitialized(ctx context.Context, account *account
 // Transient failures are sticky: a previously-validated Account keeps its
 // condition and metric so a blip does not false-page the critical alert.
 func isDefinitiveValidationFailure(err error) bool {
-	var cfErr *cloudflare.Error
-	if errors.As(err, &cfErr) {
+	if cfErr, ok := errors.AsType[*cloudflare.Error](err); ok {
 		return cfErr.StatusCode >= 400 && cfErr.StatusCode < 500 && cfErr.StatusCode != 429
 	}
 	return false

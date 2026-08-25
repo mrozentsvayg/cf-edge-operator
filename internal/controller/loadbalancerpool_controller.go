@@ -160,7 +160,7 @@ func (r *LoadBalancerPoolReconciler) reconcile(ctx context.Context, req ctrl.Req
 			return ctrl.Result{}, err
 		}
 		log.V(1).Info("loadbalancerpool - finalizer added", "name", pool.Name)
-		return ctrl.Result{Requeue: true}, nil
+		// Fall through to reconcile in the same pass rather than scheduling a requeue.
 	}
 
 	// Resolve the referenced monitor to its CF ID. Missing monitor is not

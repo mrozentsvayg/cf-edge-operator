@@ -176,7 +176,9 @@ func (r *LoadBalancerMonitorReconciler) reconcile(ctx context.Context, req ctrl.
 			return ctrl.Result{}, err
 		}
 		log.V(1).Info("loadbalancermonitor - finalizer added", "name", mon.Name)
-		return ctrl.Result{Requeue: true}, nil
+		// Fall through to reconcile in the same pass: the finalizer-add Update does
+		// not bump generation, so GenerationChangedPredicate would filter its event
+		// and no re-reconcile would fire on its own.
 	}
 
 	return r.reconcileCloudflareState(ctx, ai, &mon)
