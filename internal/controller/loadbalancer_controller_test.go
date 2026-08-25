@@ -43,14 +43,14 @@ func TestLBReferencesPool(t *testing.T) {
 				{Name: "apac-pool"},
 			},
 			FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "us-pool"},
-			RegionPools: map[string][]lbv1beta1.LoadBalancerPoolRef{
+			RegionPools: &map[string][]lbv1beta1.LoadBalancerPoolRef{
 				"WNAM": {{Name: "us-pool"}},
 				"APAC": {{Name: "apac-pool"}, {Name: "backup-pool"}},
 			},
-			CountryPools: map[string][]lbv1beta1.LoadBalancerPoolRef{
+			CountryPools: &map[string][]lbv1beta1.LoadBalancerPoolRef{
 				"JP": {{Name: "jp-pool"}},
 			},
-			PopPools: map[string][]lbv1beta1.LoadBalancerPoolRef{
+			PopPools: &map[string][]lbv1beta1.LoadBalancerPoolRef{
 				"NRT": {{Name: "nrt-pool"}},
 			},
 		},

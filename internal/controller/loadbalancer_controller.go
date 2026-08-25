@@ -266,7 +266,7 @@ func (r *LoadBalancerReconciler) reconcileCloudflareState(ctx context.Context, z
 			log.Info("loadbalancer - not updating, drift detected (dry-run)", "hostname", lb.Spec.Hostname)
 		} else {
 			log.Info("loadbalancer - updating, drift detected", "hostname", lb.Spec.Hostname)
-			updated, updErr := r.editLoadBalancer(ctx, zi, lb, existing.ID, resolved)
+			updated, updErr := r.editLoadBalancer(ctx, zi, lb, existing, resolved)
 			if updErr != nil {
 				return r.setError(ctx, lb, "UpdateFailed", updErr.Error())
 			}
@@ -324,26 +324,46 @@ func (r *LoadBalancerReconciler) handleCreate(ctx context.Context, zi *zoneInfo,
 	return r.markReady(ctx, lb, resolved)
 }
 
-func (r *LoadBalancerReconciler) editLoadBalancer(ctx context.Context, zi *zoneInfo, lb *lbv1beta1.LoadBalancer, cfID string, resolved *resolvedPools) (*load_balancers.LoadBalancer, error) {
+func (r *LoadBalancerReconciler) editLoadBalancer(ctx context.Context, zi *zoneInfo, lb *lbv1beta1.LoadBalancer, existing *load_balancers.LoadBalancer, resolved *resolvedPools) (*load_balancers.LoadBalancer, error) {
 	log := logf.FromContext(ctx)
 	// Edit (PATCH, partial): correct only the fields the CR expresses and leave
 	// everything else intact -- both genuinely un-modeled Cloudflare LB config
 	// (e.g. rules) and modeled-but-optional fields the CR does not set (adaptive
 	// routing, location strategy, random steering, session-affinity attributes/ttl).
-	// The pool topology the CR owns (default/fallback and geo pools) is always
-	// sent, so removing pools from the CR clears them.
+	// The default/fallback pool topology the CR owns is always sent.
 	params := buildLBEditParams(zi.ID, lb, resolved)
+
+	// The geo pool maps (region/country/pop) and random_steering.pool_weights are
+	// map properties Cloudflare DEEP-MERGES on PATCH, so the typed params can never
+	// remove a key the CR dropped. For each map the CR manages (the field is set --
+	// presence, not emptiness), inject it as raw JSON: resolved keys plus an explicit
+	// null for every key Cloudflare still has that the CR no longer declares, forcing
+	// REPLACE over the deep-merge. An unset (nil) map is left untouched on Cloudflare.
+	opts := []option.RequestOption{option.WithRequestTimeout(r.CFAPIWriteTimeout)}
+	if lb.Spec.RegionPools != nil {
+		opts = append(opts, option.WithJSONSet("region_pools", mapWithNulls(resolved.regionIDs, mapKeys(existing.RegionPools))))
+	}
+	if lb.Spec.CountryPools != nil {
+		opts = append(opts, option.WithJSONSet("country_pools", mapWithNulls(resolved.countryIDs, mapKeys(existing.CountryPools))))
+	}
+	if lb.Spec.PopPools != nil {
+		opts = append(opts, option.WithJSONSet("pop_pools", mapWithNulls(resolved.popIDs, mapKeys(existing.POPPools))))
+	}
+	if lb.Spec.RandomSteering != nil {
+		opts = append(opts, option.WithJSONSet("random_steering.pool_weights",
+			mapWithNulls(resolvedWeightsToFloat(resolved.randomSteeringWeights), mapKeys(existing.RandomSteering.PoolWeights))))
+	}
+
 	var resp *load_balancers.LoadBalancer
 	attempts, err := cfRetry(ctx, cfResourceLoadBalancer, cfOpUpdate, r.CFAPIMaxRetries, func() error {
 		start := time.Now()
 		var callErr error
-		resp, callErr = zi.Client.LoadBalancers.Edit(ctx, cfID, params,
-			option.WithRequestTimeout(r.CFAPIWriteTimeout))
+		resp, callErr = zi.Client.LoadBalancers.Edit(ctx, existing.ID, params, opts...)
 		recordCFCall(cfResourceLoadBalancer, cfOpUpdate, start, &callErr)
 		return callErr
 	})
 	if err != nil {
-		log.Error(err, "loadbalancer - update failed", "id", cfID, "attempts", attempts)
+		log.Error(err, "loadbalancer - update failed", "id", existing.ID, "attempts", attempts)
 		return nil, err
 	}
 	operationsTotal.WithLabelValues(cfResourceLoadBalancer, cfOpUpdate).Inc()
@@ -727,24 +747,15 @@ func lbReferencesPool(lb *lbv1beta1.LoadBalancer, poolName string) bool {
 			return true
 		}
 	}
-	for _, refs := range lb.Spec.RegionPools {
-		for _, r := range refs {
-			if r.Name == poolName {
-				return true
-			}
+	for _, m := range []*map[string][]lbv1beta1.LoadBalancerPoolRef{lb.Spec.RegionPools, lb.Spec.CountryPools, lb.Spec.PopPools} {
+		if m == nil {
+			continue
 		}
-	}
-	for _, refs := range lb.Spec.CountryPools {
-		for _, r := range refs {
-			if r.Name == poolName {
-				return true
-			}
-		}
-	}
-	for _, refs := range lb.Spec.PopPools {
-		for _, r := range refs {
-			if r.Name == poolName {
-				return true
+		for _, refs := range *m {
+			for _, r := range refs {
+				if r.Name == poolName {
+					return true
+				}
 			}
 		}
 	}
@@ -881,6 +892,17 @@ func (pr *poolResolver) resolveKeyedPools(ctx context.Context, in map[string][]l
 	return result, nil
 }
 
+// derefKeyedPools returns the pointed-to keyed-pool map, or nil when the field is
+// unset. resolveKeyedPools handles a nil map (yields an empty result), so an unset
+// map resolves to "nothing" while the caller still checks spec.<X>Pools != nil for
+// the presence-not-emptiness management decision (send/drift only when managed).
+func derefKeyedPools(p *map[string][]lbv1beta1.LoadBalancerPoolRef) map[string][]lbv1beta1.LoadBalancerPoolRef {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
 // resolveAllPools resolves every pool reference on the LB spec from local Pool
 // CRs (best-effort: unresolved refs are recorded and dropped, not fatal).
 // Iteration is ordered (slices) or key-sorted (maps) so successive reconciles
@@ -901,13 +923,13 @@ func (r *LoadBalancerReconciler) resolveAllPools(ctx context.Context, lb *lbv1be
 	}
 	out.fallbackID = fallbackID
 
-	if out.regionIDs, err = pr.resolveKeyedPools(ctx, lb.Spec.RegionPools, out); err != nil {
+	if out.regionIDs, err = pr.resolveKeyedPools(ctx, derefKeyedPools(lb.Spec.RegionPools), out); err != nil {
 		return nil, err
 	}
-	if out.countryIDs, err = pr.resolveKeyedPools(ctx, lb.Spec.CountryPools, out); err != nil {
+	if out.countryIDs, err = pr.resolveKeyedPools(ctx, derefKeyedPools(lb.Spec.CountryPools), out); err != nil {
 		return nil, err
 	}
-	if out.popIDs, err = pr.resolveKeyedPools(ctx, lb.Spec.PopPools, out); err != nil {
+	if out.popIDs, err = pr.resolveKeyedPools(ctx, derefKeyedPools(lb.Spec.PopPools), out); err != nil {
 		return nil, err
 	}
 
@@ -961,6 +983,50 @@ func mapListsEqual(a, b map[string][]string) bool {
 		}
 	}
 	return true
+}
+
+// mapKeys returns the keys of m (any value type). Used to feed mapWithNulls the
+// set of keys Cloudflare currently has for a map property.
+func mapKeys[V any](m map[string]V) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	return ks
+}
+
+// mapWithNulls builds the raw object for a PATCH that REPLACES a Cloudflare map
+// property despite Cloudflare deep-merging map properties: every desired key
+// carries its value, and every key Cloudflare still has (observedKeys) that is
+// absent from desired is set to nil, which marshals to JSON null -- Cloudflare
+// treats a null map value as a key removal. An empty desired map nulls every
+// observed key (clear all). This is injected via option.WithJSONSet because the
+// typed param.Field[map[...]] cannot express a null value (a nil slice marshals
+// as [], and float64 has no nil).
+func mapWithNulls[V any](desired map[string]V, observedKeys []string) map[string]any {
+	out := make(map[string]any, len(desired)+len(observedKeys))
+	for k, v := range desired {
+		out[k] = v
+	}
+	for _, k := range observedKeys {
+		if _, ok := desired[k]; !ok {
+			out[k] = nil
+		}
+	}
+	return out
+}
+
+// resolvedWeightsToFloat parses the resolver's weight strings (CRD-pattern-validated
+// floats, so ParseFloat cannot fail -- the error is intentionally discarded) into the
+// float64 map Cloudflare's pool_weights expects. Shared by buildRandomSteering (the
+// create/edit payload) and editLoadBalancer (the null-removal override).
+func resolvedWeightsToFloat(weights map[string]string) map[string]float64 {
+	pw := make(map[string]float64, len(weights))
+	for id, w := range weights {
+		f, _ := strconv.ParseFloat(w, 64)
+		pw[id] = f
+	}
+	return pw
 }
 
 // sessionAffinityActive reports whether session affinity is set to a real mode
@@ -1057,12 +1123,11 @@ func buildRandomSteering(rs *lbv1beta1.LoadBalancerRandomSteering, weights map[s
 		dw, _ := strconv.ParseFloat(rs.DefaultWeight, 64)
 		p.DefaultWeight = cloudflare.F(dw)
 	}
-	pw := make(map[string]float64, len(weights))
-	for id, w := range weights {
-		f, _ := strconv.ParseFloat(w, 64)
-		pw[id] = f
-	}
-	p.PoolWeights = cloudflare.F(pw)
+	// pool_weights is a map property Cloudflare deep-merges on PATCH, so this typed
+	// value is authoritative on create but is overridden on edit by editLoadBalancer
+	// (via option.WithJSONSet) to add explicit nulls for weighted pools the CR
+	// dropped -- the typed float64 map cannot express a null value.
+	p.PoolWeights = cloudflare.F(resolvedWeightsToFloat(weights))
 	return p
 }
 
@@ -1094,13 +1159,16 @@ func buildLBNewParams(zoneID string, lb *lbv1beta1.LoadBalancer, resolved *resol
 	if lb.Spec.Description != "" {
 		p.Description = cloudflare.F(lb.Spec.Description)
 	}
-	if len(resolved.regionIDs) > 0 {
+	// Geo pool maps are presence-managed (a non-nil map is owned in full), matching
+	// editLoadBalancer, lbDrifted, and the RandomSteering gate below. On create there
+	// is no CF-side map to prune, so the resolved map is sent as-is; nil is omitted.
+	if lb.Spec.RegionPools != nil {
 		p.RegionPools = cloudflare.F(resolved.regionIDs)
 	}
-	if len(resolved.countryIDs) > 0 {
+	if lb.Spec.CountryPools != nil {
 		p.CountryPools = cloudflare.F(resolved.countryIDs)
 	}
-	if len(resolved.popIDs) > 0 {
+	if lb.Spec.PopPools != nil {
 		p.POPPools = cloudflare.F(resolved.popIDs)
 	}
 	// Networks are create-only-write: Cloudflare's create API accepts networks, but
@@ -1164,13 +1232,13 @@ func buildLBEditParams(zoneID string, lb *lbv1beta1.LoadBalancer, resolved *reso
 	if lb.Spec.Description != "" {
 		p.Description = cloudflare.F(lb.Spec.Description)
 	}
-	// Geo pool maps are always sent on edit (structural: the CR owns the LB's
-	// pool topology). An empty map clears CF-side geo steering -- Cloudflare does
-	// not auto-remove geo pool references, so we must send {} explicitly. This
-	// also keeps drift (unconditional mapListsEqual) loop-free under PATCH.
-	p.RegionPools = cloudflare.F(resolved.regionIDs)
-	p.CountryPools = cloudflare.F(resolved.countryIDs)
-	p.POPPools = cloudflare.F(resolved.popIDs)
+	// NOTE: region_pools / country_pools / pop_pools are intentionally NOT set
+	// here. They are top-level map properties that Cloudflare DEEP-MERGES on PATCH,
+	// so a key the CR dropped cannot be removed via the typed param (a nil slice
+	// value marshals as [], not null). editLoadBalancer injects each managed map --
+	// resolved keys plus explicit nulls for keys the CR no longer declares -- via
+	// option.WithJSONSet to force REPLACE semantics. An unset (nil) map is left
+	// untouched on Cloudflare: presence, not emptiness, decides management.
 	// enabled is always-managed and edit-only (Cloudflare's create API does not
 	// accept it, so it is applied via a follow-up edit -- create-then-edit). Unset
 	// spec defaults to true, so an out-of-band disable is corrected back to the CR
@@ -1236,13 +1304,16 @@ func lbDrifted(cf *load_balancers.LoadBalancer, lb *lbv1beta1.LoadBalancer, reso
 	if cf.Enabled != lbEnabled(lb) {
 		return true
 	}
-	if !mapListsEqual(cf.RegionPools, resolved.regionIDs) {
+	// Geo pool maps drift only when the CR manages them (the field is set --
+	// presence, not emptiness). An unset (nil) map is left alone: never compared,
+	// never corrected, matching editLoadBalancer's send-only-when-managed rule.
+	if lb.Spec.RegionPools != nil && !mapListsEqual(cf.RegionPools, resolved.regionIDs) {
 		return true
 	}
-	if !mapListsEqual(cf.CountryPools, resolved.countryIDs) {
+	if lb.Spec.CountryPools != nil && !mapListsEqual(cf.CountryPools, resolved.countryIDs) {
 		return true
 	}
-	if !mapListsEqual(cf.POPPools, resolved.popIDs) {
+	if lb.Spec.PopPools != nil && !mapListsEqual(cf.POPPools, resolved.popIDs) {
 		return true
 	}
 	// SessionAffinity: only enforce when set on the CR (empty = leave

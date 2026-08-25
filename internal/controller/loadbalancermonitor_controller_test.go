@@ -140,7 +140,7 @@ func TestMonitorDrifted_HeaderCaseInsensitive(t *testing.T) {
 	// Header names are case-insensitive per the HTTP spec, so a CR "host" must
 	// not drift against a Cloudflare-normalized "Host" (that would drift-loop).
 	mon := newMonitorCR("m", lbv1beta1.LoadBalancerMonitorSpec{
-		Header: map[string][]string{"host": {"api.internal"}},
+		Header: &map[string][]string{"host": {"api.internal"}},
 	})
 	cf := &load_balancers.Monitor{
 		Header:      map[string][]string{"Host": {"api.internal"}},
@@ -237,7 +237,7 @@ func TestBuildMonitorParams_BoolsAlwaysSent(t *testing.T) {
 
 func TestBuildMonitorNewParams_HeaderIsPreserved(t *testing.T) {
 	mon := newMonitorCR("m", lbv1beta1.LoadBalancerMonitorSpec{
-		Header: map[string][]string{
+		Header: &map[string][]string{
 			"Content-Type": {"application/json"},
 			"Accept":       {"application/json"},
 		},
@@ -252,5 +252,58 @@ func TestBuildMonitorNewParams_HeaderIsPreserved(t *testing.T) {
 	}
 	if got["Content-Type"][0] != "application/json" {
 		t.Errorf("Content-Type value lost in translation: %v", got["Content-Type"])
+	}
+}
+
+func TestMonitorDrifted_HeaderEmptyMapIsManaged(t *testing.T) {
+	// An explicit empty header map (present, not nil) means "no headers": the
+	// operator owns the set, so Cloudflare-side headers must be cleared. This is
+	// the presence-not-emptiness contract -- distinct from an unset (nil) Header,
+	// which leaves Cloudflare alone (TestMonitorDrifted_HeaderUnmanagedWhenUnset).
+	mon := newMonitorCR("m", lbv1beta1.LoadBalancerMonitorSpec{Header: &map[string][]string{}})
+	cf := &load_balancers.Monitor{
+		Header:      map[string][]string{"Host": {"api.internal"}},
+		Description: buildMonitorDescription(mon),
+	}
+	if !monitorDrifted(cf, mon) {
+		t.Fatal("empty (present) spec.Header must drift when Cloudflare still has headers")
+	}
+	cf.Header = map[string][]string{}
+	if monitorDrifted(cf, mon) {
+		t.Fatal("empty spec.Header must not drift when Cloudflare already has no headers")
+	}
+}
+
+func TestHeaderEditOverride(t *testing.T) {
+	// Dropped keys become explicit nulls (JSON null -> Cloudflare removes them);
+	// kept keys carry their value; keys are canonicalized so a CR "host" does not
+	// collide with a null for the Cloudflare-normalized "Host".
+	desired := map[string][]string{"host": {"api.internal"}}
+	observed := map[string][]string{"Host": {"old.internal"}, "Accept": {"application/json"}}
+	got := headerEditOverride(desired, observed)
+
+	if v, ok := got["Host"]; !ok {
+		t.Fatal("managed key Host should be present")
+	} else if slice, ok := v.([]string); !ok || len(slice) != 1 || slice[0] != "api.internal" {
+		t.Fatalf("Host value wrong: %#v", v)
+	}
+	if v, ok := got["Accept"]; !ok {
+		t.Fatal("dropped key Accept should be present as a removal")
+	} else if v != nil {
+		t.Fatalf("dropped key Accept must be nil (JSON null), got %#v", v)
+	}
+	if _, ok := got["host"]; ok {
+		t.Fatal("keys must be canonicalized; raw 'host' must not be sent alongside 'Host'")
+	}
+
+	// An empty desired map nulls every observed key (clear all headers).
+	cleared := headerEditOverride(map[string][]string{}, observed)
+	if len(cleared) != len(observed) {
+		t.Fatalf("clear-all: expected %d nulled keys, got %d", len(observed), len(cleared))
+	}
+	for k, v := range cleared {
+		if v != nil {
+			t.Fatalf("clear-all: key %q should be nil, got %#v", k, v)
+		}
 	}
 }

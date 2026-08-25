@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -280,12 +279,16 @@ func writeCFError(w http.ResponseWriter, code int, msg string) {
 	})
 }
 
-// applyPatch models Cloudflare's PATCH (partial edit): only the top-level keys
-// PRESENT in the request body are applied onto the existing record; every other
-// field (including fields the operator does not model) survives untouched. It
-// merges at top-level field granularity -- a present object/array key replaces
-// that field wholesale, matching how the operator always sends whole
-// origins/pool-map values. existing and out are the same mock record type.
+// applyPatch models Cloudflare's PATCH (partial edit) faithfully: JSON objects
+// (top-level and nested) are deep-merged key-by-key, a key whose patch value is
+// null is REMOVED, and arrays/scalars replace wholesale. This mirrors real
+// Cloudflare -- map properties (region_pools / country_pools / pop_pools, monitor
+// header, random_steering.pool_weights) and nested objects (load_shedding, etc.)
+// are deep-merged, so a dropped key lingers unless the operator sends an explicit
+// null. Modeling this (rather than a wholesale top-level replace) is what lets the
+// mock catch removal-by-omission drift-loop bugs instead of masking them. A field
+// the patch body omits survives untouched (PATCH != PUT). existing and out are the
+// same mock record type.
 func applyPatch(existing any, body []byte, out any) error {
 	base, err := json.Marshal(existing)
 	if err != nil {
@@ -299,12 +302,62 @@ func applyPatch(existing any, body []byte, out any) error {
 	if err := json.Unmarshal(body, &patch); err != nil {
 		return err
 	}
-	maps.Copy(merged, patch)
+	deepMergePatch(merged, patch)
 	mergedBytes, err := json.Marshal(merged)
 	if err != nil {
 		return err
 	}
 	return json.Unmarshal(mergedBytes, out)
+}
+
+// deepMergePatch merges patch into base with Cloudflare's PATCH semantics: a null
+// value removes the key; two JSON objects are merged recursively; arrays and
+// scalars replace wholesale; a key absent from patch is left untouched.
+func deepMergePatch(base, patch map[string]json.RawMessage) {
+	for k, pv := range patch {
+		if isJSONNull(pv) {
+			delete(base, k)
+			continue
+		}
+		if bv, ok := base[k]; ok {
+			bObj := map[string]json.RawMessage{}
+			pObj := map[string]json.RawMessage{}
+			// Recurse only when BOTH sides are JSON objects (unmarshal into a map
+			// succeeds and yields non-nil). Arrays/scalars/null fail or nil-out and
+			// fall through to wholesale replace.
+			if json.Unmarshal(bv, &bObj) == nil && json.Unmarshal(pv, &pObj) == nil && bObj != nil && pObj != nil {
+				deepMergePatch(bObj, pObj)
+				if remerged, err := json.Marshal(bObj); err == nil {
+					base[k] = remerged
+					continue
+				}
+			}
+		}
+		base[k] = pv
+	}
+}
+
+// isJSONNull reports whether a raw JSON value is the literal null.
+func isJSONNull(raw json.RawMessage) bool {
+	return strings.TrimSpace(string(raw)) == "null"
+}
+
+// canonicalizeHeaderKeys returns hdr with every key canonicalized via
+// http.CanonicalHeaderKey, mirroring how Cloudflare stores monitor probe header
+// names (HTTP header keys are case-insensitive; Cloudflare stores "Host", not
+// "host"). Modeling that keeps the header-removal round-trip honest: editMonitor's
+// WithJSONSet override sends canonical keys (plus explicit nulls), so the mock's
+// deep-merge must have a canonical base for a dropped key's null to match and
+// remove it. A nil map is returned unchanged (an unmanaged header).
+func canonicalizeHeaderKeys(hdr map[string][]string) map[string][]string {
+	if hdr == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(hdr))
+	for k, v := range hdr {
+		out[http.CanonicalHeaderKey(k)] = v
+	}
+	return out
 }
 
 // --- account ---
@@ -362,6 +415,8 @@ func (m *lbMockServer) handleMonitorCreate(w http.ResponseWriter, r *http.Reques
 		writeCFError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	// Cloudflare canonicalizes probe header names on store (see canonicalizeHeaderKeys).
+	rec.Header = canonicalizeHeaderKeys(rec.Header)
 	// Model Cloudflare's server-side default: an absent "retries" becomes 2.
 	// This keeps the retries=0 regression honest -- if the operator's build guard
 	// were ever restored (omitting retries on create), CF would default it to 2
@@ -2002,9 +2057,9 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-k-a"}},
 					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-k-a"},
 					SteeringPolicy:  "geo",
-					RegionPools:     map[string][]lbv1beta1.LoadBalancerPoolRef{"WNAM": {{Name: "pool-k-a"}}},
-					CountryPools:    map[string][]lbv1beta1.LoadBalancerPoolRef{"US": {{Name: "pool-k-a"}}},
-					PopPools:        map[string][]lbv1beta1.LoadBalancerPoolRef{"LAX": {{Name: "pool-k-a"}}},
+					RegionPools:     &map[string][]lbv1beta1.LoadBalancerPoolRef{"WNAM": {{Name: "pool-k-a"}}},
+					CountryPools:    &map[string][]lbv1beta1.LoadBalancerPoolRef{"US": {{Name: "pool-k-a"}}},
+					PopPools:        &map[string][]lbv1beta1.LoadBalancerPoolRef{"LAX": {{Name: "pool-k-a"}}},
 				},
 			}
 			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
@@ -2024,7 +2079,7 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 			var current lbv1beta1.LoadBalancer
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "lb-keyed", Namespace: lbTestNS}, &current)).To(Succeed())
 			patch := client.MergeFrom(current.DeepCopy())
-			current.Spec.RegionPools = map[string][]lbv1beta1.LoadBalancerPoolRef{"WNAM": {{Name: "pool-k-b"}}}
+			current.Spec.RegionPools = &map[string][]lbv1beta1.LoadBalancerPoolRef{"WNAM": {{Name: "pool-k-b"}}}
 			Expect(k8sClient.Patch(ctx, &current, patch)).To(Succeed())
 
 			Eventually(func() []string {
@@ -2589,9 +2644,11 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 		})
 	})
 
-	// -- Keyed pools cleared declaratively on ref removal (always-send {}) --
+	// -- Keyed pools: a present map is fully managed (dropping a key removes it via
+	//    an explicit null since Cloudflare deep-merges; emptying clears all); an
+	//    unset (nil) map is left untouched -- presence, not emptiness, manages. --
 	Context("Keyed pools removal", func() {
-		It("clears region_pools when the CR drops the mapping", func() {
+		It("removes a dropped key and clears the map when emptied (present, not nil)", func() {
 			hostname := "lb-keyclear." + lbZoneName
 			lb := &lbv1beta1.LoadBalancer{
 				ObjectMeta: metav1.ObjectMeta{Name: "lb-keyclear", Namespace: lbTestNS},
@@ -2601,7 +2658,77 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
 					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 					SteeringPolicy:  "geo",
-					RegionPools:     map[string][]lbv1beta1.LoadBalancerPoolRef{"WNAM": {{Name: "pool-fb"}}},
+					RegionPools: &map[string][]lbv1beta1.LoadBalancerPoolRef{
+						"WNAM": {{Name: "pool-fb"}},
+						"EEU":  {{Name: "pool-fb"}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
+
+			var poolID string
+			Eventually(func() bool {
+				p, okP := lbMock.poolByName("pool-fb")
+				poolID = p.ID
+				r, ok := lbMock.lbByName(hostname)
+				return okP && ok &&
+					stringSlicesEqual(r.RegionPools["WNAM"], []string{poolID}) &&
+					stringSlicesEqual(r.RegionPools["EEU"], []string{poolID})
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			// Drop ONE key (EEU) but keep the map non-empty. The operator must send an
+			// explicit null for EEU -- Cloudflare deep-merges the map, so an omitted
+			// key would linger and drift-loop (the bug this fix addresses).
+			var current lbv1beta1.LoadBalancer
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "lb-keyclear", Namespace: lbTestNS}, &current)).To(Succeed())
+			patch := client.MergeFrom(current.DeepCopy())
+			current.Spec.RegionPools = &map[string][]lbv1beta1.LoadBalancerPoolRef{"WNAM": {{Name: "pool-fb"}}}
+			Expect(k8sClient.Patch(ctx, &current, patch)).To(Succeed())
+
+			Eventually(func() bool {
+				r, ok := lbMock.lbByName(hostname)
+				if !ok {
+					return false
+				}
+				_, eeuPresent := r.RegionPools["EEU"]
+				return !eeuPresent && stringSlicesEqual(r.RegionPools["WNAM"], []string{poolID})
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+			// No drift-loop re-adding EEU.
+			Consistently(func() int {
+				r, _ := lbMock.lbByName(hostname)
+				return len(r.RegionPools)
+			}, 3*time.Second, lbPollInterval).Should(Equal(1))
+
+			// Empty the map (present, not nil) -> clear every remaining key.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "lb-keyclear", Namespace: lbTestNS}, &current)).To(Succeed())
+			patch = client.MergeFrom(current.DeepCopy())
+			current.Spec.RegionPools = &map[string][]lbv1beta1.LoadBalancerPoolRef{}
+			Expect(k8sClient.Patch(ctx, &current, patch)).To(Succeed())
+
+			Eventually(func() int {
+				r, ok := lbMock.lbByName(hostname)
+				if !ok {
+					return -1
+				}
+				return len(r.RegionPools)
+			}, lbEventuallyTimeout, lbPollInterval).Should(Equal(0))
+			Consistently(func() int {
+				r, _ := lbMock.lbByName(hostname)
+				return len(r.RegionPools)
+			}, 3*time.Second, lbPollInterval).Should(Equal(0))
+		})
+
+		It("leaves region_pools untouched when the field is unset (nil)", func() {
+			hostname := "lb-keyleave." + lbZoneName
+			lb := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-keyleave", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:        hostname,
+					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+					SteeringPolicy:  "geo",
+					RegionPools:     &map[string][]lbv1beta1.LoadBalancerPoolRef{"WNAM": {{Name: "pool-fb"}}},
 				},
 			}
 			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
@@ -2614,25 +2741,230 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				return okP && ok && stringSlicesEqual(r.RegionPools["WNAM"], []string{poolID})
 			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
 
-			// Drop the mapping entirely -> operator sends region_pools:{} on edit.
+			// Unset the field (nil) -> the operator stops managing region_pools and
+			// leaves Cloudflare's value in place (presence, not emptiness, manages).
 			var current lbv1beta1.LoadBalancer
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "lb-keyclear", Namespace: lbTestNS}, &current)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "lb-keyleave", Namespace: lbTestNS}, &current)).To(Succeed())
 			patch := client.MergeFrom(current.DeepCopy())
 			current.Spec.RegionPools = nil
 			Expect(k8sClient.Patch(ctx, &current, patch)).To(Succeed())
 
-			Eventually(func() int {
+			Consistently(func() []string {
 				r, ok := lbMock.lbByName(hostname)
+				if !ok {
+					return nil
+				}
+				return r.RegionPools["WNAM"]
+			}, 3*time.Second, lbPollInterval).Should(Equal([]string{poolID}))
+		})
+	})
+
+	// -- Monitor header removal: the FIX 1 null-removal path for the probe header
+	//    map (editMonitor's WithJSONSet("header", ...) -> deep-merge), the sibling of
+	//    the region_pools case above. A regression to typed-header handling (which
+	//    cannot emit a JSON null) would leave a dropped key lingering and fail here. --
+	Context("Monitor header removal", func() {
+		It("removes a dropped header key and clears the map when emptied (present, not nil)", func() {
+			marker := monitorMarkerFor(lbTestNS, "mon-hdrclear")
+			mon := &lbv1beta1.LoadBalancerMonitor{
+				ObjectMeta: metav1.ObjectMeta{Name: "mon-hdrclear", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerMonitorSpec{
+					AccountRef: lbv1beta1.AccountRef{Name: lbAccountName},
+					Type:       "https",
+					// Lowercase "host" deliberately: Cloudflare stores the canonical
+					// "Host", and headerEditOverride canonicalizes before diffing, so a
+					// regression that dropped canonicalization would emit a spurious null
+					// for the kept "Host" (removing it) or fail to remove "Accept".
+					Header: &map[string][]string{
+						"host":   {"api.internal"},
+						"accept": {"application/json"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, mon)).To(Succeed())
+
+			// Create path: both header keys land on Cloudflare, canonicalized.
+			Eventually(func() bool {
+				r, ok := lbMock.monitorByMarker(marker)
+				if !ok {
+					return false
+				}
+				return stringSlicesEqual(r.Header["Host"], []string{"api.internal"}) &&
+					stringSlicesEqual(r.Header["Accept"], []string{"application/json"})
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			// Drop ONE key (accept) but keep the map non-empty. The operator must send
+			// an explicit null for Accept via WithJSONSet -- Cloudflare deep-merges the
+			// header map, so an omitted key would linger and drift-loop (the bug FIX 1
+			// addresses).
+			var current lbv1beta1.LoadBalancerMonitor
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "mon-hdrclear", Namespace: lbTestNS}, &current)).To(Succeed())
+			patch := client.MergeFrom(current.DeepCopy())
+			current.Spec.Header = &map[string][]string{"host": {"api.internal"}}
+			Expect(k8sClient.Patch(ctx, &current, patch)).To(Succeed())
+
+			Eventually(func() bool {
+				r, ok := lbMock.monitorByMarker(marker)
+				if !ok {
+					return false
+				}
+				_, acceptPresent := r.Header["Accept"]
+				return !acceptPresent && stringSlicesEqual(r.Header["Host"], []string{"api.internal"})
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+			// No drift-loop re-adding Accept.
+			Consistently(func() int {
+				r, _ := lbMock.monitorByMarker(marker)
+				return len(r.Header)
+			}, 3*time.Second, lbPollInterval).Should(Equal(1))
+
+			// Empty the map (present, not nil) -> clear every remaining header key.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "mon-hdrclear", Namespace: lbTestNS}, &current)).To(Succeed())
+			patch = client.MergeFrom(current.DeepCopy())
+			current.Spec.Header = &map[string][]string{}
+			Expect(k8sClient.Patch(ctx, &current, patch)).To(Succeed())
+
+			Eventually(func() int {
+				r, ok := lbMock.monitorByMarker(marker)
 				if !ok {
 					return -1
 				}
-				return len(r.RegionPools)
+				return len(r.Header)
 			}, lbEventuallyTimeout, lbPollInterval).Should(Equal(0))
-			// Stays cleared -- no drift-loop re-adding it.
 			Consistently(func() int {
-				r, _ := lbMock.lbByName(hostname)
-				return len(r.RegionPools)
+				r, _ := lbMock.monitorByMarker(marker)
+				return len(r.Header)
 			}, 3*time.Second, lbPollInterval).Should(Equal(0))
+		})
+
+		It("leaves the monitor header untouched when the field is unset (nil)", func() {
+			marker := monitorMarkerFor(lbTestNS, "mon-hdrleave")
+			mon := &lbv1beta1.LoadBalancerMonitor{
+				ObjectMeta: metav1.ObjectMeta{Name: "mon-hdrleave", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerMonitorSpec{
+					AccountRef: lbv1beta1.AccountRef{Name: lbAccountName},
+					Type:       "https",
+					Header:     &map[string][]string{"host": {"api.internal"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, mon)).To(Succeed())
+
+			// Seed a header on Cloudflare (canonicalized) so there is something to leave.
+			Eventually(func() bool {
+				r, ok := lbMock.monitorByMarker(marker)
+				return ok && stringSlicesEqual(r.Header["Host"], []string{"api.internal"})
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			// Unset the field (nil) -> the operator stops managing headers and leaves
+			// Cloudflare's value in place (presence, not emptiness, manages).
+			var current lbv1beta1.LoadBalancerMonitor
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "mon-hdrleave", Namespace: lbTestNS}, &current)).To(Succeed())
+			patch := client.MergeFrom(current.DeepCopy())
+			current.Spec.Header = nil
+			Expect(k8sClient.Patch(ctx, &current, patch)).To(Succeed())
+
+			Consistently(func() []string {
+				r, ok := lbMock.monitorByMarker(marker)
+				if !ok {
+					return nil
+				}
+				return r.Header["Host"]
+			}, 3*time.Second, lbPollInterval).Should(Equal([]string{"api.internal"}))
+		})
+	})
+
+	// -- random_steering.pool_weights removal: the FIX 1 null-removal path for the
+	//    weighted-pool map (editLoadBalancer's WithJSONSet("random_steering.pool_weights",
+	//    ...) -> deep-merge). A dropped weighted pool must be nulled out, not omitted,
+	//    or it lingers on Cloudflare and drift-loops. --
+	Context("LoadBalancer random steering removal", func() {
+		It("removes a dropped weighted pool from pool_weights without a drift-loop", func() {
+			// Two ready pools to weight between.
+			for _, spec := range []struct{ name, addr string }{
+				{"pool-rs-a", "10.0.12.1"},
+				{"pool-rs-b", "10.0.12.2"},
+			} {
+				p := &lbv1beta1.LoadBalancerPool{
+					ObjectMeta: metav1.ObjectMeta{Name: spec.name, Namespace: lbTestNS},
+					Spec: lbv1beta1.LoadBalancerPoolSpec{
+						AccountRef: lbv1beta1.AccountRef{Name: lbAccountName},
+						Origins: []lbv1beta1.LoadBalancerPoolOrigin{
+							{Name: "o1", Address: spec.addr, Enabled: new(true)},
+						},
+						Enabled: new(true),
+					},
+				}
+				Expect(k8sClient.Create(ctx, p)).To(Succeed())
+			}
+
+			var poolAID, poolBID string
+			Eventually(func() bool {
+				a, okA := lbMock.poolByName("pool-rs-a")
+				b, okB := lbMock.poolByName("pool-rs-b")
+				poolAID, poolBID = a.ID, b.ID
+				return okA && okB && poolAID != "" && poolBID != ""
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			hostname := "lb-rsdrop." + lbZoneName
+			lb := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-rsdrop", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:        hostname,
+					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-rs-a"}},
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-rs-a"},
+					SteeringPolicy:  "random",
+					RandomSteering: &lbv1beta1.LoadBalancerRandomSteering{
+						DefaultWeight: "0.2",
+						PoolWeights: []lbv1beta1.LoadBalancerPoolWeight{
+							{PoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-rs-a"}, Weight: "0.6"},
+							{PoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-rs-b"}, Weight: "0.4"},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
+
+			// Both resolved pool weights land on Cloudflare (keyed by CF pool ID).
+			Eventually(func() bool {
+				r, ok := lbMock.lbByName(hostname)
+				return ok && r.RandomSteering != nil &&
+					len(r.RandomSteering.PoolWeights) == 2 &&
+					floatNear(r.RandomSteering.PoolWeights[poolAID], 0.6) &&
+					floatNear(r.RandomSteering.PoolWeights[poolBID], 0.4)
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			// Drop pool-rs-b from the weights. The operator must send an explicit null
+			// for its CF id via WithJSONSet -- Cloudflare deep-merges pool_weights, so an
+			// omitted key would linger and drift-loop.
+			var current lbv1beta1.LoadBalancer
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "lb-rsdrop", Namespace: lbTestNS}, &current)).To(Succeed())
+			patch := client.MergeFrom(current.DeepCopy())
+			current.Spec.RandomSteering = &lbv1beta1.LoadBalancerRandomSteering{
+				DefaultWeight: "0.2",
+				PoolWeights: []lbv1beta1.LoadBalancerPoolWeight{
+					{PoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-rs-a"}, Weight: "0.6"},
+				},
+			}
+			Expect(k8sClient.Patch(ctx, &current, patch)).To(Succeed())
+
+			Eventually(func() bool {
+				r, ok := lbMock.lbByName(hostname)
+				if !ok || r.RandomSteering == nil {
+					return false
+				}
+				_, bPresent := r.RandomSteering.PoolWeights[poolBID]
+				return !bPresent &&
+					len(r.RandomSteering.PoolWeights) == 1 &&
+					floatNear(r.RandomSteering.PoolWeights[poolAID], 0.6)
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+			// No drift-loop re-adding the dropped weighted pool.
+			Consistently(func() int {
+				r, ok := lbMock.lbByName(hostname)
+				if !ok || r.RandomSteering == nil {
+					return -1
+				}
+				return len(r.RandomSteering.PoolWeights)
+			}, 3*time.Second, lbPollInterval).Should(Equal(1))
 		})
 	})
 

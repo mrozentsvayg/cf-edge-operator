@@ -234,7 +234,7 @@ func (r *LoadBalancerMonitorReconciler) reconcileCloudflareState(ctx context.Con
 			log.Info("loadbalancermonitor - not updating, drift detected (dry-run)", "name", mon.Name)
 		} else {
 			log.Info("loadbalancermonitor - updating, drift detected", "name", mon.Name)
-			updated, updErr := r.editMonitor(ctx, ai, mon, existing.ID)
+			updated, updErr := r.editMonitor(ctx, ai, mon, existing)
 			if updErr != nil {
 				return r.setError(ctx, mon, "UpdateFailed", updErr.Error())
 			}
@@ -296,7 +296,7 @@ func (r *LoadBalancerMonitorReconciler) handleCreate(ctx context.Context, ai *ac
 	return r.markReady(ctx, mon)
 }
 
-func (r *LoadBalancerMonitorReconciler) editMonitor(ctx context.Context, ai *accountInfo, mon *lbv1beta1.LoadBalancerMonitor, cfID string) (*load_balancers.Monitor, error) {
+func (r *LoadBalancerMonitorReconciler) editMonitor(ctx context.Context, ai *accountInfo, mon *lbv1beta1.LoadBalancerMonitor, existing *load_balancers.Monitor) (*load_balancers.Monitor, error) {
 	log := logf.FromContext(ctx)
 
 	// Use Edit (PATCH, partial) so the operator corrects only the fields the
@@ -306,17 +306,28 @@ func (r *LoadBalancerMonitorReconciler) editMonitor(ctx context.Context, ai *acc
 	// is never clobbered. Every field the CR expresses is still sent, so the CR
 	// stays authoritative for what it manages.
 	params := buildMonitorEditParams(ai.AccountID, mon)
+
+	// The "header" map is deep-merged by Cloudflare on PATCH, so the typed param
+	// can never remove a key the CR dropped. When the CR manages headers
+	// (spec.Header != nil), inject the full map as raw JSON -- the CR's keys plus
+	// an explicit null for every key Cloudflare still has that the CR no longer
+	// sets -- to force REPLACE semantics over the deep-merge. A nil spec.Header
+	// leaves Cloudflare's headers untouched.
+	opts := []option.RequestOption{option.WithRequestTimeout(r.CFAPIWriteTimeout)}
+	if mon.Spec.Header != nil {
+		opts = append(opts, option.WithJSONSet("header", headerEditOverride(*mon.Spec.Header, existing.Header)))
+	}
+
 	var resp *load_balancers.Monitor
 	attempts, err := cfRetry(ctx, cfResourceLoadBalancerMon, cfOpUpdate, r.CFAPIMaxRetries, func() error {
 		start := time.Now()
 		var callErr error
-		resp, callErr = ai.Client.LoadBalancers.Monitors.Edit(ctx, cfID, params,
-			option.WithRequestTimeout(r.CFAPIWriteTimeout))
+		resp, callErr = ai.Client.LoadBalancers.Monitors.Edit(ctx, existing.ID, params, opts...)
 		recordCFCall(cfResourceLoadBalancerMon, cfOpUpdate, start, &callErr)
 		return callErr
 	})
 	if err != nil {
-		log.Error(err, "loadbalancermonitor - update failed", "id", cfID, "attempts", attempts)
+		log.Error(err, "loadbalancermonitor - update failed", "id", existing.ID, "attempts", attempts)
 		return nil, err
 	}
 	operationsTotal.WithLabelValues(cfResourceLoadBalancerMon, cfOpUpdate).Inc()
@@ -566,8 +577,12 @@ func buildMonitorNewParams(accountID string, mon *lbv1beta1.LoadBalancerMonitor)
 	if mon.Spec.Port > 0 {
 		p.Port = cloudflare.F(int64(mon.Spec.Port))
 	}
-	if len(mon.Spec.Header) > 0 {
-		p.Header = cloudflare.F(mon.Spec.Header)
+	// Header is managed by presence, not emptiness: a non-nil pointer (even an
+	// empty map) means the operator owns the header set. On create there is no
+	// existing Cloudflare header to reconcile against, so the map is sent as-is
+	// (the edit path handles key removal via explicit nulls -- see editMonitor).
+	if mon.Spec.Header != nil {
+		p.Header = cloudflare.F(*mon.Spec.Header)
 	}
 	if mon.Spec.ExpectedCodes != "" {
 		p.ExpectedCodes = cloudflare.F(mon.Spec.ExpectedCodes)
@@ -627,9 +642,11 @@ func buildMonitorEditParams(accountID string, mon *lbv1beta1.LoadBalancerMonitor
 	if mon.Spec.Port > 0 {
 		p.Port = cloudflare.F(int64(mon.Spec.Port))
 	}
-	if len(mon.Spec.Header) > 0 {
-		p.Header = cloudflare.F(mon.Spec.Header)
-	}
+	// NOTE: Header is intentionally NOT set here. It is a top-level map property
+	// that Cloudflare deep-merges on PATCH, so dropping a key requires an explicit
+	// JSON null -- which the typed param.Field[map[...]] cannot express (a nil
+	// slice value marshals as [], not null). editMonitor injects the full header
+	// map, with nulls for keys the CR dropped, via option.WithJSONSet instead.
 	if mon.Spec.ExpectedCodes != "" {
 		p.ExpectedCodes = cloudflare.F(mon.Spec.ExpectedCodes)
 	}
@@ -679,7 +696,7 @@ func monitorDrifted(cf *load_balancers.Monitor, mon *lbv1beta1.LoadBalancerMonit
 	if mon.Spec.Port > 0 && int32(cf.Port) != mon.Spec.Port {
 		return true
 	}
-	if len(mon.Spec.Header) > 0 && monitorHeaderDrifted(cf.Header, mon.Spec.Header) {
+	if mon.Spec.Header != nil && monitorHeaderDrifted(cf.Header, *mon.Spec.Header) {
 		return true
 	}
 	if mon.Spec.ExpectedCodes != "" && cf.ExpectedCodes != mon.Spec.ExpectedCodes {
@@ -726,23 +743,58 @@ func monitorDrifted(cf *load_balancers.Monitor, mon *lbv1beta1.LoadBalancerMonit
 // CR's. Header names are case-insensitive per the HTTP spec, so keys are
 // canonicalized on both sides before comparison -- a case-sensitive compare
 // would drift-loop forever if the CR uses "host" while Cloudflare returns the
-// normalized "Host". Called only when the CR sets headers (len > 0); when it
-// does, the full set is enforced (a header the CR dropped, or one Cloudflare has
-// that the CR doesn't, counts as drift), matching the map-drift convention used
-// for keyed pools (mapListsEqual). Values are compared in order.
+// normalized "Host". Called only when the CR manages headers (spec.Header != nil);
+// when it does, the full set is enforced (a header the CR dropped, or one
+// Cloudflare has that the CR doesn't, counts as drift), matching the map-drift
+// convention used for keyed pools (mapListsEqual). Values are compared in order.
 func monitorHeaderDrifted(cf, spec map[string][]string) bool {
-	if len(cf) != len(spec) {
-		return true
-	}
 	canonicalCF := make(map[string][]string, len(cf))
 	for k, v := range cf {
 		canonicalCF[http.CanonicalHeaderKey(k)] = v
 	}
-	for k, want := range spec {
-		got, ok := canonicalCF[http.CanonicalHeaderKey(k)]
+	canonicalSpec := make(map[string][]string, len(spec))
+	for k, v := range spec {
+		canonicalSpec[http.CanonicalHeaderKey(k)] = v
+	}
+	// Compare canonicalized key SETS, not raw lengths: a CR that uses case-variant
+	// keys (e.g. both "host" and "Host") collapses to one key on the send side
+	// (headerEditOverride) and on Cloudflare, so a raw len(cf) != len(spec) check
+	// would report perpetual drift against the collapsed CF map -> drift-loop.
+	if len(canonicalCF) != len(canonicalSpec) {
+		return true
+	}
+	for k, want := range canonicalSpec {
+		got, ok := canonicalCF[k]
 		if !ok || !slices.Equal(got, want) {
 			return true
 		}
 	}
 	return false
+}
+
+// headerEditOverride builds the raw "header" object for a monitor PATCH that
+// REPLACES the header map despite Cloudflare deep-merging map properties: every
+// key the CR sets maps to its value, and every key Cloudflare still has that the
+// CR dropped maps to nil (which marshals to JSON null -- Cloudflare treats a null
+// map value as a removal). Header names are case-insensitive, so keys are
+// canonicalized on both sides to avoid sending "host" alongside a null for the
+// Cloudflare-normalized "Host". An empty desired map nulls every Cloudflare key
+// (clear all headers). The typed param.Field[map[...]] cannot express this -- a
+// nil slice value marshals as [] not null -- so editMonitor injects it via
+// option.WithJSONSet.
+func headerEditOverride(desired, observed map[string][]string) map[string]any {
+	out := make(map[string]any, len(desired)+len(observed))
+	keep := make(map[string]struct{}, len(desired))
+	for k, v := range desired {
+		ck := http.CanonicalHeaderKey(k)
+		out[ck] = v
+		keep[ck] = struct{}{}
+	}
+	for k := range observed {
+		ck := http.CanonicalHeaderKey(k)
+		if _, ok := keep[ck]; !ok {
+			out[ck] = nil
+		}
+	}
+	return out
 }

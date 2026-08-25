@@ -108,19 +108,29 @@ type LoadBalancerSpec struct {
 	// SteeringPolicy=geo. Region codes are CF's macro-regions:
 	//   WNAM, ENAM, WEU, EEU, NSAM, SSAM, OC, ME, NAF, SAF, SAS, SEAS, NEAS.
 	// See https://developers.cloudflare.com/load-balancing/reference/region-mapping-api/.
+	//
+	// Presence, not emptiness, decides management: when set (even to an empty
+	// map) the operator owns the full region map on Cloudflare -- codes the CR
+	// drops are removed. Cloudflare deep-merges map properties on PATCH, so
+	// removals are sent as explicit JSON nulls. When omitted (nil) the operator
+	// leaves Cloudflare's region_pools untouched. A pointer distinguishes an
+	// explicit empty map ("clear all region steering") from "unset" and survives
+	// the operator's own spec writes (see LoadBalancerMonitor.Header for why).
 	// +optional
-	RegionPools map[string][]LoadBalancerPoolRef `json:"regionPools,omitempty"`
+	RegionPools *map[string][]LoadBalancerPoolRef `json:"regionPools,omitempty"`
 
 	// CountryPools maps ISO-3166-1-alpha-2 country codes to ordered pool
 	// reference lists that override DefaultPoolRefs (and RegionPools) for
 	// clients from that country. Only used when SteeringPolicy=geo.
+	// Presence-not-emptiness management, as for RegionPools.
 	// +optional
-	CountryPools map[string][]LoadBalancerPoolRef `json:"countryPools,omitempty"`
+	CountryPools *map[string][]LoadBalancerPoolRef `json:"countryPools,omitempty"`
 
 	// PopPools maps CF PoP identifiers to ordered pool reference lists.
 	// Enterprise-only feature. Only used when SteeringPolicy=geo.
+	// Presence-not-emptiness management, as for RegionPools.
 	// +optional
-	PopPools map[string][]LoadBalancerPoolRef `json:"popPools,omitempty"`
+	PopPools *map[string][]LoadBalancerPoolRef `json:"popPools,omitempty"`
 
 	// SessionAffinity sets client-to-pool stickiness across requests.
 	// - "none" (default): each request may hit any healthy pool.

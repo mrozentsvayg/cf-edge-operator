@@ -60,8 +60,17 @@ type LoadBalancerMonitorSpec struct {
 
 	// Header is the set of request headers to send with the probe. The Host
 	// header is commonly needed when probing shared origins.
+	//
+	// Presence, not emptiness, decides management: when set (even to an empty
+	// map) the operator owns the full header set on Cloudflare -- keys the CR
+	// drops are removed. Cloudflare deep-merges map properties on PATCH, so
+	// removals are sent as explicit JSON nulls. When omitted (nil) the operator
+	// leaves Cloudflare's headers untouched. A pointer distinguishes an explicit
+	// empty map ("clear all headers") from "unset", and survives the operator's
+	// own spec writes -- an omitempty non-pointer map would be dropped and
+	// re-default to unset (the same class of bug as Retries; see its note).
 	// +optional
-	Header map[string][]string `json:"header,omitempty"`
+	Header *map[string][]string `json:"header,omitempty"`
 
 	// ExpectedCodes is the HTTP response code or range considered healthy
 	// (e.g. "200", "2xx", "200-299"). Only valid for http/https.

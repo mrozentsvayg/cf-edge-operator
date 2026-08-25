@@ -214,18 +214,22 @@ func (in *LoadBalancerMonitorSpec) DeepCopyInto(out *LoadBalancerMonitorSpec) {
 	out.AccountRef = in.AccountRef
 	if in.Header != nil {
 		in, out := &in.Header, &out.Header
-		*out = make(map[string][]string, len(*in))
-		for key, val := range *in {
-			var outVal []string
-			if val == nil {
-				(*out)[key] = nil
-			} else {
-				inVal := (*in)[key]
-				in, out := &inVal, &outVal
-				*out = make([]string, len(*in))
-				copy(*out, *in)
+		*out = new(map[string][]string)
+		if **in != nil {
+			in, out := *in, *out
+			*out = make(map[string][]string, len(*in))
+			for key, val := range *in {
+				var outVal []string
+				if val == nil {
+					(*out)[key] = nil
+				} else {
+					inVal := (*in)[key]
+					in, out := &inVal, &outVal
+					*out = make([]string, len(*in))
+					copy(*out, *in)
+				}
+				(*out)[key] = outVal
 			}
-			(*out)[key] = outVal
 		}
 	}
 }
@@ -574,50 +578,62 @@ func (in *LoadBalancerSpec) DeepCopyInto(out *LoadBalancerSpec) {
 	}
 	if in.RegionPools != nil {
 		in, out := &in.RegionPools, &out.RegionPools
-		*out = make(map[string][]LoadBalancerPoolRef, len(*in))
-		for key, val := range *in {
-			var outVal []LoadBalancerPoolRef
-			if val == nil {
-				(*out)[key] = nil
-			} else {
-				inVal := (*in)[key]
-				in, out := &inVal, &outVal
-				*out = make([]LoadBalancerPoolRef, len(*in))
-				copy(*out, *in)
+		*out = new(map[string][]LoadBalancerPoolRef)
+		if **in != nil {
+			in, out := *in, *out
+			*out = make(map[string][]LoadBalancerPoolRef, len(*in))
+			for key, val := range *in {
+				var outVal []LoadBalancerPoolRef
+				if val == nil {
+					(*out)[key] = nil
+				} else {
+					inVal := (*in)[key]
+					in, out := &inVal, &outVal
+					*out = make([]LoadBalancerPoolRef, len(*in))
+					copy(*out, *in)
+				}
+				(*out)[key] = outVal
 			}
-			(*out)[key] = outVal
 		}
 	}
 	if in.CountryPools != nil {
 		in, out := &in.CountryPools, &out.CountryPools
-		*out = make(map[string][]LoadBalancerPoolRef, len(*in))
-		for key, val := range *in {
-			var outVal []LoadBalancerPoolRef
-			if val == nil {
-				(*out)[key] = nil
-			} else {
-				inVal := (*in)[key]
-				in, out := &inVal, &outVal
-				*out = make([]LoadBalancerPoolRef, len(*in))
-				copy(*out, *in)
+		*out = new(map[string][]LoadBalancerPoolRef)
+		if **in != nil {
+			in, out := *in, *out
+			*out = make(map[string][]LoadBalancerPoolRef, len(*in))
+			for key, val := range *in {
+				var outVal []LoadBalancerPoolRef
+				if val == nil {
+					(*out)[key] = nil
+				} else {
+					inVal := (*in)[key]
+					in, out := &inVal, &outVal
+					*out = make([]LoadBalancerPoolRef, len(*in))
+					copy(*out, *in)
+				}
+				(*out)[key] = outVal
 			}
-			(*out)[key] = outVal
 		}
 	}
 	if in.PopPools != nil {
 		in, out := &in.PopPools, &out.PopPools
-		*out = make(map[string][]LoadBalancerPoolRef, len(*in))
-		for key, val := range *in {
-			var outVal []LoadBalancerPoolRef
-			if val == nil {
-				(*out)[key] = nil
-			} else {
-				inVal := (*in)[key]
-				in, out := &inVal, &outVal
-				*out = make([]LoadBalancerPoolRef, len(*in))
-				copy(*out, *in)
+		*out = new(map[string][]LoadBalancerPoolRef)
+		if **in != nil {
+			in, out := *in, *out
+			*out = make(map[string][]LoadBalancerPoolRef, len(*in))
+			for key, val := range *in {
+				var outVal []LoadBalancerPoolRef
+				if val == nil {
+					(*out)[key] = nil
+				} else {
+					inVal := (*in)[key]
+					in, out := &inVal, &outVal
+					*out = make([]LoadBalancerPoolRef, len(*in))
+					copy(*out, *in)
+				}
+				(*out)[key] = outVal
 			}
-			(*out)[key] = outVal
 		}
 	}
 	if in.SessionAffinityAttributes != nil {
