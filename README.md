@@ -126,7 +126,7 @@ Optional. The operator can also manage Cloudflare Load Balancing through four CR
 | `Account` | `accounts.cf-edge.io` | account | Cloudflare account ID + credentials for account-scoped LB resources (the account-scope analog of a Zone) |
 | `LoadBalancerMonitor` | `loadbalancing.cf-edge.io` | account | Health check that probes pool origins; referenced by pools |
 | `LoadBalancerPool` | `loadbalancing.cf-edge.io` | account | Origin pool; references an Account and, optionally, a Monitor. Models origins (`port`, `virtualNetworkID`, per-origin `header`), `originSteering`, `checkRegions`, and `loadShedding` |
-| `LoadBalancer` | `loadbalancing.cf-edge.io` | zone | Geo-steered hostname; references a Zone and LoadBalancerPool CRs by name. Models steering, session affinity (with `sessionAffinityAttributes`/`ttl`), `adaptiveRouting`, `locationStrategy`, `randomSteering`, and `networks` |
+| `LoadBalancer` | `loadbalancing.cf-edge.io` | zone | Geo-steered hostname; references a Zone and LoadBalancerPool CRs by name. Models steering, per-pool weights (`defaultPoolRefs[].weight` + `defaultWeight`), session affinity (with `sessionAffinityAttributes`/`ttl`), `adaptiveRouting`, `locationStrategy`, and `networks` |
 
 Load balancing is a single-owner control-plane role: enable it on exactly one (control) cluster with `features.loadBalancing.enabled=true` (Helm) / `--enable-loadbalancing`. All other clusters leave it off, and the LB CRDs, RBAC, controllers, and metrics are omitted. See [docs/architecture.md](docs/architecture.md#load-balancing-reconciliation-model) for the reconciliation model and per-CRD field reference.
 

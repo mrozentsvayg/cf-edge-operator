@@ -332,7 +332,7 @@ The state clears automatically once the dependency resolves (a cross-object watc
 
 **Severity:** info
 
-**Meaning:** One or more LoadBalancer CRs have been serving in a `partial` (degraded) state for 1 hour: at least one referenced pool is unresolved (a missing or not-yet-ready Pool CR), so the load balancer serves with a reduced pool set. The LB is `Ready=True` with `reason=Partial` -- it IS serving, so this is informational, not a paging condition. Unresolved refs come from a `defaultPoolRefs`, geo-map, or `randomSteering` weight slot (an unresolved `fallbackPoolRef` instead makes the LB wait -- `CfEdgeOperatorLoadBalancersWaiting` -- rather than serve partially).
+**Meaning:** One or more LoadBalancer CRs have been serving in a `partial` (degraded) state for 1 hour: at least one referenced pool is unresolved (a missing or not-yet-ready Pool CR), so the load balancer serves with a reduced pool set. The LB is `Ready=True` with `reason=Partial` -- it IS serving, so this is informational, not a paging condition. Unresolved refs come from a `defaultPoolRefs` entry (including a weighted one) or a geo-map slot (an unresolved `fallbackPoolRef` instead makes the LB wait -- `CfEdgeOperatorLoadBalancersWaiting` -- rather than serve partially).
 
 > This alert renders only when the load-balancing control-plane role is enabled (`features.loadBalancing.enabled=true`).
 

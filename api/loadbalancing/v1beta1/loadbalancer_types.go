@@ -36,6 +36,12 @@ import (
 // +kubebuilder:validation:XValidation:rule="!has(self.sessionAffinity) || self.sessionAffinity != 'header' || (has(self.sessionAffinityAttributes) && has(self.sessionAffinityAttributes.headers) && size(self.sessionAffinityAttributes.headers) > 0)",message="sessionAffinity=header requires sessionAffinityAttributes.headers to be non-empty"
 // +kubebuilder:validation:XValidation:rule="!has(self.sessionAffinityTtl) || (has(self.sessionAffinity) && self.sessionAffinity != 'none')",message="sessionAffinityTtl is only valid when sessionAffinity is set and not 'none'"
 // +kubebuilder:validation:XValidation:rule="!has(self.sessionAffinityAttributes) || (has(self.sessionAffinity) && self.sessionAffinity != 'none')",message="sessionAffinityAttributes is only valid when sessionAffinity is set and not 'none'"
+//
+// Pool weights (defaultPoolRefs[].weight and defaultWeight) only take effect under a weighted
+// steering policy, so reject them otherwise -- catching silently-inert config at admission. The
+// policy set here MUST stay in sync with weightedSteeringActive in
+// internal/controller/loadbalancer_controller.go (CEL cannot call Go).
+// +kubebuilder:validation:XValidation:rule="!(self.defaultPoolRefs.exists(p, has(p.weight)) || has(self.defaultWeight)) || self.steeringPolicy in ['random','least_outstanding_requests','least_connections']",message="pool weights (defaultPoolRefs[].weight, defaultWeight) require steeringPolicy to be random, least_outstanding_requests, or least_connections"
 type LoadBalancerSpec struct {
 	// ZoneRef references the Zone hosting the LB's DNS name. The Zone
 	// provides both the CF zone ID (for the LB API call) and the CF API
@@ -53,10 +59,15 @@ type LoadBalancerSpec struct {
 
 	// DefaultPoolRefs is the ordered list of pool references CF uses when no
 	// region_pools / country_pools / pop_pools rule matches. Each ref is
-	// resolved to a CF pool ID from the referenced Pool CR's Status.ID.
+	// resolved to a CF pool ID from the referenced Pool CR's Status.ID, and may
+	// carry an optional per-pool weight used by weighted steering policies (see
+	// LoadBalancerDefaultPoolRef.Weight and SteeringPolicy). Names must be unique
+	// within the list (the CR name is the CF pool name, which is account-unique).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
-	DefaultPoolRefs []LoadBalancerPoolRef `json:"defaultPoolRefs"`
+	// +listType=map
+	// +listMapKey=name
+	DefaultPoolRefs []LoadBalancerDefaultPoolRef `json:"defaultPoolRefs"`
 
 	// FallbackPoolRef is the pool CF sends traffic to when EVERY other pool
 	// is unhealthy. Required by CF, so we require it here.
@@ -70,10 +81,16 @@ type LoadBalancerSpec struct {
 	// - "dynamic_latency": pick the pool with lowest observed latency from
 	//   the client's PoP (uses CF's real-time analytics).
 	// - "proximity": pick the pool closest by geographic distance.
-	// - "least_outstanding_requests" / "least_connections": Enterprise only.
-	// Defaults to dynamic_latency for latency-sensitive multi-region workloads.
+	// - "least_outstanding_requests" / "least_connections": weighted, traffic-
+	//   steering-add-on gated (like geo/dynamic_latency/proximity).
+	// Defaults to "off" -- Cloudflare's own API default, and the only policy
+	// available without the traffic-steering add-on (dynamic_latency and the
+	// other advanced policies fail LB creation on the base tier). Set an advanced
+	// policy explicitly when the account has the add-on.
+	// Pool weights (defaultPoolRefs[].weight, defaultWeight) apply only under the
+	// weighted policies random / least_outstanding_requests / least_connections.
 	// +kubebuilder:validation:Enum=off;geo;random;dynamic_latency;proximity;least_outstanding_requests;least_connections
-	// +kubebuilder:default=dynamic_latency
+	// +kubebuilder:default=off
 	// +optional
 	SteeringPolicy string `json:"steeringPolicy,omitempty"`
 
@@ -168,11 +185,16 @@ type LoadBalancerSpec struct {
 	// +optional
 	LocationStrategy *LoadBalancerLocationStrategy `json:"locationStrategy,omitempty"`
 
-	// RandomSteering configures pool weights for weighted steering policies
-	// (SteeringPolicy=random / least_outstanding_requests / least_connections).
-	// Optional: unset leaves Cloudflare's setting intact; set enforces it.
+	// DefaultWeight is the weight applied to default pools that do not carry an
+	// explicit defaultPoolRefs[].weight, relative to the other pools. It only
+	// takes effect under a weighted steering policy (random /
+	// least_outstanding_requests / least_connections); Cloudflare defaults it to
+	// 1. Expressed as a string in the range 0.0-1.0 to preserve fractional
+	// precision (Cloudflare accepts a float). Maps to Cloudflare's wire field
+	// random_steering.default_weight.
+	// +kubebuilder:validation:Pattern="^(0(\\.[0-9]+)?|1(\\.0+)?)$"
 	// +optional
-	RandomSteering *LoadBalancerRandomSteering `json:"randomSteering,omitempty"`
+	DefaultWeight string `json:"defaultWeight,omitempty"`
 
 	// Networks is the list of network identifiers (e.g. private-network scopes)
 	// the load balancer is available on. Optional: unset leaves Cloudflare's
@@ -212,6 +234,25 @@ type LoadBalancerPoolRef struct {
 	Namespace string `json:"namespace,omitempty"`
 }
 
+// LoadBalancerDefaultPoolRef is a default-pool reference plus this LoadBalancer's
+// per-pool weight for weighted steering. The weight lives on the reference (a
+// per-LB policy property), NOT on the account-wide LoadBalancerPool CR, so the
+// same pool can carry different weights in different LoadBalancers -- matching
+// Cloudflare's per-LB random_steering.pool_weights map.
+type LoadBalancerDefaultPoolRef struct {
+	LoadBalancerPoolRef `json:",inline"`
+
+	// Weight is this pool's weight relative to the other default pools, used only
+	// under a weighted steering policy (random / least_outstanding_requests /
+	// least_connections). Expressed as a string in the range 0.0-1.0 to preserve
+	// fractional precision. Omit to use the LoadBalancer's defaultWeight (or
+	// Cloudflare's default of 1). Rejected by admission under a non-weighting
+	// steering policy (see the LoadBalancerSpec validation rules).
+	// +kubebuilder:validation:Pattern="^(0(\\.[0-9]+)?|1(\\.0+)?)$"
+	// +optional
+	Weight string `json:"weight,omitempty"`
+}
+
 // LoadBalancerAdaptiveRouting configures how Cloudflare routes requests in
 // response to dynamic conditions (e.g. zero-downtime failover between pools).
 type LoadBalancerAdaptiveRouting struct {
@@ -242,38 +283,6 @@ type LoadBalancerLocationStrategy struct {
 	// +kubebuilder:validation:Enum=always;never;proximity;geo
 	// +optional
 	PreferECS string `json:"preferECS,omitempty"`
-}
-
-// LoadBalancerRandomSteering configures pool weights used by weighted steering
-// policies (SteeringPolicy=random / least_outstanding_requests / least_connections).
-type LoadBalancerRandomSteering struct {
-	// DefaultWeight is the weight for pools not named in PoolWeights, relative to
-	// the other pools. Expressed as a string in the range 0.0-1.0 to preserve
-	// fractional precision (Cloudflare accepts a float).
-	// +kubebuilder:validation:Pattern="^(0(\\.[0-9]+)?|1(\\.0+)?)$"
-	// +optional
-	DefaultWeight string `json:"defaultWeight,omitempty"`
-
-	// PoolWeights assigns per-pool weights, each keyed by a namespace-aware pool
-	// reference (resolved to a CF pool ID from the referenced Pool CR's Status.ID).
-	// Modeled as a list of {poolRef, weight} rather than a raw map so the resolver
-	// can treat these refs like the other pool-ref slots (an unresolved weighted
-	// pool degrades the LB, same as a default/geo ref).
-	// +optional
-	PoolWeights []LoadBalancerPoolWeight `json:"poolWeights,omitempty"`
-}
-
-// LoadBalancerPoolWeight assigns a random-steering weight to a referenced pool.
-type LoadBalancerPoolWeight struct {
-	// PoolRef references the LoadBalancerPool CR this weight applies to.
-	// +kubebuilder:validation:Required
-	PoolRef LoadBalancerPoolRef `json:"poolRef"`
-
-	// Weight is the pool's weight relative to other pools, expressed as a string
-	// in the range 0.0-1.0 to preserve fractional precision.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern="^(0(\\.[0-9]+)?|1(\\.0+)?)$"
-	Weight string `json:"weight"`
 }
 
 // LoadBalancerSessionAffinityAttributes tunes session affinity behavior. It is
@@ -339,8 +348,8 @@ type LoadBalancerStatus struct {
 	ResolvedFallbackPoolID string `json:"resolvedFallbackPoolID,omitempty"`
 
 	// UnresolvedPoolRefs lists the referenced pool names (from any ref slot --
-	// default, fallback, geo, or random-steering weights) that had no ready Pool
-	// CR on the last reconcile. A non-empty list means the LB is serving in a
+	// default (including a weighted entry), fallback, or geo) that had no ready
+	// Pool CR on the last reconcile. A non-empty list means the LB is serving in a
 	// degraded/partial state (some pools dropped); it converges as those pools
 	// become ready. Surfaced for observability -- see the Unresolved printcolumn.
 	// +optional

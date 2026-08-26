@@ -1500,7 +1500,7 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				Spec: lbv1beta1.LoadBalancerSpec{
 					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
 					Hostname:        "lb-a." + lbZoneName,
-					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					DefaultPoolRefs: defPools("pool-fb"),
 					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 				},
 			}
@@ -1565,12 +1565,9 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 			lb := &lbv1beta1.LoadBalancer{
 				ObjectMeta: metav1.ObjectMeta{Name: "lb-deg", Namespace: lbTestNS},
 				Spec: lbv1beta1.LoadBalancerSpec{
-					ZoneRef:  lbv1beta1.ZoneRef{Name: lbZoneCRName},
-					Hostname: "lb-deg." + lbZoneName,
-					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{
-						{Name: "pool-fb"},
-						{Name: "pool-missing"},
-					},
+					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:        "lb-deg." + lbZoneName,
+					DefaultPoolRefs: defPools("pool-fb", "pool-missing"),
 					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 				},
 			}
@@ -1605,7 +1602,7 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				Spec: lbv1beta1.LoadBalancerSpec{
 					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
 					Hostname:        "lb-drift." + lbZoneName,
-					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					DefaultPoolRefs: defPools("pool-fb"),
 					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 					SteeringPolicy:  "dynamic_latency",
 				},
@@ -1645,12 +1642,9 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 			lb := &lbv1beta1.LoadBalancer{
 				ObjectMeta: metav1.ObjectMeta{Name: "lb-partial", Namespace: lbTestNS},
 				Spec: lbv1beta1.LoadBalancerSpec{
-					ZoneRef:  lbv1beta1.ZoneRef{Name: lbZoneCRName},
-					Hostname: "lb-partial." + lbZoneName,
-					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{
-						{Name: "pool-fb"},
-						{Name: "pool-partial-missing"},
-					},
+					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:        "lb-partial." + lbZoneName,
+					DefaultPoolRefs: defPools("pool-fb", "pool-partial-missing"),
 					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 				},
 			}
@@ -1690,19 +1684,18 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
 		})
 
-		It("feeds partial from an unresolved random-steering weighted pool while still serving", func() {
+		It("feeds partial from an unresolved weighted default pool while still serving", func() {
 			lb := &lbv1beta1.LoadBalancer{
 				ObjectMeta: metav1.ObjectMeta{Name: "lb-rs", Namespace: lbTestNS},
 				Spec: lbv1beta1.LoadBalancerSpec{
-					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
-					Hostname:        "lb-rs." + lbZoneName,
-					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
-					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
-					RandomSteering: &lbv1beta1.LoadBalancerRandomSteering{
-						PoolWeights: []lbv1beta1.LoadBalancerPoolWeight{
-							{PoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "rs-missing"}, Weight: "0.5"},
-						},
+					ZoneRef:        lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:       "lb-rs." + lbZoneName,
+					SteeringPolicy: "random",
+					DefaultPoolRefs: []lbv1beta1.LoadBalancerDefaultPoolRef{
+						{LoadBalancerPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"}},
+						{LoadBalancerPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "rs-missing"}, Weight: "0.5"},
 					},
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 				},
 			}
 			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
@@ -1736,7 +1729,7 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				Spec: lbv1beta1.LoadBalancerSpec{
 					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
 					Hostname:        hostname,
-					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					DefaultPoolRefs: defPools("pool-fb"),
 					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 				},
 			}
@@ -1775,7 +1768,7 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				Spec: lbv1beta1.LoadBalancerSpec{
 					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
 					Hostname:        hostname,
-					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					DefaultPoolRefs: defPools("pool-fb"),
 					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 				},
 			}
@@ -1822,7 +1815,7 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				Spec: lbv1beta1.LoadBalancerSpec{
 					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
 					Hostname:        hostname,
-					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					DefaultPoolRefs: defPools("pool-fb"),
 					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 					Networks:        []string{"net-a", "net-b"},
 				},
@@ -1978,7 +1971,7 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				Spec: lbv1beta1.LoadBalancerSpec{
 					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
 					Hostname:        hostname,
-					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					DefaultPoolRefs: defPools("pool-fb"),
 					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 				},
 			}
@@ -2064,7 +2057,7 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				Spec: lbv1beta1.LoadBalancerSpec{
 					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
 					Hostname:        hostname,
-					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-k-a"}},
+					DefaultPoolRefs: defPools("pool-k-a"),
 					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-k-a"},
 					SteeringPolicy:  "geo",
 					RegionPools:     &map[string][]lbv1beta1.LoadBalancerPoolRef{"WNAM": {{Name: "pool-k-a"}}},
@@ -2190,7 +2183,7 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				Spec: lbv1beta1.LoadBalancerSpec{
 					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
 					Hostname:        hostname,
-					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					DefaultPoolRefs: defPools("pool-fb"),
 					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 					Proxied:         new(true),
 					TTL:             300,
@@ -2223,7 +2216,7 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				Spec: lbv1beta1.LoadBalancerSpec{
 					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
 					Hostname:        hostname,
-					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					DefaultPoolRefs: defPools("pool-fb"),
 					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 					Proxied:         new(false),
 					TTL:             120,
@@ -2253,7 +2246,7 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				Spec: lbv1beta1.LoadBalancerSpec{
 					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
 					Hostname:        hostname,
-					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					DefaultPoolRefs: defPools("pool-fb"),
 					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 					AdaptiveRouting: &lbv1beta1.LoadBalancerAdaptiveRouting{FailoverAcrossPools: new(true)},
 				},
@@ -2283,7 +2276,7 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				Spec: lbv1beta1.LoadBalancerSpec{
 					ZoneRef:          lbv1beta1.ZoneRef{Name: lbZoneCRName},
 					Hostname:         hostname,
-					DefaultPoolRefs:  []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					DefaultPoolRefs:  defPools("pool-fb"),
 					FallbackPoolRef:  lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 					LocationStrategy: &lbv1beta1.LoadBalancerLocationStrategy{Mode: "pop", PreferECS: "always"},
 				},
@@ -2313,7 +2306,7 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				Spec: lbv1beta1.LoadBalancerSpec{
 					ZoneRef:            lbv1beta1.ZoneRef{Name: lbZoneCRName},
 					Hostname:           hostname,
-					DefaultPoolRefs:    []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					DefaultPoolRefs:    defPools("pool-fb"),
 					FallbackPoolRef:    lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 					SessionAffinity:    "cookie",
 					SessionAffinityTtl: 1800,
@@ -2357,7 +2350,7 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				Spec: lbv1beta1.LoadBalancerSpec{
 					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
 					Hostname:        hostname,
-					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					DefaultPoolRefs: defPools("pool-fb"),
 					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 				},
 			}
@@ -2400,7 +2393,7 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				Spec: lbv1beta1.LoadBalancerSpec{
 					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
 					Hostname:        hostname,
-					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					DefaultPoolRefs: defPools("pool-fb"),
 					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 					SessionAffinity: "none",
 				},
@@ -2444,22 +2437,19 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 			lb := &lbv1beta1.LoadBalancer{
 				ObjectMeta: metav1.ObjectMeta{Name: "lb-rsw", Namespace: lbTestNS},
 				Spec: lbv1beta1.LoadBalancerSpec{
-					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
-					Hostname:        hostname,
-					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
-					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
-					SteeringPolicy:  "random",
-					RandomSteering: &lbv1beta1.LoadBalancerRandomSteering{
-						DefaultWeight: "0.2",
-						PoolWeights: []lbv1beta1.LoadBalancerPoolWeight{
-							{PoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"}, Weight: "0.7"},
-						},
+					ZoneRef:        lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:       hostname,
+					SteeringPolicy: "random",
+					DefaultWeight:  "0.2",
+					DefaultPoolRefs: []lbv1beta1.LoadBalancerDefaultPoolRef{
+						{LoadBalancerPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"}, Weight: "0.7"},
 					},
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 				},
 			}
 			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
 
-			// Sent on create: default_weight + the resolved pool weight (keyed by CF
+			// Sent on create: default_weight + the folded per-pool weight (keyed by CF
 			// pool ID) round-trip.
 			Eventually(func() bool {
 				r, ok := lbMock.lbByName(hostname)
@@ -2490,23 +2480,20 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 			lb := &lbv1beta1.LoadBalancer{
 				ObjectMeta: metav1.ObjectMeta{Name: "lb-rspartial", Namespace: lbTestNS},
 				Spec: lbv1beta1.LoadBalancerSpec{
-					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
-					Hostname:        hostname,
-					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
-					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
-					SteeringPolicy:  "random",
-					RandomSteering: &lbv1beta1.LoadBalancerRandomSteering{
-						PoolWeights: []lbv1beta1.LoadBalancerPoolWeight{
-							{PoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"}, Weight: "0.6"},
-							{PoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "rspartial-missing"}, Weight: "0.4"},
-						},
+					ZoneRef:        lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:       hostname,
+					SteeringPolicy: "random",
+					DefaultPoolRefs: []lbv1beta1.LoadBalancerDefaultPoolRef{
+						{LoadBalancerPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"}, Weight: "0.6"},
+						{LoadBalancerPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "rspartial-missing"}, Weight: "0.4"},
 					},
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 				},
 			}
 			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
 
-			// Only the resolved pool appears in pool_weights; the unresolved ref is
-			// dropped (not re-implemented here -- resolution happens in chunk 2).
+			// Only the resolved default pool appears in pool_weights; the unresolved
+			// weighted default pool is dropped from the payload.
 			Eventually(func() bool {
 				r, ok := lbMock.lbByName(hostname)
 				return ok && r.RandomSteering != nil &&
@@ -2525,6 +2512,148 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				return c != nil && c.Status == metav1.ConditionTrue && c.Reason == reasonPartial &&
 					len(l.Status.UnresolvedPoolRefs) == 1 && l.Status.UnresolvedPoolRefs[0] == "rspartial-missing"
 			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+		})
+
+		It("rejects a pool weight or defaultWeight under a non-weighting steering policy (CEL)", func() {
+			// A weighted default entry under steeringPolicy=off is silently inert on
+			// Cloudflare, so the CEL guard rejects it at admission.
+			lbWeight := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-cel-weight", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:        lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:       "lb-cel-weight." + lbZoneName,
+					SteeringPolicy: "off",
+					DefaultPoolRefs: []lbv1beta1.LoadBalancerDefaultPoolRef{
+						{LoadBalancerPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"}, Weight: "0.6"},
+					},
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+				},
+			}
+			err := k8sClient.Create(ctx, lbWeight)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("steeringPolicy"))
+
+			// The same guard covers the top-level defaultWeight.
+			lbDefault := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-cel-defweight", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:        "lb-cel-defweight." + lbZoneName,
+					SteeringPolicy:  "geo",
+					DefaultWeight:   "0.5",
+					DefaultPoolRefs: defPools("pool-fb"),
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+				},
+			}
+			errDefault := k8sClient.Create(ctx, lbDefault)
+			Expect(errDefault).To(HaveOccurred())
+			Expect(errDefault.Error()).To(ContainSubstring("steeringPolicy"))
+		})
+
+		It("accepts a pool weight IFF the steering policy is weighted, across every enum value (CEL)", func() {
+			// Invariant guard: bind the apiserver CEL pool-weights rule to the Go
+			// weightedSteeringActive helper so the two cannot silently drift. Iterate
+			// every steeringPolicy enum value and assert admission accepts an LB
+			// carrying a pool weight exactly when the policy is a weighted one. This is
+			// a pure admission (apiserver CEL) test -- no Cloudflare involved -- so
+			// add-on-gated policies (e.g. proximity) are fine to exercise here.
+			cases := []struct {
+				policy   string
+				weighted bool
+			}{
+				{"random", true},
+				{"least_outstanding_requests", true},
+				{"least_connections", true},
+				{"off", false},
+				{"geo", false},
+				{"dynamic_latency", false},
+				{"proximity", false},
+			}
+			for _, tc := range cases {
+				// Object names are RFC 1123 (no underscores); dash-normalize the policy.
+				name := "lb-cel-inv-" + strings.ReplaceAll(tc.policy, "_", "-")
+				lb := &lbv1beta1.LoadBalancer{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: lbTestNS},
+					Spec: lbv1beta1.LoadBalancerSpec{
+						ZoneRef:        lbv1beta1.ZoneRef{Name: lbZoneCRName},
+						Hostname:       name + "." + lbZoneName,
+						SteeringPolicy: tc.policy,
+						DefaultPoolRefs: []lbv1beta1.LoadBalancerDefaultPoolRef{
+							{LoadBalancerPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"}, Weight: "0.5"},
+						},
+						FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+					},
+				}
+				err := k8sClient.Create(ctx, lb)
+				if tc.weighted {
+					Expect(err).ToNot(HaveOccurred(), "weighted policy %q must accept a pool weight", tc.policy)
+				} else {
+					Expect(err).To(HaveOccurred(), "non-weighting policy %q must reject a pool weight", tc.policy)
+					Expect(err.Error()).To(ContainSubstring("steeringPolicy"), "policy %q rejection message", tc.policy)
+				}
+			}
+		})
+
+		It("defaults steeringPolicy to off when unset", func() {
+			hostname := "lb-defpolicy." + lbZoneName
+			lb := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-defpolicy", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:        hostname,
+					DefaultPoolRefs: defPools("pool-fb"),
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+					// steeringPolicy omitted -> CRD default "off" is applied and sent.
+				},
+			}
+			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
+			Eventually(func() string {
+				r, ok := lbMock.lbByName(hostname)
+				if !ok {
+					return ""
+				}
+				return r.SteeringPolicy
+			}, lbEventuallyTimeout, lbPollInterval).Should(Equal("off"))
+		})
+
+		It("does not drift-loop under a weighted policy with no per-pool weights", func() {
+			// steeringPolicy=random but no defaultPoolRefs[].weight and no defaultWeight:
+			// the operator sends an empty pool_weights map; the exact-match drift check
+			// (0 == 0) must not loop.
+			hostname := "lb-rs-noweights." + lbZoneName
+			lb := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-rs-noweights", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:        hostname,
+					SteeringPolicy:  "random",
+					DefaultPoolRefs: defPools("pool-fb"),
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
+
+			// The LB reconciles to Ready (fully synchronized) ...
+			Eventually(func() bool {
+				var l lbv1beta1.LoadBalancer
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: "lb-rs-noweights", Namespace: lbTestNS}, &l); err != nil {
+					return false
+				}
+				c := readyCondition(l.Status.Conditions)
+				return c != nil && c.Status == metav1.ConditionTrue && c.Reason == reasonReconciled
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+			// ... and no per-pool weights land on Cloudflare.
+			r, ok := lbMock.lbByName(hostname)
+			Expect(ok).To(BeTrue())
+			if r.RandomSteering != nil {
+				Expect(r.RandomSteering.PoolWeights).To(BeEmpty())
+			}
+
+			// No drift-loop: the edit count stabilizes (exact-match 0 == 0).
+			before := lbMock.lbUpdates()
+			Consistently(func() int {
+				return lbMock.lbUpdates()
+			}, 3*time.Second, lbPollInterval).Should(Equal(before))
 		})
 	})
 
@@ -2622,7 +2751,7 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				Spec: lbv1beta1.LoadBalancerSpec{
 					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
 					Hostname:        hostname,
-					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					DefaultPoolRefs: defPools("pool-fb"),
 					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 					SteeringPolicy:  "dynamic_latency",
 				},
@@ -2665,7 +2794,7 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				Spec: lbv1beta1.LoadBalancerSpec{
 					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
 					Hostname:        hostname,
-					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					DefaultPoolRefs: defPools("pool-fb"),
 					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 					SteeringPolicy:  "geo",
 					RegionPools: &map[string][]lbv1beta1.LoadBalancerPoolRef{
@@ -2735,7 +2864,7 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				Spec: lbv1beta1.LoadBalancerSpec{
 					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
 					Hostname:        hostname,
-					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-fb"}},
+					DefaultPoolRefs: defPools("pool-fb"),
 					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
 					SteeringPolicy:  "geo",
 					RegionPools:     &map[string][]lbv1beta1.LoadBalancerPoolRef{"WNAM": {{Name: "pool-fb"}}},
@@ -2882,12 +3011,13 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 		})
 	})
 
-	// -- random_steering.pool_weights removal: the FIX 1 null-removal path for the
-	//    weighted-pool map (editLoadBalancer's WithJSONSet("random_steering.pool_weights",
-	//    ...) -> deep-merge). A dropped weighted pool must be nulled out, not omitted,
-	//    or it lingers on Cloudflare and drift-loops. --
-	Context("LoadBalancer random steering removal", func() {
-		It("removes a dropped weighted pool from pool_weights without a drift-loop", func() {
+	// -- pool_weights removal: clearing a default entry's weight must null its
+	//    Cloudflare pool_weights key (editLoadBalancer's
+	//    WithJSONSet("random_steering.pool_weights", ...) -> deep-merge). Cloudflare
+	//    deep-merges the map, so an omitted key would linger and drift-loop; it must
+	//    be nulled out. --
+	Context("LoadBalancer weighted steering removal", func() {
+		It("removes a cleared pool weight from pool_weights without a drift-loop", func() {
 			// Two ready pools to weight between.
 			for _, spec := range []struct{ name, addr string }{
 				{"pool-rs-a", "10.0.12.1"},
@@ -2918,18 +3048,15 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 			lb := &lbv1beta1.LoadBalancer{
 				ObjectMeta: metav1.ObjectMeta{Name: "lb-rsdrop", Namespace: lbTestNS},
 				Spec: lbv1beta1.LoadBalancerSpec{
-					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
-					Hostname:        hostname,
-					DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-rs-a"}},
-					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-rs-a"},
-					SteeringPolicy:  "random",
-					RandomSteering: &lbv1beta1.LoadBalancerRandomSteering{
-						DefaultWeight: "0.2",
-						PoolWeights: []lbv1beta1.LoadBalancerPoolWeight{
-							{PoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-rs-a"}, Weight: "0.6"},
-							{PoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-rs-b"}, Weight: "0.4"},
-						},
+					ZoneRef:        lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:       hostname,
+					SteeringPolicy: "random",
+					DefaultWeight:  "0.2",
+					DefaultPoolRefs: []lbv1beta1.LoadBalancerDefaultPoolRef{
+						{LoadBalancerPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-rs-a"}, Weight: "0.6"},
+						{LoadBalancerPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-rs-b"}, Weight: "0.4"},
 					},
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-rs-a"},
 				},
 			}
 			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
@@ -2943,17 +3070,15 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 					floatNear(r.RandomSteering.PoolWeights[poolBID], 0.4)
 			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
 
-			// Drop pool-rs-b from the weights. The operator must send an explicit null
-			// for its CF id via WithJSONSet -- Cloudflare deep-merges pool_weights, so an
-			// omitted key would linger and drift-loop.
+			// Clear pool-rs-b's weight (it stays a default member). The operator must
+			// send an explicit null for its CF id via WithJSONSet -- Cloudflare
+			// deep-merges pool_weights, so an omitted key would linger and drift-loop.
 			var current lbv1beta1.LoadBalancer
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "lb-rsdrop", Namespace: lbTestNS}, &current)).To(Succeed())
 			patch := client.MergeFrom(current.DeepCopy())
-			current.Spec.RandomSteering = &lbv1beta1.LoadBalancerRandomSteering{
-				DefaultWeight: "0.2",
-				PoolWeights: []lbv1beta1.LoadBalancerPoolWeight{
-					{PoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-rs-a"}, Weight: "0.6"},
-				},
+			current.Spec.DefaultPoolRefs = []lbv1beta1.LoadBalancerDefaultPoolRef{
+				{LoadBalancerPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-rs-a"}, Weight: "0.6"},
+				{LoadBalancerPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-rs-b"}},
 			}
 			Expect(k8sClient.Patch(ctx, &current, patch)).To(Succeed())
 
@@ -3403,7 +3528,7 @@ var _ = Describe("LoadBalancing DeletePolicy own-only", Ordered, func() {
 			Spec: lbv1beta1.LoadBalancerSpec{
 				ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
 				Hostname:        hostname,
-				DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-policy-fb"}},
+				DefaultPoolRefs: defPools("pool-policy-fb"),
 				FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-policy-fb"},
 				DeletePolicy:    DeletePolicyOwnOnly,
 			},
@@ -3426,7 +3551,7 @@ var _ = Describe("LoadBalancing DeletePolicy own-only", Ordered, func() {
 			Spec: lbv1beta1.LoadBalancerSpec{
 				ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
 				Hostname:        hostname,
-				DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-policy-fb"}},
+				DefaultPoolRefs: defPools("pool-policy-fb"),
 				FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-policy-fb"},
 				DeletePolicy:    DeletePolicyOwnOnly,
 			},

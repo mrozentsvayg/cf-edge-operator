@@ -35,13 +35,22 @@ func newLBCR(spec lbv1beta1.LoadBalancerSpec) *lbv1beta1.LoadBalancer {
 	}
 }
 
+// defPools builds an (unweighted) defaultPoolRefs list from plain pool names.
+// Weighted default entries are constructed inline where a test needs a weight.
+func defPools(names ...string) []lbv1beta1.LoadBalancerDefaultPoolRef {
+	out := make([]lbv1beta1.LoadBalancerDefaultPoolRef, 0, len(names))
+	for _, n := range names {
+		out = append(out, lbv1beta1.LoadBalancerDefaultPoolRef{
+			LoadBalancerPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: n},
+		})
+	}
+	return out
+}
+
 func TestLBReferencesPool(t *testing.T) {
 	lb := &lbv1beta1.LoadBalancer{
 		Spec: lbv1beta1.LoadBalancerSpec{
-			DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{
-				{Name: "us-pool"},
-				{Name: "apac-pool"},
-			},
+			DefaultPoolRefs: defPools("us-pool", "apac-pool"),
 			FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "us-pool"},
 			RegionPools: &map[string][]lbv1beta1.LoadBalancerPoolRef{
 				"WNAM": {{Name: "us-pool"}},
@@ -363,13 +372,13 @@ func lbFakeScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-func TestResolveAllPools_RandomSteeringWeightsFeedPartial(t *testing.T) {
+func TestResolveDefaultPools_WeightsFoldedAndFeedPartial(t *testing.T) {
 	scheme := lbFakeScheme(t)
 	ctx := context.Background()
 
-	// Fallback + default resolve; a random-steering weighted pool is missing so it
-	// must be recorded as unresolved (feeding partial) while the resolved weighted
-	// pool is returned in randomSteeringWeights.
+	// A weighted default pool resolves and its weight is folded into poolWeights
+	// (keyed by CF pool ID); a second weighted default pool is missing, so it feeds
+	// unresolved (partial) and is absent from poolWeights.
 	readyPool := &lbv1beta1.LoadBalancerPool{
 		ObjectMeta: metav1.ObjectMeta{Name: "pool-ready", Namespace: "ns"},
 		Status:     lbv1beta1.LoadBalancerPoolStatus{ID: "cf-pool-ready"},
@@ -384,22 +393,21 @@ func TestResolveAllPools_RandomSteeringWeightsFeedPartial(t *testing.T) {
 	lb := &lbv1beta1.LoadBalancer{
 		ObjectMeta: metav1.ObjectMeta{Name: "lb", Namespace: "ns"},
 		Spec: lbv1beta1.LoadBalancerSpec{
-			Hostname:        "lb.example.com",
-			DefaultPoolRefs: []lbv1beta1.LoadBalancerPoolRef{{Name: "pool-ready"}},
-			FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-ready"},
-			RandomSteering: &lbv1beta1.LoadBalancerRandomSteering{
-				PoolWeights: []lbv1beta1.LoadBalancerPoolWeight{
-					{PoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-weighted"}, Weight: "0.5"},
-					{PoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-missing"}, Weight: "0.5"},
-				},
+			Hostname:       "lb.example.com",
+			SteeringPolicy: "random",
+			DefaultPoolRefs: []lbv1beta1.LoadBalancerDefaultPoolRef{
+				{LoadBalancerPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-ready"}},
+				{LoadBalancerPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-weighted"}, Weight: "0.5"},
+				{LoadBalancerPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-missing"}, Weight: "0.5"},
 			},
+			FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-ready"},
 		},
 	}
 	resolved, err := r.resolveAllPools(ctx, lb)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The missing weighted pool feeds unresolved/partial.
+	// The missing default pool feeds unresolved/partial.
 	found := false
 	for _, u := range resolved.unresolved {
 		if u == "pool-missing" {
@@ -407,14 +415,98 @@ func TestResolveAllPools_RandomSteeringWeightsFeedPartial(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("unresolved random-steering pool must feed partial; got %v", resolved.unresolved)
+		t.Fatalf("unresolved default pool must feed partial; got %v", resolved.unresolved)
 	}
-	// The resolved weighted pool is exposed by CF pool ID for chunk 4.
-	if resolved.randomSteeringWeights["cf-pool-weighted"] != "0.5" {
-		t.Fatalf("resolved weighted pool not exposed: %+v", resolved.randomSteeringWeights)
+	// The resolved weighted pool's weight is folded in, keyed by CF pool ID.
+	if resolved.poolWeights["cf-pool-weighted"] != "0.5" {
+		t.Fatalf("resolved weighted pool not folded into poolWeights: %+v", resolved.poolWeights)
 	}
-	if _, ok := resolved.randomSteeringWeights["pool-missing"]; ok {
-		t.Fatal("unresolved weighted pool must not appear in randomSteeringWeights")
+	// An unweighted default pool carries no weight entry.
+	if _, ok := resolved.poolWeights["cf-pool-ready"]; ok {
+		t.Fatalf("unweighted default pool must not appear in poolWeights: %+v", resolved.poolWeights)
+	}
+	// The unresolved and unweighted default pools contributed no weight: only the
+	// single resolved weighted pool folds in, so poolWeights holds exactly one entry.
+	if len(resolved.poolWeights) != 1 {
+		t.Fatalf("expected exactly one folded weight (cf-pool-weighted), got %+v", resolved.poolWeights)
+	}
+}
+
+func TestWeightedSteeringActive(t *testing.T) {
+	for policy, want := range map[string]bool{
+		"random":                     true,
+		"least_outstanding_requests": true,
+		"least_connections":          true,
+		"off":                        false,
+		"geo":                        false,
+		"dynamic_latency":            false,
+		"proximity":                  false,
+		"":                           false,
+	} {
+		lb := newLBCR(lbv1beta1.LoadBalancerSpec{SteeringPolicy: policy})
+		if got := weightedSteeringActive(lb); got != want {
+			t.Errorf("weightedSteeringActive(%q) = %v, want %v", policy, got, want)
+		}
+	}
+}
+
+// TestPoolWeightsDrifted covers the exact-match weight comparison: under the folded
+// model CF's pool_weights equals the desired set exactly, so drift is any keyset or
+// value divergence (including a desired weight CF dropped -- an out-of-band removal to
+// re-apply), plus a default_weight change when the CR sets it.
+func TestPoolWeightsDrifted(t *testing.T) {
+	tests := []struct {
+		name          string
+		cf            load_balancers.RandomSteering
+		defaultWeight string
+		weights       map[string]string
+		want          bool
+	}{
+		{
+			name:    "exact match does not drift",
+			cf:      load_balancers.RandomSteering{PoolWeights: map[string]float64{"a": 0.6}},
+			weights: map[string]string{"a": "0.6"},
+			want:    false,
+		},
+		{
+			name:    "a desired weight absent from CF drifts (out-of-band removal re-applied)",
+			cf:      load_balancers.RandomSteering{PoolWeights: map[string]float64{}},
+			weights: map[string]string{"a": "0.6"},
+			want:    true,
+		},
+		{
+			name:    "a CF weight the CR dropped drifts (nulled out)",
+			cf:      load_balancers.RandomSteering{PoolWeights: map[string]float64{"a": 0.6, "b": 0.4}},
+			weights: map[string]string{"a": "0.6"},
+			want:    true,
+		},
+		{
+			name:    "a shared key with a changed value drifts",
+			cf:      load_balancers.RandomSteering{PoolWeights: map[string]float64{"a": 0.1}},
+			weights: map[string]string{"a": "0.6"},
+			want:    true,
+		},
+		{
+			name:          "default_weight change drifts",
+			cf:            load_balancers.RandomSteering{DefaultWeight: 0.9, PoolWeights: map[string]float64{"a": 0.6}},
+			defaultWeight: "0.2",
+			weights:       map[string]string{"a": "0.6"},
+			want:          true,
+		},
+		{
+			name:          "unset default_weight leaves Cloudflare's value alone",
+			cf:            load_balancers.RandomSteering{DefaultWeight: 0.9, PoolWeights: map[string]float64{"a": 0.6}},
+			defaultWeight: "",
+			weights:       map[string]string{"a": "0.6"},
+			want:          false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := poolWeightsDrifted(tt.cf, tt.defaultWeight, tt.weights); got != tt.want {
+				t.Fatalf("poolWeightsDrifted = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

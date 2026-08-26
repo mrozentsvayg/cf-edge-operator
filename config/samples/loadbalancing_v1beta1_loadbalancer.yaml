@@ -13,17 +13,25 @@ spec:
   # Single-owner model: the LoadBalancer and every LoadBalancerPool it
   # references are managed by one (control-cluster) operator, so each pool ref
   # resolves from a local LoadBalancerPool CR (by name -> that CR's status.id).
+  # A default-pool entry may carry an optional per-LB weight, used only under a
+  # weighted steering policy (random / least_outstanding_requests /
+  # least_connections). The weight lives on the reference, not on the pool CR,
+  # so the same pool can carry different weights in different LoadBalancers.
   defaultPoolRefs:
     - name: web-us-pool
+      weight: "0.7"
     - name: web-apac-pool
+      weight: "0.3"
   fallbackPoolRef:
     name: web-us-pool
 
-  # dynamic_latency: CF picks the pool with lowest observed RTT from the
-  # client's PoP. Requires health checks on origins (via the pools'
-  # monitorRef). Fails over automatically to the next pool in the list
-  # when the closest one goes unhealthy.
-  steeringPolicy: dynamic_latency
+  # random: CF distributes traffic across the default pools in proportion to
+  # their weights (a pool without a weight uses spec.defaultWeight below, or
+  # Cloudflare's default of 1). steeringPolicy defaults to "off" (ordered
+  # failover, no weights) -- the only policy available without Cloudflare's
+  # traffic-steering add-on; set an advanced policy explicitly when entitled.
+  steeringPolicy: random
+  # defaultWeight: "1"   # weight for default pools without an explicit weight
 
   # Resolution is best-effort: a pool ref whose CR is absent or not yet ready
   # is dropped and surfaced on the Ready condition (the LB->Pool watch re-drives

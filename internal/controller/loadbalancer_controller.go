@@ -187,8 +187,8 @@ func (r *LoadBalancerReconciler) reconcile(ctx context.Context, req ctrl.Request
 	}
 	lb.Status.ResolvedDefaultPoolIDs = resolved.defaultIDs
 	lb.Status.ResolvedFallbackPoolID = resolved.fallbackID
-	// Record which pool refs (from any slot -- default, fallback, geo, or
-	// random-steering weights) had no ready Pool CR this reconcile. A non-empty
+	// Record which pool refs (from any slot -- default (including a weighted
+	// entry), fallback, or geo) had no ready Pool CR this reconcile. A non-empty
 	// list drives the partial state in markReady and the Unresolved printcolumn.
 	// nil when everything resolved (clears a prior partial).
 	lb.Status.UnresolvedPoolRefs = resolved.unresolved
@@ -349,9 +349,15 @@ func (r *LoadBalancerReconciler) editLoadBalancer(ctx context.Context, zi *zoneI
 	if lb.Spec.PopPools != nil {
 		opts = append(opts, option.WithJSONSet("pop_pools", mapWithNulls(resolved.popIDs, mapKeys(existing.POPPools))))
 	}
-	if lb.Spec.RandomSteering != nil {
+	// pool_weights is managed only under a weighted steering policy (see
+	// weightedSteeringActive). Under a non-weighting policy it is neither sent nor
+	// drift-checked, so a pool_weights map Cloudflare still holds (e.g. after
+	// switching random -> off) is left untouched -- benign, since Cloudflare ignores
+	// it under a non-weighting policy, and it self-heals if the LB returns to a
+	// weighted policy. This matches the leave-alone treatment of unmanaged fields.
+	if weightedSteeringActive(lb) {
 		opts = append(opts, option.WithJSONSet("random_steering.pool_weights",
-			mapWithNulls(resolvedWeightsToFloat(resolved.randomSteeringWeights), mapKeys(existing.RandomSteering.PoolWeights))))
+			mapWithNulls(resolvedWeightsToFloat(resolved.poolWeights), mapKeys(existing.RandomSteering.PoolWeights))))
 	}
 
 	var resp *load_balancers.LoadBalancer
@@ -774,14 +780,14 @@ type resolvedPools struct {
 	regionIDs  map[string][]string
 	countryIDs map[string][]string
 	popIDs     map[string][]string
-	// randomSteeringWeights maps resolved CF pool IDs to their random-steering
-	// weight strings (from spec.randomSteering.poolWeights). Populated only when
-	// spec.randomSteering is set. An unresolved weighted pool is dropped here and
-	// recorded in unresolved (feeding the partial state), same as the other pool
-	// slots. Weight is kept as the CR's string form to preserve fractional
-	// precision; buildRandomSteering parses each to float64 for the CF payload.
-	randomSteeringWeights map[string]string
-	unresolved            []string
+	// poolWeights maps a resolved default-pool CF ID to its weight string, for
+	// weighted steering. Sourced from the defaultPoolRefs entries that carry a
+	// weight (a weight can only attach to a default pool, so a weight for a
+	// non-member pool is unrepresentable). Weight is kept as the CR's string form
+	// to preserve fractional precision; buildPoolWeights parses each to float64
+	// for the CF wire (random_steering.pool_weights).
+	poolWeights map[string]string
+	unresolved  []string
 }
 
 // poolResolver resolves LoadBalancerPool references from local Pool CRs. All
@@ -857,22 +863,29 @@ func sortedKeys(m map[string][]lbv1beta1.LoadBalancerPoolRef) []string {
 	return keys
 }
 
-// resolveWeightedPools resolves random-steering pool weights to a map of resolved
-// CF pool ID -> weight string. Refs are resolved via the same path as the other
-// pool slots, so an unresolved weighted pool is recorded in out.unresolved
-// (feeding the partial state) and dropped from the result. Iterates in ref order.
-func (pr *poolResolver) resolveWeightedPools(ctx context.Context, weights []lbv1beta1.LoadBalancerPoolWeight, out *resolvedPools) (map[string]string, error) {
-	result := make(map[string]string, len(weights))
-	for _, w := range weights {
-		id, err := pr.resolve(ctx, w.PoolRef, out)
+// resolveDefaultPools resolves the ordered default-pool refs to CF pool IDs and,
+// for each entry that carries a weight, records the resolved CF pool ID -> weight
+// (used by weighted steering). Refs resolve via the same path as the other slots,
+// so an unresolved default pool is recorded in out.unresolved (feeding the partial
+// state) and dropped. Iterates in ref order so successive reconciles produce
+// byte-identical CF payloads for the same input.
+func (pr *poolResolver) resolveDefaultPools(ctx context.Context, refs []lbv1beta1.LoadBalancerDefaultPoolRef, out *resolvedPools) ([]string, map[string]string, error) {
+	ids := make([]string, 0, len(refs))
+	weights := map[string]string{}
+	for _, ref := range refs {
+		id, err := pr.resolve(ctx, ref.LoadBalancerPoolRef, out)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		if id != "" {
-			result[id] = w.Weight
+		if id == "" {
+			continue
+		}
+		ids = append(ids, id)
+		if ref.Weight != "" {
+			weights[id] = ref.Weight
 		}
 	}
-	return result, nil
+	return ids, weights, nil
 }
 
 // resolveKeyedPools resolves a map of pool refs (region/country/pop),
@@ -911,11 +924,12 @@ func (r *LoadBalancerReconciler) resolveAllPools(ctx context.Context, lb *lbv1be
 	pr := &poolResolver{r: r, lb: lb}
 	out := &resolvedPools{}
 
-	defaultIDs, err := pr.resolveRefList(ctx, lb.Spec.DefaultPoolRefs, out)
+	defaultIDs, poolWeights, err := pr.resolveDefaultPools(ctx, lb.Spec.DefaultPoolRefs, out)
 	if err != nil {
 		return nil, err
 	}
 	out.defaultIDs = defaultIDs
+	out.poolWeights = poolWeights
 
 	fallbackID, err := pr.resolve(ctx, lb.Spec.FallbackPoolRef, out)
 	if err != nil {
@@ -933,13 +947,8 @@ func (r *LoadBalancerReconciler) resolveAllPools(ctx context.Context, lb *lbv1be
 		return nil, err
 	}
 
-	// Random-steering pool weights reference pools too; resolve them so an
-	// unresolved weighted pool feeds the partial state like any other slot.
-	if lb.Spec.RandomSteering != nil {
-		if out.randomSteeringWeights, err = pr.resolveWeightedPools(ctx, lb.Spec.RandomSteering.PoolWeights, out); err != nil {
-			return nil, err
-		}
-	}
+	// Per-pool weights are folded into the default-pool refs (resolved above by
+	// resolveDefaultPools), so there is no separate weighted-pool slot to resolve.
 
 	// CF requires default_pools to be non-empty. If every default ref is
 	// unresolved but the fallback resolved, promote the fallback into
@@ -1018,7 +1027,7 @@ func mapWithNulls[V any](desired map[string]V, observedKeys []string) map[string
 
 // resolvedWeightsToFloat parses the resolver's weight strings (CRD-pattern-validated
 // floats, so ParseFloat cannot fail -- the error is intentionally discarded) into the
-// float64 map Cloudflare's pool_weights expects. Shared by buildRandomSteering (the
+// float64 map Cloudflare's pool_weights expects. Shared by buildPoolWeights (the
 // create/edit payload) and editLoadBalancer (the null-removal override).
 func resolvedWeightsToFloat(weights map[string]string) map[string]float64 {
 	pw := make(map[string]float64, len(weights))
@@ -1109,18 +1118,43 @@ func buildSessionAffinityAttributes(attrs *lbv1beta1.LoadBalancerSessionAffinity
 	return p, set
 }
 
-// buildRandomSteering builds the CF random_steering param from the CR's default
-// weight and the resolved per-pool weights (CF pool ID -> weight string from the
-// resolver). pool_weights is always set when random steering is expressed (the CR
-// owns the weighted-pool topology, like the geo pool maps); an unresolved weighted
-// pool is already absent from weights (dropped by the resolver and recorded in
-// unresolvedPoolRefs), so it is naturally omitted. default_weight is sent only when
-// set. Weight strings are CRD-pattern-validated floats, so ParseFloat cannot fail
-// (the error is intentionally discarded).
-func buildRandomSteering(rs *lbv1beta1.LoadBalancerRandomSteering, weights map[string]string) load_balancers.RandomSteeringParam {
+// weightedSteeringActive reports whether the LB's steering policy is one that
+// consumes pool weights: random, least_outstanding_requests, or least_connections
+// (Cloudflare ignores pool_weights / default_weight under any other policy). Send
+// and drift-check the weight config only when active -- mirrors sessionAffinityActive
+// and the proxied-ttl gate, so "weight absent from CF" is never confused with a
+// policy that ignores weights.
+//
+// This set MUST stay in sync with the CEL validation rule on LoadBalancerSpec in
+// api/loadbalancing/v1beta1/loadbalancer_types.go (CEL cannot call Go).
+func weightedSteeringActive(lb *lbv1beta1.LoadBalancer) bool {
+	switch lb.Spec.SteeringPolicy {
+	case "random", "least_outstanding_requests", "least_connections":
+		return true
+	default:
+		return false
+	}
+}
+
+// buildPoolWeights builds the CF random_steering param from the CR's top-level
+// defaultWeight and the resolved per-pool weights (CF pool ID -> weight string,
+// folded from the defaultPoolRefs entries by the resolver). pool_weights carries
+// every resolved default-pool weight; an unresolved pool is already absent from
+// weights (dropped by the resolver and recorded in unresolvedPoolRefs). default_weight
+// is sent only when set. Weight strings are CRD-pattern-validated floats, so ParseFloat
+// cannot fail (the error is intentionally discarded). Callers gate on
+// weightedSteeringActive. The CF wire field is random_steering (Cloudflare's legacy
+// name for shared weight config across all weighted policies).
+//
+// Cloudflare REPLACES the whole weighted-config object on write (it is not deep-merged
+// like pool_weights), so when spec.defaultWeight is unset the operator deliberately does
+// not manage default_weight (leave-alone): default_weight is omitted from the param, and
+// any weighted-config write may reset Cloudflare's default_weight back to its default of
+// 1. That reset is intended -- the operator only owns default_weight when the CR sets it.
+func buildPoolWeights(defaultWeight string, weights map[string]string) load_balancers.RandomSteeringParam {
 	var p load_balancers.RandomSteeringParam
-	if rs.DefaultWeight != "" {
-		dw, _ := strconv.ParseFloat(rs.DefaultWeight, 64)
+	if defaultWeight != "" {
+		dw, _ := strconv.ParseFloat(defaultWeight, 64)
 		p.DefaultWeight = cloudflare.F(dw)
 	}
 	// pool_weights is a map property Cloudflare deep-merges on PATCH, so this typed
@@ -1160,7 +1194,7 @@ func buildLBNewParams(zoneID string, lb *lbv1beta1.LoadBalancer, resolved *resol
 		p.Description = cloudflare.F(lb.Spec.Description)
 	}
 	// Geo pool maps are presence-managed (a non-nil map is owned in full), matching
-	// editLoadBalancer, lbDrifted, and the RandomSteering gate below. On create there
+	// editLoadBalancer, lbDrifted, and the weighted-steering gate below. On create there
 	// is no CF-side map to prune, so the resolved map is sent as-is; nil is omitted.
 	if lb.Spec.RegionPools != nil {
 		p.RegionPools = cloudflare.F(resolved.regionIDs)
@@ -1187,8 +1221,8 @@ func buildLBNewParams(zoneID string, lb *lbv1beta1.LoadBalancer, resolved *resol
 	if ls, ok := buildLocationStrategy(lb); ok {
 		p.LocationStrategy = cloudflare.F(ls)
 	}
-	if lb.Spec.RandomSteering != nil {
-		p.RandomSteering = cloudflare.F(buildRandomSteering(lb.Spec.RandomSteering, resolved.randomSteeringWeights))
+	if weightedSteeringActive(lb) {
+		p.RandomSteering = cloudflare.F(buildPoolWeights(lb.Spec.DefaultWeight, resolved.poolWeights))
 	}
 	// session_affinity_attributes / session_affinity_ttl only apply when affinity is
 	// active (set and not "none"); Cloudflare ignores them otherwise, so gating here
@@ -1253,8 +1287,8 @@ func buildLBEditParams(zoneID string, lb *lbv1beta1.LoadBalancer, resolved *reso
 	if ls, ok := buildLocationStrategy(lb); ok {
 		p.LocationStrategy = cloudflare.F(ls)
 	}
-	if lb.Spec.RandomSteering != nil {
-		p.RandomSteering = cloudflare.F(buildRandomSteering(lb.Spec.RandomSteering, resolved.randomSteeringWeights))
+	if weightedSteeringActive(lb) {
+		p.RandomSteering = cloudflare.F(buildPoolWeights(lb.Spec.DefaultWeight, resolved.poolWeights))
 	}
 	// session_affinity_attributes / session_affinity_ttl only apply when affinity is
 	// active (set and not "none"); Cloudflare ignores them otherwise, so gating here
@@ -1354,8 +1388,8 @@ func lbNestedFeaturesDrifted(cf *load_balancers.LoadBalancer, lb *lbv1beta1.Load
 			return true
 		}
 	}
-	if rs := lb.Spec.RandomSteering; rs != nil {
-		if randomSteeringDrifted(cf.RandomSteering, rs, resolved.randomSteeringWeights) {
+	if weightedSteeringActive(lb) {
+		if poolWeightsDrifted(cf.RandomSteering, lb.Spec.DefaultWeight, resolved.poolWeights) {
 			return true
 		}
 	}
@@ -1398,15 +1432,21 @@ func sessionAffinityAttributesDrifted(cf load_balancers.SessionAffinityAttribute
 	return false
 }
 
-// randomSteeringDrifted compares the CF-observed random_steering against the CR.
-// pool_weights is structural (the CR owns the weighted-pool topology, like the geo
-// pool maps), so the full resolved map is compared; default_weight is leave-alone
-// (compared only when set). Weight strings are CRD-pattern-validated floats, so the
-// ParseFloat calls cannot fail (the error is intentionally discarded), and the same
-// parse feeds both the build payload and this check, so equal input never drifts.
-func randomSteeringDrifted(cf load_balancers.RandomSteering, rs *lbv1beta1.LoadBalancerRandomSteering, weights map[string]string) bool {
-	if rs.DefaultWeight != "" {
-		dw, _ := strconv.ParseFloat(rs.DefaultWeight, 64)
+// poolWeightsDrifted compares the CF-observed weight config (random_steering) against
+// the CR's desired weights. Callers gate on weightedSteeringActive. The comparison is
+// exact-match on the weight map: under the folded model a weight can only attach to a
+// default pool, so a non-member weight is unrepresentable; Cloudflare does not echo an
+// unweighted member into pool_weights (verified live) and keeps every member weight, so
+// CF's pool_weights equals the desired set exactly. Drift IFF the keysets differ (a CF
+// key absent from desired -> the CR dropped it; a desired key absent from CF -> an
+// out-of-band removal to re-apply) OR a shared key's value differs. editLoadBalancer
+// nulls the extra CF keys via option.WithJSONSet (the nested null-removal is verified
+// live). default_weight is compared only when the CR sets it. Weight strings are
+// CRD-pattern-validated floats, so ParseFloat cannot fail (the error is discarded), and
+// the same parse feeds both the build payload and this check, so equal input never drifts.
+func poolWeightsDrifted(cf load_balancers.RandomSteering, defaultWeight string, weights map[string]string) bool {
+	if defaultWeight != "" {
+		dw, _ := strconv.ParseFloat(defaultWeight, 64)
 		if cf.DefaultWeight != dw {
 			return true
 		}
