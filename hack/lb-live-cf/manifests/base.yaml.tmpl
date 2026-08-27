@@ -1,0 +1,41 @@
+# Identity substrate for the live-Cloudflare kit: namespace, credentials Secret,
+# Account + Zone (both point at the same Secret). Kept lean -- no Monitor or Pools --
+# so a low per-account origin cap (entry LB tier) is never consumed by the substrate;
+# each gate script creates its own minimal test resources on top of this.
+#
+# Everything lives in one namespace (${LBKIT_NS}) and the operator runs with
+# --operator-namespace=${LBKIT_NS}, so every name-only ref resolves here whether it
+# defaults to the operator namespace (accountRef, zoneRef) or the CR's own namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${LBKIT_NS}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cf-livecf-token
+  namespace: ${LBKIT_NS}
+type: Opaque
+stringData:
+  apiToken: "${CF_API_TOKEN}"
+---
+apiVersion: accounts.cf-edge.io/v1beta1
+kind: Account
+metadata:
+  name: livecf
+  namespace: ${LBKIT_NS}
+spec:
+  id: "${CF_ACCOUNT_ID}"
+  credentialsRef:
+    name: cf-livecf-token
+---
+apiVersion: domains.cf-edge.io/v1beta1
+kind: Zone
+metadata:
+  name: livecf
+  namespace: ${LBKIT_NS}
+spec:
+  id: "${CF_ZONE_ID}"
+  credentialsRef:
+    name: cf-livecf-token
