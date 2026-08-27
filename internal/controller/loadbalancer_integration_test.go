@@ -24,6 +24,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -282,13 +283,16 @@ func writeCFError(w http.ResponseWriter, code int, msg string) {
 // applyPatch models Cloudflare's PATCH (partial edit) faithfully: JSON objects
 // (top-level and nested) are deep-merged key-by-key, a key whose patch value is
 // null is REMOVED, and arrays/scalars replace wholesale. This mirrors real
-// Cloudflare -- map properties (region_pools / country_pools / pop_pools, monitor
-// header, random_steering.pool_weights) and nested objects (load_shedding, etc.)
-// are deep-merged, so a dropped key lingers unless the operator sends an explicit
-// null. Modeling this (rather than a wholesale top-level replace) is what lets the
-// mock catch removal-by-omission drift-loop bugs instead of masking them. A field
-// the patch body omits survives untouched (PATCH != PUT). existing and out are the
-// same mock record type.
+// Cloudflare -- map properties (the monitor header, random_steering.pool_weights)
+// and nested objects (load_shedding, etc.) are deep-merged, so a dropped key lingers
+// unless the operator sends an explicit per-key null. The geo pool maps (region_pools /
+// country_pools / pop_pools) are deep-merged too but do NOT accept a per-key null/[]
+// (Cloudflare rejects it with 1002 -- enforced separately by geoDeepMergeRejectMsg in
+// handleLBUpdate); their key removal comes through a top-level whole-map null, which
+// this deep-merge handles like any null value. Modeling all this (rather than a
+// wholesale top-level replace) is what lets the mock catch removal-by-omission
+// drift-loop bugs instead of masking them. A field the patch body omits survives
+// untouched (PATCH != PUT). existing and out are the same mock record type.
 func applyPatch(existing any, body []byte, out any) error {
 	base, err := json.Marshal(existing)
 	if err != nil {
@@ -340,6 +344,47 @@ func deepMergePatch(base, patch map[string]json.RawMessage) {
 // isJSONNull reports whether a raw JSON value is the literal null.
 func isJSONNull(raw json.RawMessage) bool {
 	return strings.TrimSpace(string(raw)) == "null"
+}
+
+// isEmptyJSONArray reports whether a raw JSON value is an empty array ([] with any
+// interior whitespace). Used to mirror Cloudflare rejecting an empty per-key geo value.
+func isEmptyJSONArray(raw json.RawMessage) bool {
+	var arr []json.RawMessage
+	if err := json.Unmarshal(raw, &arr); err != nil {
+		return false
+	}
+	return len(arr) == 0
+}
+
+// geoDeepMergeRejectMsg models a Cloudflare quirk the operator must design around:
+// the geo pool maps (region_pools / country_pools / pop_pools) are deep-merged on
+// PATCH, but -- unlike the monitor header map -- Cloudflare REJECTS a per-key null or
+// empty-array value with HTTP 400 code 1002 ("the <field> array length must be in range
+// [1, 16]: validation failed"). A top-level null for the WHOLE field is accepted (it
+// clears the map). Modeling this makes the tests fail if the operator ever regresses to
+// removing a geo key via a per-key null (the FIX-1 monitor-header path, which does not
+// work here). Returns the Cloudflare error message, or "" when the body is clean.
+func geoDeepMergeRejectMsg(body []byte) string {
+	var patch map[string]json.RawMessage
+	if err := json.Unmarshal(body, &patch); err != nil {
+		return "" // malformed body: the caller's decode surfaces it
+	}
+	for _, field := range []string{"region_pools", "country_pools", "pop_pools"} {
+		raw, ok := patch[field]
+		if !ok || isJSONNull(raw) {
+			continue // absent, or a whole-map null clear (accepted)
+		}
+		var m map[string]json.RawMessage
+		if json.Unmarshal(raw, &m) != nil {
+			continue // not an object; let the normal decode handle it
+		}
+		for _, v := range m {
+			if isJSONNull(v) || isEmptyJSONArray(v) {
+				return fmt.Sprintf("the %s array length must be in range [1, 16]: validation failed", field)
+			}
+		}
+	}
+	return ""
 }
 
 // canonicalizeHeaderKeys returns hdr with every key canonicalized via
@@ -645,6 +690,13 @@ func (m *lbMockServer) handleLBUpdate(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeCFError(w, http.StatusBadRequest, "read error")
+		return
+	}
+	// Cloudflare rejects a per-key null/[] on the geo pool maps (deep-merged but no
+	// per-key removal); a dropped geo key must be removed by clearing the whole map
+	// with a top-level null. Reject here so a regression to the per-key-null path fails.
+	if msg := geoDeepMergeRejectMsg(body); msg != "" {
+		writeCFError(w, http.StatusBadRequest, msg)
 		return
 	}
 	var rec mockLB
@@ -2783,9 +2835,11 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 		})
 	})
 
-	// -- Keyed pools: a present map is fully managed (dropping a key removes it via
-	//    an explicit null since Cloudflare deep-merges; emptying clears all); an
-	//    unset (nil) map is left untouched -- presence, not emptiness, manages. --
+	// -- Keyed pools: a present map is fully managed. Cloudflare deep-merges the geo
+	//    maps but REJECTS a per-key null/[] on them (code 1002), so a dropped key is
+	//    removed by clearing the whole map with a top-level null then re-adding the
+	//    remaining keys (clearRemovedGeoKeys); emptying clears all; an unset (nil) map
+	//    is left untouched -- presence, not emptiness, manages. --
 	Context("Keyed pools removal", func() {
 		It("removes a dropped key and clears the map when emptied (present, not nil)", func() {
 			hostname := "lb-keyclear." + lbZoneName
@@ -2815,9 +2869,11 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 					stringSlicesEqual(r.RegionPools["EEU"], []string{poolID})
 			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
 
-			// Drop ONE key (EEU) but keep the map non-empty. The operator must send an
-			// explicit null for EEU -- Cloudflare deep-merges the map, so an omitted
-			// key would linger and drift-loop (the bug this fix addresses).
+			// Drop ONE key (EEU) but keep the map non-empty. Cloudflare deep-merges the
+			// map and rejects a per-key null, so the operator clears the whole map (a
+			// top-level null) and re-adds WNAM; an omitted key would otherwise linger and
+			// drift-loop (the bug this fix addresses). A regression to a per-key null is
+			// rejected by the mock (geoDeepMergeRejectMsg), failing this expectation.
 			var current lbv1beta1.LoadBalancer
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "lb-keyclear", Namespace: lbTestNS}, &current)).To(Succeed())
 			patch := client.MergeFrom(current.DeepCopy())
@@ -2895,6 +2951,119 @@ var _ = Describe("LoadBalancing", Ordered, func() {
 				}
 				return r.RegionPools["WNAM"]
 			}, 3*time.Second, lbPollInterval).Should(Equal([]string{poolID}))
+		})
+
+		It("removes a dropped country_pools key via the clear-then-readd path", func() {
+			// The sibling of the region_pools removal case, exercising the country map's
+			// branch of clearRemovedGeoKeys. Same Cloudflare semantics: deep-merged, a
+			// per-key null is rejected, so a dropped key is removed by clearing the whole
+			// map then re-adding the remaining keys.
+			hostname := "lb-countryclear." + lbZoneName
+			lb := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-countryclear", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:        hostname,
+					DefaultPoolRefs: defPools("pool-fb"),
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+					SteeringPolicy:  "geo",
+					CountryPools: &map[string][]lbv1beta1.LoadBalancerPoolRef{
+						"US": {{Name: "pool-fb"}},
+						"CA": {{Name: "pool-fb"}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
+
+			var poolID string
+			Eventually(func() bool {
+				p, okP := lbMock.poolByName("pool-fb")
+				poolID = p.ID
+				r, ok := lbMock.lbByName(hostname)
+				return okP && ok &&
+					stringSlicesEqual(r.CountryPools["US"], []string{poolID}) &&
+					stringSlicesEqual(r.CountryPools["CA"], []string{poolID})
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			// Drop CA (keep US). A per-key null would be rejected by Cloudflare (the mock
+			// enforces this via geoDeepMergeRejectMsg), so the operator clears the whole
+			// country map and re-adds US.
+			var current lbv1beta1.LoadBalancer
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "lb-countryclear", Namespace: lbTestNS}, &current)).To(Succeed())
+			patch := client.MergeFrom(current.DeepCopy())
+			current.Spec.CountryPools = &map[string][]lbv1beta1.LoadBalancerPoolRef{"US": {{Name: "pool-fb"}}}
+			Expect(k8sClient.Patch(ctx, &current, patch)).To(Succeed())
+
+			Eventually(func() bool {
+				r, ok := lbMock.lbByName(hostname)
+				if !ok {
+					return false
+				}
+				_, caPresent := r.CountryPools["CA"]
+				return !caPresent && stringSlicesEqual(r.CountryPools["US"], []string{poolID})
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+			// No drift-loop re-adding CA.
+			Consistently(func() int {
+				r, _ := lbMock.lbByName(hostname)
+				return len(r.CountryPools)
+			}, 3*time.Second, lbPollInterval).Should(Equal(1))
+		})
+
+		It("removes a dropped pop_pools key via the clear-then-readd path", func() {
+			// The third geo map's branch of clearRemovedGeoKeys. Same Cloudflare
+			// semantics as region/country -- exercised through the operator so a
+			// pop-specific slip (wrong field, mismatched maps) would fail here rather
+			// than shipping green. (Live pop geosteering needs a CF-account entitlement
+			// that is not self-serve; this covers the code path, not the live tier.)
+			hostname := "lb-popclear." + lbZoneName
+			lb := &lbv1beta1.LoadBalancer{
+				ObjectMeta: metav1.ObjectMeta{Name: "lb-popclear", Namespace: lbTestNS},
+				Spec: lbv1beta1.LoadBalancerSpec{
+					ZoneRef:         lbv1beta1.ZoneRef{Name: lbZoneCRName},
+					Hostname:        hostname,
+					DefaultPoolRefs: defPools("pool-fb"),
+					FallbackPoolRef: lbv1beta1.LoadBalancerPoolRef{Name: "pool-fb"},
+					SteeringPolicy:  "geo",
+					PopPools: &map[string][]lbv1beta1.LoadBalancerPoolRef{
+						"LAX": {{Name: "pool-fb"}},
+						"SJC": {{Name: "pool-fb"}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, lb)).To(Succeed())
+
+			var poolID string
+			Eventually(func() bool {
+				p, okP := lbMock.poolByName("pool-fb")
+				poolID = p.ID
+				r, ok := lbMock.lbByName(hostname)
+				return okP && ok &&
+					stringSlicesEqual(r.PopPools["LAX"], []string{poolID}) &&
+					stringSlicesEqual(r.PopPools["SJC"], []string{poolID})
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+
+			// Drop SJC (keep LAX). A per-key null would be rejected by Cloudflare (the
+			// mock enforces this via geoDeepMergeRejectMsg), so the operator clears the
+			// whole pop map and re-adds LAX.
+			var current lbv1beta1.LoadBalancer
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "lb-popclear", Namespace: lbTestNS}, &current)).To(Succeed())
+			patch := client.MergeFrom(current.DeepCopy())
+			current.Spec.PopPools = &map[string][]lbv1beta1.LoadBalancerPoolRef{"LAX": {{Name: "pool-fb"}}}
+			Expect(k8sClient.Patch(ctx, &current, patch)).To(Succeed())
+
+			Eventually(func() bool {
+				r, ok := lbMock.lbByName(hostname)
+				if !ok {
+					return false
+				}
+				_, sjcPresent := r.PopPools["SJC"]
+				return !sjcPresent && stringSlicesEqual(r.PopPools["LAX"], []string{poolID})
+			}, lbEventuallyTimeout, lbPollInterval).Should(BeTrue())
+			// No drift-loop re-adding SJC.
+			Consistently(func() int {
+				r, _ := lbMock.lbByName(hostname)
+				return len(r.PopPools)
+			}, 3*time.Second, lbPollInterval).Should(Equal(1))
 		})
 	})
 
@@ -3616,3 +3785,79 @@ var _ = Describe("LoadBalancing DryRun", Ordered, func() {
 		}, 2*time.Second, lbPollInterval).Should(Equal(0))
 	})
 })
+
+// patchLBRaw issues a raw PATCH against the mock LB endpoint, bypassing the operator
+// and the SDK, so a test can assert Cloudflare's per-key-null geo-map rejection
+// directly. Returns the HTTP status and the decoded error message (empty on success).
+func patchLBRaw(t *testing.T, m *lbMockServer, id, body string) (int, string) {
+	t.Helper()
+	url := fmt.Sprintf("%s/zones/%s/load_balancers/%s", m.URL(), lbZoneID, id)
+	req, err := http.NewRequest(http.MethodPatch, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var env struct {
+		Success bool `json:"success"`
+		Errors  []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&env)
+	msg := ""
+	if len(env.Errors) > 0 {
+		msg = env.Errors[0].Message
+	}
+	return resp.StatusCode, msg
+}
+
+// TestLBMockRejectsGeoPerKeyNull locks the mock's modeling of Cloudflare's geo-map
+// PATCH semantics (the bug root-caused live in gate-d1): a per-key null or empty-array
+// value on region_pools / country_pools / pop_pools is rejected with 400/1002, while a
+// top-level null clears the whole map and a normal object deep-merges. This is the
+// contract the operator's clearRemovedGeoKeys is built against, and the guard that fails
+// any regression to the FIX-1 per-key-null removal path (which does not work for geo).
+func TestLBMockRejectsGeoPerKeyNull(t *testing.T) {
+	m := newLBMockServer()
+	defer m.Close()
+	m.seedLB(mockLB{
+		ID: "lb-geo", Name: "geo." + lbZoneName,
+		DefaultPools: []string{"p1"}, FallbackPool: "p1", SteeringPolicy: "geo",
+		RegionPools:  map[string][]string{"WNAM": {"p1"}, "ENAM": {"p1"}},
+		CountryPools: map[string][]string{"US": {"p1"}},
+		PopPools:     map[string][]string{"LAX": {"p1"}},
+	})
+
+	// Rejected: a per-key null or empty-array value on any geo map (mirrors CF 1002).
+	rejected := []struct{ name, body string }{
+		{"region per-key null", `{"region_pools":{"WNAM":["p1"],"ENAM":null}}`},
+		{"region per-key empty array", `{"region_pools":{"WNAM":["p1"],"ENAM":[]}}`},
+		{"country per-key null", `{"country_pools":{"US":null}}`},
+		{"pop per-key null", `{"pop_pools":{"LAX":null}}`},
+	}
+	for _, tc := range rejected {
+		t.Run("rejected/"+tc.name, func(t *testing.T) {
+			status, msg := patchLBRaw(t, m, "lb-geo", tc.body)
+			if status != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", status)
+			}
+			if !strings.Contains(msg, "must be in range [1, 16]") {
+				t.Fatalf("error message = %q, want the 1002 range validation message", msg)
+			}
+		})
+	}
+
+	// Accepted: a top-level null clears the whole map (the operator's removal path).
+	if status, msg := patchLBRaw(t, m, "lb-geo", `{"region_pools":null}`); status != http.StatusOK {
+		t.Fatalf("whole-map null clear: status = %d msg = %q, want 200", status, msg)
+	}
+	// Accepted: a normal object deep-merges (add/update a key).
+	if status, msg := patchLBRaw(t, m, "lb-geo", `{"country_pools":{"CA":["p1"]}}`); status != http.StatusOK {
+		t.Fatalf("deep-merge add: status = %d msg = %q, want 200", status, msg)
+	}
+}

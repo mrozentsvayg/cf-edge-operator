@@ -432,6 +432,67 @@ func TestResolveDefaultPools_WeightsFoldedAndFeedPartial(t *testing.T) {
 	}
 }
 
+func TestGeoMapNeedsRemoval(t *testing.T) {
+	managed := &map[string][]lbv1beta1.LoadBalancerPoolRef{"WNAM": {{Name: "p"}}}
+	cases := []struct {
+		name     string
+		spec     *map[string][]lbv1beta1.LoadBalancerPoolRef
+		desired  map[string][]string
+		observed map[string][]string
+		want     bool
+	}{
+		{
+			name: "unmanaged (nil spec) never needs removal even if CF has keys",
+			spec: nil,
+			// desired is irrelevant when unmanaged; CF still holds a key.
+			observed: map[string][]string{"WNAM": {"a"}},
+			want:     false,
+		},
+		{
+			name:     "managed, CF key dropped by the CR needs removal",
+			spec:     managed,
+			desired:  map[string][]string{"WNAM": {"a"}},
+			observed: map[string][]string{"WNAM": {"a"}, "ENAM": {"b"}},
+			want:     true,
+		},
+		{
+			name:     "managed, exact key set does not need removal",
+			spec:     managed,
+			desired:  map[string][]string{"WNAM": {"a"}},
+			observed: map[string][]string{"WNAM": {"a"}},
+			want:     false,
+		},
+		{
+			name:     "managed, pure additions (CF subset of desired) do not need removal",
+			spec:     managed,
+			desired:  map[string][]string{"WNAM": {"a"}, "ENAM": {"b"}},
+			observed: map[string][]string{"WNAM": {"a"}},
+			want:     false,
+		},
+		{
+			name:     "managed, empty desired against a non-empty CF map needs removal (clear all)",
+			spec:     managed,
+			desired:  map[string][]string{},
+			observed: map[string][]string{"WNAM": {"a"}},
+			want:     true,
+		},
+		{
+			name:     "managed, value change on a shared key is not a removal",
+			spec:     managed,
+			desired:  map[string][]string{"WNAM": {"b"}},
+			observed: map[string][]string{"WNAM": {"a"}},
+			want:     false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := geoMapNeedsRemoval(tc.spec, tc.desired, tc.observed); got != tc.want {
+				t.Fatalf("geoMapNeedsRemoval = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestWeightedSteeringActive(t *testing.T) {
 	for policy, want := range map[string]bool{
 		"random":                     true,

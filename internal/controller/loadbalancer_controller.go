@@ -326,35 +326,43 @@ func (r *LoadBalancerReconciler) handleCreate(ctx context.Context, zi *zoneInfo,
 
 func (r *LoadBalancerReconciler) editLoadBalancer(ctx context.Context, zi *zoneInfo, lb *lbv1beta1.LoadBalancer, existing *load_balancers.LoadBalancer, resolved *resolvedPools) (*load_balancers.LoadBalancer, error) {
 	log := logf.FromContext(ctx)
+
+	// The geo pool maps (region/country/pop) are top-level map properties Cloudflare
+	// DEEP-MERGES on PATCH, and -- unlike the monitor header map -- Cloudflare REJECTS
+	// a per-key null or empty-array value on them (verified live: HTTP 400 code 1002
+	// "the region_pools array length must be in range [1, 16]"). So a geo key the CR
+	// dropped cannot be removed by the merge itself. When a managed geo map has a
+	// Cloudflare-side key the CR no longer declares, clearRemovedGeoKeys first clears
+	// that whole map with a top-level null (which Cloudflare DOES accept); the main edit
+	// below then re-adds the desired keys via the deep-merge, so the net effect is a key
+	// removal. This two-step PATCH keeps the partial-edit coexistence with un-modeled
+	// Cloudflare LB config (e.g. rules) that a full PUT/replace would wipe -- at the cost
+	// of a brief window, during a removal, where the affected map is empty (its traffic
+	// falls back to default_pools) plus a second write; both self-heal on the next
+	// reconcile if the main edit fails.
+	if err := r.clearRemovedGeoKeys(ctx, zi, lb, existing, resolved); err != nil {
+		return nil, err
+	}
+
 	// Edit (PATCH, partial): correct only the fields the CR expresses and leave
-	// everything else intact -- both genuinely un-modeled Cloudflare LB config
-	// (e.g. rules) and modeled-but-optional fields the CR does not set (adaptive
-	// routing, location strategy, random steering, session-affinity attributes/ttl).
-	// The default/fallback pool topology the CR owns is always sent.
+	// everything else intact -- both genuinely un-modeled Cloudflare LB config (e.g.
+	// rules) and modeled-but-optional fields the CR does not set (adaptive routing,
+	// location strategy, random steering, session-affinity attributes/ttl). The
+	// default/fallback pool topology the CR owns is always sent, as are the managed geo
+	// maps (their desired keys; a dropped key was cleared above so the deep-merge lands
+	// the exact set).
 	params := buildLBEditParams(zi.ID, lb, resolved)
 
-	// The geo pool maps (region/country/pop) and random_steering.pool_weights are
-	// map properties Cloudflare DEEP-MERGES on PATCH, so the typed params can never
-	// remove a key the CR dropped. For each map the CR manages (the field is set --
-	// presence, not emptiness), inject it as raw JSON: resolved keys plus an explicit
-	// null for every key Cloudflare still has that the CR no longer declares, forcing
-	// REPLACE over the deep-merge. An unset (nil) map is left untouched on Cloudflare.
+	// random_steering.pool_weights is also a map property Cloudflare deep-merges, but
+	// its endpoint (unlike the geo maps) ACCEPTS a nested per-key null (verified live),
+	// so a dropped weighted pool is removed in place via a raw JSON override -- resolved
+	// weights plus an explicit null for every key Cloudflare still has that the CR no
+	// longer declares -- rather than the clear-then-readd dance. Managed only under a
+	// weighted steering policy (see weightedSteeringActive); a pool_weights map
+	// Cloudflare still holds under a non-weighting policy (e.g. after switching
+	// random -> off) is left untouched -- benign, since Cloudflare ignores it there, and
+	// it self-heals if the LB returns to a weighted policy.
 	opts := []option.RequestOption{option.WithRequestTimeout(r.CFAPIWriteTimeout)}
-	if lb.Spec.RegionPools != nil {
-		opts = append(opts, option.WithJSONSet("region_pools", mapWithNulls(resolved.regionIDs, mapKeys(existing.RegionPools))))
-	}
-	if lb.Spec.CountryPools != nil {
-		opts = append(opts, option.WithJSONSet("country_pools", mapWithNulls(resolved.countryIDs, mapKeys(existing.CountryPools))))
-	}
-	if lb.Spec.PopPools != nil {
-		opts = append(opts, option.WithJSONSet("pop_pools", mapWithNulls(resolved.popIDs, mapKeys(existing.POPPools))))
-	}
-	// pool_weights is managed only under a weighted steering policy (see
-	// weightedSteeringActive). Under a non-weighting policy it is neither sent nor
-	// drift-checked, so a pool_weights map Cloudflare still holds (e.g. after
-	// switching random -> off) is left untouched -- benign, since Cloudflare ignores
-	// it under a non-weighting policy, and it self-heals if the LB returns to a
-	// weighted policy. This matches the leave-alone treatment of unmanaged fields.
 	if weightedSteeringActive(lb) {
 		opts = append(opts, option.WithJSONSet("random_steering.pool_weights",
 			mapWithNulls(resolvedWeightsToFloat(resolved.poolWeights), mapKeys(existing.RandomSteering.PoolWeights))))
@@ -375,6 +383,68 @@ func (r *LoadBalancerReconciler) editLoadBalancer(ctx context.Context, zi *zoneI
 	operationsTotal.WithLabelValues(cfResourceLoadBalancer, cfOpUpdate).Inc()
 	r.paceWrite()
 	return resp, nil
+}
+
+// geoMapNeedsRemoval reports whether a managed geo pool map has a Cloudflare-side
+// key the CR no longer declares -- a key drop that Cloudflare's deep-merge PATCH
+// cannot express (a per-key null/[] is rejected with code 1002, unlike the monitor
+// header). spec is the CR field pointer (nil => unmanaged => never touched); desired
+// is the resolved key set the operator will write; observed is Cloudflare's current map.
+func geoMapNeedsRemoval(spec *map[string][]lbv1beta1.LoadBalancerPoolRef, desired, observed map[string][]string) bool {
+	if spec == nil {
+		return false
+	}
+	for k := range observed {
+		if _, ok := desired[k]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// clearRemovedGeoKeys removes dropped geo-map keys ahead of the main edit. Cloudflare
+// deep-merges the geo maps (region/country/pop) on PATCH and rejects a per-key null/[]
+// (see editLoadBalancer), so a dropped key is removed by clearing the whole affected
+// map with a top-level null -- the removal Cloudflare accepts -- and letting the main
+// edit re-add the desired keys via the deep-merge. Only the maps that actually have a
+// stale key are cleared, and a PATCH is issued only when at least one does (no-op
+// otherwise). The clear is one API call recorded under the update op; the higher-level
+// operations counter is incremented once by the main edit, so a removal reads as a
+// single update operation even though it spans two PATCH calls.
+func (r *LoadBalancerReconciler) clearRemovedGeoKeys(ctx context.Context, zi *zoneInfo, lb *lbv1beta1.LoadBalancer, existing *load_balancers.LoadBalancer, resolved *resolvedPools) error {
+	var clears []option.RequestOption
+	if geoMapNeedsRemoval(lb.Spec.RegionPools, resolved.regionIDs, existing.RegionPools) {
+		clears = append(clears, option.WithJSONSet("region_pools", nil))
+	}
+	if geoMapNeedsRemoval(lb.Spec.CountryPools, resolved.countryIDs, existing.CountryPools) {
+		clears = append(clears, option.WithJSONSet("country_pools", nil))
+	}
+	if geoMapNeedsRemoval(lb.Spec.PopPools, resolved.popIDs, existing.POPPools) {
+		clears = append(clears, option.WithJSONSet("pop_pools", nil))
+	}
+	if len(clears) == 0 {
+		return nil
+	}
+	log := logf.FromContext(ctx)
+	// A minimal partial PATCH carrying only the whole-map nulls. Cloudflare accepts a
+	// PATCH that touches just the cleared maps (verified live), so the pool topology and
+	// every other field are left for the main edit.
+	params := load_balancers.LoadBalancerEditParams{ZoneID: cloudflare.F(zi.ID)}
+	opts := append([]option.RequestOption{option.WithRequestTimeout(r.CFAPIWriteTimeout)}, clears...)
+	attempts, err := cfRetry(ctx, cfResourceLoadBalancer, cfOpUpdate, r.CFAPIMaxRetries, func() error {
+		start := time.Now()
+		_, callErr := zi.Client.LoadBalancers.Edit(ctx, existing.ID, params, opts...)
+		recordCFCall(cfResourceLoadBalancer, cfOpUpdate, start, &callErr)
+		return callErr
+	})
+	if err != nil {
+		log.Error(err, "loadbalancer - geo map clear (pre-edit) failed", "id", existing.ID, "attempts", attempts)
+		return err
+	}
+	r.paceWrite()
+	log.V(1).Info("loadbalancer - cleared geo maps with dropped keys ahead of edit (deep-merge key removal)",
+		"id", existing.ID, "clearedMaps", len(clears))
+	return nil
 }
 
 func (r *LoadBalancerReconciler) handleDelete(ctx context.Context, zi *zoneInfo, lb *lbv1beta1.LoadBalancer) (ctrl.Result, error) {
@@ -1004,14 +1074,18 @@ func mapKeys[V any](m map[string]V) []string {
 	return ks
 }
 
-// mapWithNulls builds the raw object for a PATCH that REPLACES a Cloudflare map
-// property despite Cloudflare deep-merging map properties: every desired key
+// mapWithNulls builds the raw object for a PATCH that REPLACES a deep-merged
+// Cloudflare map property whose endpoint ACCEPTS a per-key null: every desired key
 // carries its value, and every key Cloudflare still has (observedKeys) that is
-// absent from desired is set to nil, which marshals to JSON null -- Cloudflare
-// treats a null map value as a key removal. An empty desired map nulls every
-// observed key (clear all). This is injected via option.WithJSONSet because the
-// typed param.Field[map[...]] cannot express a null value (a nil slice marshals
-// as [], and float64 has no nil).
+// absent from desired is set to nil, which marshals to JSON null -- Cloudflare treats
+// a null map value as a key removal. An empty desired map nulls every observed key
+// (clear all). Injected via option.WithJSONSet because the typed param.Field[map[...]]
+// cannot express a null value (a nil slice marshals as [], and float64 has no nil).
+//
+// This is the removal mechanism for random_steering.pool_weights only (its endpoint
+// accepts a nested per-key null, verified live). It does NOT work for the geo pool maps
+// (region/country/pop), whose endpoint REJECTS a per-key null/[] with code 1002 -- those
+// use the clear-whole-map-then-readd path in clearRemovedGeoKeys instead.
 func mapWithNulls[V any](desired map[string]V, observedKeys []string) map[string]any {
 	out := make(map[string]any, len(desired)+len(observedKeys))
 	for k, v := range desired {
@@ -1266,13 +1340,23 @@ func buildLBEditParams(zoneID string, lb *lbv1beta1.LoadBalancer, resolved *reso
 	if lb.Spec.Description != "" {
 		p.Description = cloudflare.F(lb.Spec.Description)
 	}
-	// NOTE: region_pools / country_pools / pop_pools are intentionally NOT set
-	// here. They are top-level map properties that Cloudflare DEEP-MERGES on PATCH,
-	// so a key the CR dropped cannot be removed via the typed param (a nil slice
-	// value marshals as [], not null). editLoadBalancer injects each managed map --
-	// resolved keys plus explicit nulls for keys the CR no longer declares -- via
-	// option.WithJSONSet to force REPLACE semantics. An unset (nil) map is left
-	// untouched on Cloudflare: presence, not emptiness, decides management.
+	// Geo pool maps (region/country/pop) are presence-managed (a non-nil map is owned
+	// in full): send the resolved desired keys when the CR manages the map, and leave
+	// Cloudflare's map untouched when the field is unset (nil). Cloudflare deep-merges
+	// these maps on PATCH, so this adds/updates the desired keys; a key the CR DROPPED
+	// is removed beforehand by clearRemovedGeoKeys (Cloudflare rejects a per-key null on
+	// the geo maps, so the whole affected map is cleared then re-added here -- see
+	// editLoadBalancer). Mirrors the create path (buildLBNewParams) and the lbDrifted
+	// comparison: send IFF drift-checked IFF managed.
+	if lb.Spec.RegionPools != nil {
+		p.RegionPools = cloudflare.F(resolved.regionIDs)
+	}
+	if lb.Spec.CountryPools != nil {
+		p.CountryPools = cloudflare.F(resolved.countryIDs)
+	}
+	if lb.Spec.PopPools != nil {
+		p.POPPools = cloudflare.F(resolved.popIDs)
+	}
 	// enabled is always-managed and edit-only (Cloudflare's create API does not
 	// accept it, so it is applied via a follow-up edit -- create-then-edit). Unset
 	// spec defaults to true, so an out-of-band disable is corrected back to the CR
