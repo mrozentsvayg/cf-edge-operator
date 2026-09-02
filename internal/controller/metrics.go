@@ -288,6 +288,7 @@ func init() {
 		hostnameStatusGauge,
 		zoneCustomHostnames,
 		zoneInitialized,
+		buildInfoGauge,
 		accountInitialized,
 		loadBalancers,
 		loadBalancerNetworksDrift,
