@@ -212,6 +212,7 @@ func main() {
 		"commit", buildCommit,
 		"buildDate", buildDate,
 	)
+	controller.SetBuildInfo(buildVersion, buildCommit)
 
 	setupLog.Info("Configuration",
 		"operatorNamespace", operatorNamespace,
