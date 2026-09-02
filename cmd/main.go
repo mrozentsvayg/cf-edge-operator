@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"runtime/debug"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -46,7 +47,43 @@ import (
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
+
+	// Build identity, injected at build time via -ldflags -X (see Makefile and
+	// Dockerfile). The defaults apply to un-stamped builds (e.g. `go run` or a
+	// plain `go build`); buildInfo backfills commit/date from the embedded VCS
+	// stamps for those.
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
 )
+
+// buildInfo returns the operator's build identity. When commit/date were not
+// injected via -ldflags -X (an un-stamped build such as `go run`), it backfills
+// them from Go's embedded VCS stamps (runtime/debug build info). Explicitly
+// injected -ldflags values always take precedence.
+func buildInfo() (v, c, d string) {
+	v, c, d = version, commit, date
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return v, c, d
+	}
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			if c == "unknown" && s.Value != "" {
+				c = s.Value
+				if len(c) > 12 {
+					c = c[:12]
+				}
+			}
+		case "vcs.time":
+			if d == "unknown" && s.Value != "" {
+				d = s.Value
+			}
+		}
+	}
+	return v, c, d
+}
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -168,6 +205,13 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	buildVersion, buildCommit, buildDate := buildInfo()
+	setupLog.Info("Starting cf-edge-operator",
+		"version", buildVersion,
+		"commit", buildCommit,
+		"buildDate", buildDate,
+	)
 
 	setupLog.Info("Configuration",
 		"operatorNamespace", operatorNamespace,
