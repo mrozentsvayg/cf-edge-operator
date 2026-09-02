@@ -133,6 +133,16 @@ var (
 		Name: "cf_edge_operator_api_retries_total",
 		Help: "Number of retry attempts for Cloudflare API calls, by resource and operation.",
 	}, []string{"resource", "operation"})
+
+	// buildInfoGauge exposes the operator's build identity as a constant 1-valued
+	// series, labeled by version and commit -- the standard *_build_info pattern, so
+	// dashboards and alerts can display or group by the running build. Set once at
+	// startup via SetBuildInfo; the values come from cmd/main's -ldflags-injected
+	// build identity. Cardinality is 1 (version and commit are fixed per build).
+	buildInfoGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "cf_edge_operator_build_info",
+		Help: "Operator build identity; constant 1, labeled by version and commit.",
+	}, []string{"version", "commit"})
 )
 
 func init() {
@@ -149,6 +159,7 @@ func init() {
 		driftBufferDepth,
 		driftBufferOverflowTotal,
 		driftDetectionErrorsTotal,
+		buildInfoGauge,
 	)
 	// Pre-initialize counters and histograms so they appear in /metrics from startup.
 	for _, op := range []string{cfOpList, cfOpGet, cfOpCreate, cfOpUpdate, cfOpDelete} {
@@ -163,6 +174,13 @@ func init() {
 		cfAPIRetriesTotal.WithLabelValues(cfResourceCustomHostname, op)
 	}
 	cfAPIRetriesTotal.WithLabelValues(cfResourceZone, cfOpGet)
+}
+
+// SetBuildInfo publishes the operator's build identity as the cf_edge_operator_build_info
+// gauge (constant value 1), labeled by version and commit. Called once at startup from
+// main with the -ldflags-injected build values.
+func SetBuildInfo(version, commit string) {
+	buildInfoGauge.WithLabelValues(version, commit).Set(1)
 }
 
 // recordCFCall records duration and any error for a Cloudflare API call.
