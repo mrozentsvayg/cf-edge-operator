@@ -153,9 +153,18 @@ helm-crd-diff: ## Verify chart CRDs match generated CRDs
 
 ##@ Build
 
+# Build identity, stamped into the binary via -ldflags -X main.{version,commit,date}
+# (see cmd/main.go). Overridable from the environment / CLI (e.g. the Dockerfile
+# and release workflow pass their own values). Each falls back to a sane default
+# when git is unavailable so the build never fails on metadata alone.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS ?= -X main.version=$(VERSION) -X main.commit=$(GIT_COMMIT) -X main.date=$(BUILD_DATE)
+
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/cf-edge-operator cmd/main.go
+	go build -ldflags="$(LDFLAGS)" -o bin/cf-edge-operator cmd/main.go
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
