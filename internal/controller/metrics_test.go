@@ -19,6 +19,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	crtlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 // guardRes is a stand-in resource type for exercising the generic
@@ -330,5 +331,53 @@ func TestSetBuildInfo(t *testing.T) {
 	SetBuildInfo("v1.2.3", "abc1234")
 	if got := testutil.ToFloat64(buildInfoGauge.WithLabelValues("v1.2.3", "abc1234")); got != 1 {
 		t.Fatalf("cf_edge_operator_build_info{version=v1.2.3,commit=abc1234} = %v, want 1", got)
+	}
+}
+
+// TestMetricsRegistered asserts every custom collector is registered in the
+// controller-runtime metrics registry. A collector that is defined but omitted from
+// the init() MustRegister block is valid Go and reads back fine in a value test, yet
+// never reaches /metrics -- exactly how the build_info gauge regressed. Registering an
+// already-registered collector returns prometheus.AlreadyRegisteredError; a nil error
+// means it was NOT registered (and we undo the accidental registration). The list
+// mirrors the init() MustRegister block: a new metric must be added to both, or this
+// test fails.
+func TestMetricsRegistered(t *testing.T) {
+	// Keyed by Go var name so the list can be diffed against the MustRegister block.
+	collectors := map[string]prometheus.Collector{
+		"operationsTotal":                    operationsTotal,
+		"sslProvisioningDuration":            sslProvisioningDuration,
+		"customHostnames":                    customHostnames,
+		"hostnameStatusGauge":                hostnameStatusGauge,
+		"zoneCustomHostnames":                zoneCustomHostnames,
+		"zoneInitialized":                    zoneInitialized,
+		"buildInfoGauge":                     buildInfoGauge,
+		"accountInitialized":                 accountInitialized,
+		"loadBalancers":                      loadBalancers,
+		"loadBalancerNetworksDrift":          loadBalancerNetworksDrift,
+		"loadBalancerPools":                  loadBalancerPools,
+		"loadBalancerMonitors":               loadBalancerMonitors,
+		"loadBalancerPoolHealth":             loadBalancerPoolHealth,
+		"loadBalancerPoolHealthRegion":       loadBalancerPoolHealthRegion,
+		"loadBalancerPoolOriginHealth":       loadBalancerPoolOriginHealth,
+		"loadBalancerPoolOriginHealthRegion": loadBalancerPoolOriginHealthRegion,
+		"cfAPICallDuration":                  cfAPICallDuration,
+		"cfAPIErrorsByCode":                  cfAPIErrorsByCode,
+		"cfAPIRetriesTotal":                  cfAPIRetriesTotal,
+		"driftBufferDepth":                   driftBufferDepth,
+		"driftBufferOverflowTotal":           driftBufferOverflowTotal,
+		"driftDetectionErrorsTotal":          driftDetectionErrorsTotal,
+	}
+	for name, c := range collectors {
+		err := crtlmetrics.Registry.Register(c)
+		if err == nil {
+			// Not previously registered: undo our accidental registration, then fail.
+			crtlmetrics.Registry.Unregister(c)
+			t.Errorf("%s: collector is not registered (missing from init() MustRegister -> absent from /metrics)", name)
+			continue
+		}
+		if _, ok := errors.AsType[prometheus.AlreadyRegisteredError](err); !ok {
+			t.Errorf("%s: unexpected registry error: %v", name, err)
+		}
 	}
 }
