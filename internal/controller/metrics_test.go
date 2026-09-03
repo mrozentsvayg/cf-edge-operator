@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/cloudflare/cloudflare-go/v6"
 	"github.com/prometheus/client_golang/prometheus"
@@ -322,6 +323,69 @@ func TestCFCreateGuarded_No429Retry(t *testing.T) {
 	}
 	if findCalls != 0 {
 		t.Errorf("429 must not trigger find; findCalls=%d", findCalls)
+	}
+}
+
+// TestClearZoneCustomHostnameMetrics verifies that clearing a zone's
+// CustomHostname-family series removes exactly that zone's series (across all four
+// CH gauges) and its SSL provisioning tracking-cache entries, and leaves other zones
+// untouched. Uses countSeries (a side-effect-free registry gather) so absence is
+// observed as 0 series rather than recreated at 0.
+func TestClearZoneCustomHostnameMetrics(t *testing.T) {
+	const zoneCR = "clear-ch-metrics-zone"     // unique to this test; no suite uses it
+	const otherZone = "clear-ch-metrics-other" // bystander that must survive
+
+	// Populate every CH-family series for the zone under test, plus a bystander.
+	customHostnames.WithLabelValues(zoneCR, chStateReady).Set(3)
+	hostnameStatusGauge.WithLabelValues(zoneCR, "active").Set(2)
+	zoneCustomHostnames.WithLabelValues(zoneCR, "total").Set(5)
+	customHostnames.WithLabelValues(otherZone, chStateReady).Set(1)
+	// setSSLProvisioningDuration sets the gauge AND registers a tracking-cache entry,
+	// so both the gauge series and the cache entry are exercised by the clear.
+	setSSLProvisioningDuration(zoneCR, "app.example.com", sslMethodHTTP, 90*time.Second)
+	setSSLProvisioningDuration(otherZone, "other.example.com", sslMethodHTTP, 30*time.Second)
+	t.Cleanup(func() { clearZoneCustomHostnameMetrics(otherZone) })
+
+	clearZoneCustomHostnameMetrics(zoneCR)
+
+	families := []struct {
+		name   string
+		family string
+	}{
+		{"customHostnames", "cf_edge_operator_customhostnames"},
+		{"hostnameStatus", "cf_edge_operator_customhostname_status"},
+		{"zoneCustomHostnames", "cf_edge_operator_zone_customhostnames"},
+		{"sslProvisioningDuration", "cf_edge_operator_ssl_provisioning_duration_seconds"},
+	}
+	for _, f := range families {
+		if n := countSeries(f.family, map[string]string{labelZoneCR: zoneCR}); n != 0 {
+			t.Errorf("%s: expected 0 series for zone %q after clear, got %d", f.name, zoneCR, n)
+		}
+	}
+
+	// The zone's SSL provisioning tracking-cache entries must be gone; the bystander's
+	// must survive.
+	zoneCached, otherCached := 0, 0
+	sslProvisioningMu.Lock()
+	for _, entry := range sslProvisioningCache {
+		switch entry.zoneCR {
+		case zoneCR:
+			zoneCached++
+		case otherZone:
+			otherCached++
+		}
+	}
+	sslProvisioningMu.Unlock()
+	if zoneCached != 0 {
+		t.Errorf("expected 0 SSL provisioning cache entries for cleared zone %q, got %d", zoneCR, zoneCached)
+	}
+	if otherCached != 1 {
+		t.Errorf("expected bystander zone %q SSL provisioning cache entry to survive, got %d", otherZone, otherCached)
+	}
+
+	// The bystander zone's gauge series must be untouched.
+	if n := countSeries("cf_edge_operator_customhostnames", map[string]string{labelZoneCR: otherZone}); n != 1 {
+		t.Errorf("bystander zone %q series should survive clear, got %d", otherZone, n)
 	}
 }
 

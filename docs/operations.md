@@ -443,6 +443,7 @@ Before going live:
 
 - [ ] Zone CR `spec.id` matches the actual Cloudflare zone ID (verify in CF dashboard)
 - [ ] Secret referenced by `spec.credentialsRef` exists and contains a valid API token with `Zone: Read` and `SSL and Certificates: Edit` permissions
+- [ ] For a Zone used only as a `LoadBalancer.zoneRef` and backed by an LB-scoped token (one that cannot read `custom_hostnames`), set `spec.manageCustomHostnames: false` so the operator skips the CustomHostname drift pass and does not accrue `custom_hostnames` 403s / `cf_edge_operator_drift_detection_errors_total` noise
 - [ ] `--management-policy` set appropriately -- use `create` during migration to prevent update loops (see [migration.md](migration.md))
 - [ ] `--delete-policy` set appropriately -- use `own-only` or `never` during any migration window where another tool may manage the same zone (see [migration.md](migration.md))
 - [ ] `replicaCount >= 2` and `leaderElect: true` for HA

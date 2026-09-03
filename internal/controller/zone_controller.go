@@ -25,7 +25,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -109,9 +108,7 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		if client.IgnoreNotFound(err) == nil {
 			// Zone deleted -- remove stale metric series.
 			zoneInitialized.DeleteLabelValues(req.Name)
-			customHostnames.DeletePartialMatch(prometheus.Labels{labelZoneCR: req.Name})
-			zoneCustomHostnames.DeletePartialMatch(prometheus.Labels{labelZoneCR: req.Name})
-			sslProvisioningDuration.DeletePartialMatch(prometheus.Labels{labelZoneCR: req.Name})
+			clearZoneCustomHostnameMetrics(req.Name)
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -135,8 +132,14 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	// Initialize zone on first reconcile, on spec change (credentialsRef rotation),
 	// or when the Initialized condition is missing.
+	// Capture initRan BEFORE initializeZone: it advances the Initialized condition's
+	// ObservedGeneration (via setInitialized), so needsInit would read false afterward.
+	// initRan is true on the first reconcile and on the reconcile after any spec change
+	// (generation bump) -- i.e. on a discrete transition, which the unmanaged-zone
+	// cleanup below keys off of.
 	var cf *cloudflare.Client
-	if r.needsInit(&zone) {
+	initRan := r.needsInit(&zone)
+	if initRan {
 		var err error
 		cf, err = r.initializeZone(ctx, &zone, apiToken)
 		if err != nil {
@@ -147,26 +150,58 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		cf = r.buildCFClient(apiToken)
 	}
 
-	// Custom hostname drift detection (custom-hostname-specific). Skipped when custom
-	// hostname management is disabled: the zone controller still runs as shared
-	// credential/zone-identity substrate for load balancing, but a pure load-balancing
-	// cluster must not list custom hostnames from Cloudflare. Each resource type lives
-	// in its own file (zone_*_drift.go) and can fail independently.
+	// Custom hostname drift detection (custom-hostname-specific). Each resource type
+	// lives in its own file (zone_*_drift.go) and can fail independently.
 	// NOTE: Error is logged and counted (driftDetectionErrorsTotal) inside
 	// detectCustomHostnameDrift -- not returned. The zone requeues on DriftInterval
 	// regardless, so controller-runtime error tracking/backoff is unnecessary.
+	//
+	// Gated on two axes:
+	//   - operator-wide (r.EnableCustomHostname / --enable-customhostname): a pure
+	//     load-balancing control cluster runs the zone controller only as shared
+	//     credential/zone-identity substrate and must never list custom hostnames.
+	//   - per-zone (spec.manageCustomHostnames): a Zone that exists only to back a
+	//     LoadBalancer.zoneRef -- with an LB-scoped token that cannot read
+	//     custom_hostnames -- sets manageCustomHostnames=false so the operator skips the
+	//     drift bulk-list for that one zone, avoiding recurring custom_hostnames 403s.
+	// Zone initialization above is unaffected either way: load balancing still needs
+	// status.name / the resolved zone ID.
 	if r.EnableCustomHostname {
-		if err := r.detectCustomHostnameDrift(ctx, cf, &zone); err != nil {
-			log.V(1).Info("custom hostname - drift detection failed", "zoneID", zone.Spec.ID, "reason", err)
+		if manageCustomHostnames(&zone) {
+			if err := r.detectCustomHostnameDrift(ctx, cf, &zone); err != nil {
+				log.V(1).Info("custom hostname - drift detection failed", "zoneID", zone.Spec.ID, "reason", err)
+			}
+		} else if initRan {
+			// Zone opted out of custom hostname management. Do the one-time cleanup only
+			// on a discrete transition -- initRan is true on the first reconcile and on the
+			// reconcile after a spec flip (both bump generation), never on steady-state
+			// cycles -- so the else path stays silent and does no work, matching the
+			// operator-wide EnableCustomHostname=false path. A soft-fail on the 403 was
+			// rejected: it would still call CF every cycle and mask real auth failures on
+			// CH-managing zones. The three drift gauges are set only on the managed branch
+			// above, so a managed->unmanaged flip is the only way stale series arise, and it
+			// always coincides with an initRan cycle; once cleared they cannot reappear
+			// while the zone stays unmanaged.
+			log.V(1).Info("custom hostname - management disabled for zone (spec.manageCustomHostnames=false), skipping drift", "zone", zone.Name)
+			clearZoneCustomHostnameMetrics(zone.Name)
 		}
 
-		// Clean up expired SSL provisioning gauge entries. Runs every drift cycle (~30s)
-		// to bound the cardinality of the per-hostname gauge. Only custom hostname
-		// reconciles populate this cache, so it is gated with the drift list.
+		// Clean up expired SSL provisioning gauge entries once per reconcile, on both
+		// branches. The CustomHostname controller sets sslProvisioningDuration without
+		// consulting manageCustomHostnames, so an unmanaged zone can still accrue an SSL
+		// series out-of-band; running the TTL cleaner here (not only on the managed
+		// branch) bounds the per-hostname gauge even for an all-unmanaged operator.
 		cleanExpiredSSLProvisioning()
 	}
 
 	return ctrl.Result{RequeueAfter: r.DriftInterval}, nil
+}
+
+// manageCustomHostnames reports whether the operator should manage CustomHostnames
+// for this zone. A nil spec.manageCustomHostnames (field unset) is treated as true
+// for back-compat, matching the CRD default.
+func manageCustomHostnames(zone *domainsv1beta1.Zone) bool {
+	return zone.Spec.ManageCustomHostnames == nil || *zone.Spec.ManageCustomHostnames
 }
 
 // needsInit returns true if the zone requires initialization (zone GET to resolve

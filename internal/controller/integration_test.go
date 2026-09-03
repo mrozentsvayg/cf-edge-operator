@@ -48,6 +48,13 @@ type cfMockServer struct {
 	zoneName  string
 	server    *httptest.Server
 	idCounter int
+	// chListCalls counts GET custom_hostnames (list) requests. Used by the
+	// manageCustomHostnames gate suite to prove the drift bulk-list is never called
+	// for a zone that opts out of custom hostname management.
+	chListCalls int
+	// chListFail, when set, makes the custom_hostnames list endpoint return 403 --
+	// modelling an LB-scoped token that cannot read custom hostnames.
+	chListFail bool
 }
 
 type mockHostname struct {
@@ -187,6 +194,16 @@ func (m *cfMockServer) handleCHList(w http.ResponseWriter, r *http.Request) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	m.chListCalls++
+	if m.chListFail {
+		w.WriteHeader(403)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": false,
+			"errors":  []map[string]any{{"code": 9109, "message": "Unauthorized to access requested resource"}},
+		})
+		return
+	}
+
 	// Only return results on page 1 (or when page is absent). The SDK's
 	// ListAutoPaging fetches pages until it gets an empty result set (N+1 pattern).
 	// Without this guard, the mock returns the same results on every page, causing
@@ -306,6 +323,22 @@ func (m *cfMockServer) hostnameCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.hostnames)
+}
+
+// failCHList makes the custom_hostnames list endpoint return 403 on every call,
+// modelling an LB-scoped token that cannot read custom hostnames.
+func (m *cfMockServer) failCHList() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.chListFail = true
+}
+
+// chListCallCount returns how many times the custom_hostnames list endpoint has
+// been called.
+func (m *cfMockServer) chListCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.chListCalls
 }
 
 // --- Integration Tests ---

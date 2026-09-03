@@ -33,6 +33,17 @@ type ZoneSpec struct {
 	// The secret must be in the same namespace as the Zone resource.
 	// +kubebuilder:validation:Required
 	CredentialsRef SecretRef `json:"credentialsRef"`
+
+	// ManageCustomHostnames controls whether the operator manages CustomHostnames for
+	// this zone. When false, the operator does not manage CustomHostnames for this zone
+	// -- it skips the CustomHostname drift/reconcile pass entirely and never lists
+	// custom_hostnames from Cloudflare. Set false for a Zone used only as a
+	// LoadBalancer.zoneRef with an LB-scoped token, to avoid custom_hostnames 403s.
+	// A nil value (the field unset) is treated as true, so existing zones keep managing
+	// custom hostnames. Default true.
+	// +kubebuilder:default=true
+	// +optional
+	ManageCustomHostnames *bool `json:"manageCustomHostnames,omitempty"`
 }
 
 // SecretRef references a Kubernetes secret

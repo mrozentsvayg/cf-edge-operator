@@ -520,8 +520,37 @@ func setSSLProvisioningDuration(zoneCR, hostname, method string, duration time.D
 	sslProvisioningMu.Unlock()
 }
 
+// clearZoneCustomHostnameMetrics removes every CustomHostname-family metric series
+// for a zone (matched by the zone_cr label): the per-state CR gauge, the CF
+// activation-status gauge, the managed/orphan/total gauge, and any SSL provisioning
+// gauges. It also drops the zone's SSL provisioning tracking-cache entries so the
+// gauge series are not later resurrected. Called on discrete transitions only -- when
+// a Zone is deleted, and once (on the init/generation-bump reconcile) when a Zone
+// opts out of custom hostname management (spec.manageCustomHostnames=false) -- so a
+// zone that stops being managed does not leave stale counts in /metrics. Does NOT
+// touch zoneInitialized -- zone identity is independent of custom hostname management.
+func clearZoneCustomHostnameMetrics(zoneCR string) {
+	labels := prometheus.Labels{labelZoneCR: zoneCR}
+	customHostnames.DeletePartialMatch(labels)
+	hostnameStatusGauge.DeletePartialMatch(labels)
+	zoneCustomHostnames.DeletePartialMatch(labels)
+	sslProvisioningDuration.DeletePartialMatch(labels)
+
+	sslProvisioningMu.Lock()
+	for key, entry := range sslProvisioningCache {
+		if entry.zoneCR == zoneCR {
+			delete(sslProvisioningCache, key)
+		}
+	}
+	sslProvisioningMu.Unlock()
+}
+
 // cleanExpiredSSLProvisioning removes expired SSL provisioning gauge entries.
-// Called by the zone controller at the end of each drift cycle.
+// Called by the zone controller once per reconcile whenever custom hostname
+// management is operator-enabled -- on both the managed and the per-zone-unmanaged
+// branches -- so the per-hostname gauge is bounded by its TTL even for an
+// all-unmanaged operator (the CustomHostname controller can set the gauge for any
+// zone regardless of its manageCustomHostnames setting).
 func cleanExpiredSSLProvisioning() {
 	now := time.Now()
 	sslProvisioningMu.Lock()

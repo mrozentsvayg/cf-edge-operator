@@ -9,7 +9,12 @@ See also: [docs/operations.md](operations.md) for configuration flags, performan
 ## CRDs
 
 ### Zone (`domains.cf-edge.io/v1beta1`)
-Represents a Cloudflare zone. Lives in the operator namespace. Holds zone ID and a reference to a secret containing the Cloudflare API token. All CustomHostname resources in app namespaces reference a Zone.
+Represents a Cloudflare zone. Lives in the operator namespace. Holds zone ID and a reference to a secret containing the Cloudflare API token. All CustomHostname resources in app namespaces reference a Zone. A Zone is also referenced by LoadBalancer CRs via `zoneRef` (supplying the CF zone ID and credentials).
+
+Key spec fields:
+- `spec.id` -- the Cloudflare zone ID (32-char hex, immutable)
+- `spec.credentialsRef` -- secret holding the API token; must be in the Zone's namespace
+- `spec.manageCustomHostnames` -- (optional, default `true`) whether the operator manages CustomHostnames for this zone. When `false`, the operator skips the CustomHostname drift/reconcile pass for this zone entirely -- it does not list `custom_hostnames` from Cloudflare. Set `false` for a Zone that exists only as a `LoadBalancer.zoneRef` and is backed by an LB-scoped API token (which cannot read `custom_hostnames`), to avoid recurring 403s and the resulting `cf_edge_operator_drift_detection_errors_total` noise. Zone initialization (resolving `status.name` / the zone ID that load balancing needs) is unaffected. Unset is treated as `true`, so existing zones keep managing custom hostnames.
 
 ### CustomHostname (`saas.cf-edge.io/v1beta1`)
 Represents a Cloudflare custom hostname with origin server and optional SNI override. Lives in app namespaces. References a Zone cross-namespace.

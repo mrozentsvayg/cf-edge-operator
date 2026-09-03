@@ -225,6 +225,28 @@ func TestSslStatusChangedFields(t *testing.T) {
 	}
 }
 
+func TestManageCustomHostnames(t *testing.T) {
+	tests := []struct {
+		name string
+		val  *bool
+		want bool
+	}{
+		{"nil (unset) -> managed", nil, true},
+		{"explicit true -> managed", new(true), true},
+		{"explicit false -> not managed", new(false), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			zone := &domainsv1beta1.Zone{
+				Spec: domainsv1beta1.ZoneSpec{ManageCustomHostnames: tt.val},
+			}
+			if got := manageCustomHostnames(zone); got != tt.want {
+				t.Errorf("manageCustomHostnames() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRefersToZone(t *testing.T) {
 	r := &ZoneReconciler{}
 	zone := &domainsv1beta1.Zone{

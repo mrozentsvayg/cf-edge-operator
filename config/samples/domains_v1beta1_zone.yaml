@@ -8,6 +8,9 @@ spec:
   credentialsRef:
     name: cloudflare-api-token
     key: apiToken
+  # manageCustomHostnames: true  # default true; set false for a Zone used only as a
+  #                              # LoadBalancer.zoneRef with an LB-scoped token, to skip
+  #                              # the CustomHostname drift pass and avoid custom_hostnames 403s
 ---
 apiVersion: v1
 kind: Secret

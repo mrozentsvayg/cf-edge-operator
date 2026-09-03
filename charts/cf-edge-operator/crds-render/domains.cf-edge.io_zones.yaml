@@ -71,6 +71,17 @@ spec:
                 x-kubernetes-validations:
                 - message: zone ID is immutable
                   rule: self == oldSelf
+              manageCustomHostnames:
+                default: true
+                description: |-
+                  ManageCustomHostnames controls whether the operator manages CustomHostnames for
+                  this zone. When false, the operator does not manage CustomHostnames for this zone
+                  -- it skips the CustomHostname drift/reconcile pass entirely and never lists
+                  custom_hostnames from Cloudflare. Set false for a Zone used only as a
+                  LoadBalancer.zoneRef with an LB-scoped token, to avoid custom_hostnames 403s.
+                  A nil value (the field unset) is treated as true, so existing zones keep managing
+                  custom hostnames. Default true.
+                type: boolean
             required:
             - credentialsRef
             - id
