@@ -33,6 +33,22 @@ managementPolicy: "manage"
 # Per-CR spec.deletePolicy overrides this default.
 deletePolicy: "always"
 
+# Per-feature policy overrides. Precedence (highest first): per-CR spec > per-feature
+# flag (below) > global managementPolicy/deletePolicy (above) > built-in default.
+# Use these to run one feature under a different default than the other -- e.g.
+# CustomHostname in "create" (coexist with external-dns) while load balancing enforces
+# single-owner "manage".
+#
+# CustomHostname feature. Empty inherits the global managementPolicy / deletePolicy.
+customhostnameManagementPolicy: ""
+customhostnameDeletePolicy: ""
+# Load-balancing feature. The operator flag inherits the global managementPolicy when
+# empty (like the other three); this chart sets "manage" as the single-owner deployment
+# default -- the opinion lives here, not baked into the binary. Set "" to inherit the
+# global managementPolicy instead. deletePolicy empty inherits the global deletePolicy.
+loadbalancingManagementPolicy: "manage"
+loadbalancingDeletePolicy: ""
+
 # Dry-run mode: log what would happen without writing to Cloudflare.
 dryRun: false
 

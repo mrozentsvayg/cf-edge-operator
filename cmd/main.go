@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"runtime/debug"
 	"time"
@@ -108,6 +109,97 @@ func levelEncoder(l zapcore.Level, enc zapcore.PrimitiveArrayEncoder) {
 	zapcore.LowercaseLevelEncoder(l, enc)
 }
 
+// perFeaturePolicyFlags holds the four per-feature policy override inputs. Each
+// feature (CustomHostname, load balancing) can set its own management/delete policy
+// default, overriding the operator-wide --management-policy / --delete-policy so one
+// cluster can run, e.g., CustomHostname in "create" (coexist with external-dns) while
+// load balancing enforces single-owner "manage".
+type perFeaturePolicyFlags struct {
+	customhostnameManagementPolicy string
+	customhostnameDeletePolicy     string
+	loadbalancingManagementPolicy  string
+	loadbalancingDeletePolicy      string
+}
+
+// registerPerFeaturePolicyFlags registers the four per-feature policy override flags
+// on fs. All four default to empty (inherit the matching global via resolvePolicy), so
+// the operator binary stays symmetric and the global flags stay truly global. The
+// single-owner "manage" opinion for load balancing lives in the Helm chart values
+// (loadbalancingManagementPolicy: "manage"), the deployment-opinion layer, not the
+// binary. Kept separate from main's inline flag block so the defaults are unit-testable.
+func registerPerFeaturePolicyFlags(fs *flag.FlagSet, v *perFeaturePolicyFlags) {
+	fs.StringVar(&v.customhostnameManagementPolicy, "customhostname-management-policy", "",
+		"Management policy for CustomHostname resources, overriding --management-policy for the "+
+			"CustomHostname feature. Empty inherits --management-policy. "+
+			"Per-CR spec.managementPolicy still overrides this.")
+	fs.StringVar(&v.customhostnameDeletePolicy, "customhostname-delete-policy", "",
+		"Delete policy for CustomHostname resources, overriding --delete-policy for the "+
+			"CustomHostname feature. Empty inherits --delete-policy. "+
+			"Per-CR spec.deletePolicy still overrides this.")
+	fs.StringVar(&v.loadbalancingManagementPolicy, "loadbalancing-management-policy", "",
+		"Management policy for load-balancing resources (LoadBalancer, LoadBalancerPool, "+
+			"LoadBalancerMonitor), overriding --management-policy for the load-balancing feature. "+
+			"Empty inherits --management-policy. Per-CR spec.managementPolicy still overrides this. "+
+			"(The Helm chart defaults this to 'manage' for single-owner enforcement.)")
+	fs.StringVar(&v.loadbalancingDeletePolicy, "loadbalancing-delete-policy", "",
+		"Delete policy for load-balancing resources, overriding --delete-policy for the "+
+			"load-balancing feature. Empty inherits --delete-policy. "+
+			"Per-CR spec.deletePolicy still overrides this.")
+}
+
+// resolvePolicy returns the per-feature policy when set, otherwise the global
+// default. Overall precedence (highest first): per-CR spec (applied in the
+// reconcilers) > per-feature flag > global flag > built-in default. An empty
+// per-feature value means "inherit the global default".
+func resolvePolicy(perFeature, global string) string {
+	if perFeature != "" {
+		return perFeature
+	}
+	return global
+}
+
+// isValidManagementPolicy reports whether v is a known management policy.
+func isValidManagementPolicy(v string) bool {
+	switch v {
+	case controller.ManagementPolicyManage, controller.ManagementPolicyCreate, controller.ManagementPolicyObserve:
+		return true
+	default:
+		return false
+	}
+}
+
+// isValidDeletePolicy reports whether v is a known delete policy.
+func isValidDeletePolicy(v string) bool {
+	switch v {
+	case controller.DeletePolicyAlways, controller.DeletePolicyOwnOnly, controller.DeletePolicyNever:
+		return true
+	default:
+		return false
+	}
+}
+
+// validatePerFeaturePolicyFlags returns a non-nil error naming the first per-feature
+// policy flag whose value is set but invalid. Empty values are valid -- they inherit
+// the (separately validated) global default.
+func validatePerFeaturePolicyFlags(v perFeaturePolicyFlags) error {
+	checks := []struct {
+		name  string
+		value string
+		valid func(string) bool
+	}{
+		{"--customhostname-management-policy", v.customhostnameManagementPolicy, isValidManagementPolicy},
+		{"--loadbalancing-management-policy", v.loadbalancingManagementPolicy, isValidManagementPolicy},
+		{"--customhostname-delete-policy", v.customhostnameDeletePolicy, isValidDeletePolicy},
+		{"--loadbalancing-delete-policy", v.loadbalancingDeletePolicy, isValidDeletePolicy},
+	}
+	for _, c := range checks {
+		if c.value != "" && !c.valid(c.value) {
+			return fmt.Errorf("invalid %s: %q", c.name, c.value)
+		}
+	}
+	return nil
+}
+
 // nolint:gocyclo
 func main() {
 	var metricsAddr string
@@ -120,6 +212,7 @@ func main() {
 	var kubeContext string
 	var managementPolicy string
 	var deletePolicy string
+	var perFeaturePolicy perFeaturePolicyFlags
 	var dryRun bool
 	var enableCustomHostname bool
 	var enableLoadBalancing bool
@@ -164,6 +257,7 @@ func main() {
 			"'own-only': only delete if the current Cloudflare hostname ID matches status.id. "+
 			"'never': release the finalizer without deleting from Cloudflare. "+
 			"Per-CR spec.deletePolicy overrides this default.")
+	registerPerFeaturePolicyFlags(flag.CommandLine, &perFeaturePolicy)
 	flag.BoolVar(&dryRun, "dry-run", false,
 		"If set, skip all Cloudflare write operations and log what would happen instead.")
 	flag.BoolVar(&enableCustomHostname, "enable-customhostname", true,
@@ -251,10 +345,22 @@ func main() {
 	)
 	controller.SetBuildInfo(buildVersion, buildCommit)
 
+	// Resolve the effective per-feature policies: per-feature flag when set, else the
+	// global default. Per-CR spec.managementPolicy / spec.deletePolicy still override
+	// these inside the reconcilers.
+	chManagementPolicy := resolvePolicy(perFeaturePolicy.customhostnameManagementPolicy, managementPolicy)
+	chDeletePolicy := resolvePolicy(perFeaturePolicy.customhostnameDeletePolicy, deletePolicy)
+	lbManagementPolicy := resolvePolicy(perFeaturePolicy.loadbalancingManagementPolicy, managementPolicy)
+	lbDeletePolicy := resolvePolicy(perFeaturePolicy.loadbalancingDeletePolicy, deletePolicy)
+
 	setupLog.Info("Configuration",
 		"operatorNamespace", operatorNamespace,
 		"managementPolicy", managementPolicy,
 		"deletePolicy", deletePolicy,
+		"customhostnameManagementPolicy", chManagementPolicy,
+		"customhostnameDeletePolicy", chDeletePolicy,
+		"loadbalancingManagementPolicy", lbManagementPolicy,
+		"loadbalancingDeletePolicy", lbDeletePolicy,
 		"dryRun", dryRun,
 		"enableCustomHostname", enableCustomHostname,
 		"enableLoadBalancing", enableLoadBalancing,
@@ -276,16 +382,20 @@ func main() {
 		"zapLogLevel", flag.Lookup("zap-log-level").Value.String(),
 		"kubeContext", kubeContext,
 	)
-	switch managementPolicy {
-	case controller.ManagementPolicyManage, controller.ManagementPolicyCreate, controller.ManagementPolicyObserve:
-	default:
+	// The two global policy flags are the ultimate fallback, so they must be valid
+	// (empty is rejected). The four per-feature overrides may be empty (they inherit
+	// the matching global) but must be valid when set; validatePerFeaturePolicyFlags
+	// names the exact offending flag.
+	if !isValidManagementPolicy(managementPolicy) {
 		setupLog.Error(nil, "invalid --management-policy", "value", managementPolicy)
 		os.Exit(1)
 	}
-	switch deletePolicy {
-	case controller.DeletePolicyAlways, controller.DeletePolicyOwnOnly, controller.DeletePolicyNever:
-	default:
+	if !isValidDeletePolicy(deletePolicy) {
 		setupLog.Error(nil, "invalid --delete-policy", "value", deletePolicy)
+		os.Exit(1)
+	}
+	if err := validatePerFeaturePolicyFlags(perFeaturePolicy); err != nil {
+		setupLog.Error(err, "invalid per-feature policy flag")
 		os.Exit(1)
 	}
 	if driftInterval <= 0 {
@@ -462,8 +572,8 @@ func main() {
 			Scheme:            mgr.GetScheme(),
 			Recorder:          mgr.GetEventRecorder("customhostname"),
 			OperatorNamespace: operatorNamespace,
-			ManagementPolicy:  managementPolicy,
-			DeletePolicy:      deletePolicy,
+			ManagementPolicy:  chManagementPolicy,
+			DeletePolicy:      chDeletePolicy,
 			DryRun:            dryRun,
 			SSLDefaults: controller.SSLDefaults{
 				CertificateAuthority: sslCertificateAuthority,
@@ -528,8 +638,8 @@ func main() {
 			Scheme:            mgr.GetScheme(),
 			Recorder:          mgr.GetEventRecorder("loadbalancermonitor"),
 			OperatorNamespace: operatorNamespace,
-			ManagementPolicy:  managementPolicy,
-			DeletePolicy:      deletePolicy,
+			ManagementPolicy:  lbManagementPolicy,
+			DeletePolicy:      lbDeletePolicy,
 			DryRun:            dryRun,
 			CFAPITimeout:      cfAPITimeout,
 			CFAPIWriteTimeout: cfAPIWriteTimeout,
@@ -545,8 +655,8 @@ func main() {
 			Scheme:            mgr.GetScheme(),
 			Recorder:          mgr.GetEventRecorder("loadbalancerpool"),
 			OperatorNamespace: operatorNamespace,
-			ManagementPolicy:  managementPolicy,
-			DeletePolicy:      deletePolicy,
+			ManagementPolicy:  lbManagementPolicy,
+			DeletePolicy:      lbDeletePolicy,
 			DryRun:            dryRun,
 			CFAPITimeout:      cfAPITimeout,
 			CFAPIWriteTimeout: cfAPIWriteTimeout,
@@ -563,8 +673,8 @@ func main() {
 			Scheme:            mgr.GetScheme(),
 			Recorder:          mgr.GetEventRecorder("loadbalancer"),
 			OperatorNamespace: operatorNamespace,
-			ManagementPolicy:  managementPolicy,
-			DeletePolicy:      deletePolicy,
+			ManagementPolicy:  lbManagementPolicy,
+			DeletePolicy:      lbDeletePolicy,
 			DryRun:            dryRun,
 			CFAPITimeout:      cfAPITimeout,
 			CFAPIWriteTimeout: cfAPIWriteTimeout,

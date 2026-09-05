@@ -57,6 +57,10 @@ out=$(helm template test "$C"/ \
   --set podLabels.export-logs=true \
   --set managementPolicy=create \
   --set deletePolicy=never \
+  --set customhostnameManagementPolicy=observe \
+  --set customhostnameDeletePolicy=own-only \
+  --set loadbalancingManagementPolicy=create \
+  --set loadbalancingDeletePolicy=never \
   --set driftInterval=30s \
   --set cfAPITimeout=5s \
   --set cfAPIWriteTimeout=20s \
@@ -70,6 +74,10 @@ out=$(helm template test "$C"/ \
   --set zapLogLevel=2)
 grep -q "\-\-management-policy=create"               <<<"$out" || { echo "FAIL: managementPolicy"; exit 1; }
 grep -q "\-\-delete-policy=never"                    <<<"$out" || { echo "FAIL: deletePolicy"; exit 1; }
+grep -q "\-\-customhostname-management-policy=observe" <<<"$out" || { echo "FAIL: customhostnameManagementPolicy"; exit 1; }
+grep -q "\-\-customhostname-delete-policy=own-only"  <<<"$out" || { echo "FAIL: customhostnameDeletePolicy"; exit 1; }
+grep -q "\-\-loadbalancing-management-policy=create" <<<"$out" || { echo "FAIL: loadbalancingManagementPolicy"; exit 1; }
+grep -q "\-\-loadbalancing-delete-policy=never"      <<<"$out" || { echo "FAIL: loadbalancingDeletePolicy"; exit 1; }
 grep -q "\-\-drift-interval=30s"                     <<<"$out" || { echo "FAIL: driftInterval"; exit 1; }
 grep -q "\-\-cf-api-timeout=5s"                      <<<"$out" || { echo "FAIL: cfAPITimeout"; exit 1; }
 grep -q "\-\-cf-api-write-timeout=20s"              <<<"$out" || { echo "FAIL: cfAPIWriteTimeout"; exit 1; }
@@ -95,6 +103,21 @@ grep -q "\-\-ssl-method="                <<<"$out" && { echo "FAIL: sslMethod sh
 grep -q "\-\-ssl-type="                  <<<"$out" && { echo "FAIL: sslType should be absent by default"; exit 1; }
 grep -q "\-\-zap-log-level="             <<<"$out" && { echo "FAIL: zapLogLevel should be absent by default"; exit 1; }
 grep -q "export-logs"                    <<<"$out" && { echo "FAIL: podLabels should be absent by default"; exit 1; }
+
+# Per-feature policy flags render unconditionally (mirroring the global policy flags).
+# The chart sets loadbalancingManagementPolicy: "manage" (the single-owner deployment
+# opinion), so it renders "=manage"; the other three default to empty and must render
+# EMPTY (empty inherits the global). Anchor the empty ones with "=$" -- an unanchored
+# match would also pass for a wrongly non-empty default (false green).
+grep -q  "\-\-loadbalancing-management-policy=manage" <<<"$out" || { echo "FAIL: loadbalancing-management-policy should render the chart default manage"; exit 1; }
+grep -qE "\-\-customhostname-management-policy=$"      <<<"$out" || { echo "FAIL: customhostname-management-policy should default to empty (inherit)"; exit 1; }
+grep -qE "\-\-customhostname-delete-policy=$"          <<<"$out" || { echo "FAIL: customhostname-delete-policy should default to empty (inherit)"; exit 1; }
+grep -qE "\-\-loadbalancing-delete-policy=$"           <<<"$out" || { echo "FAIL: loadbalancing-delete-policy should default to empty (inherit)"; exit 1; }
+
+# The chart's "manage" default for load balancing is an overridable opinion, not baked
+# into the binary: setting it empty renders the inherit form (--loadbalancing-management-policy=).
+lbinherit=$(helm template test "$C"/ --set loadbalancingManagementPolicy="")
+grep -qE "\-\-loadbalancing-management-policy=$" <<<"$lbinherit" || { echo "FAIL: loadbalancingManagementPolicy='' should render empty (inherit)"; exit 1; }
 
 # Feature gating. Both flags always render as --enable-<feature>=<bool>.
 # Defaults: customhostname on, loadBalancing off. CRDs render as regular

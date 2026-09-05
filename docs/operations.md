@@ -9,8 +9,12 @@ All flags are set via Helm values, which are passed as container args in the Dep
 | Flag | Helm default | Helm value | Description |
 |------|-------------|-----------|-------------|
 | `--operator-namespace` | release namespace | `operatorNamespace` | Namespace where Zone CRs are managed |
-| `--management-policy` | `manage` | `managementPolicy` | `manage`, `create`, or `observe` -- see [migration.md](migration.md) |
-| `--delete-policy` | `always` | `deletePolicy` | `always`, `own-only`, or `never` -- see [migration.md](migration.md) |
+| `--management-policy` | `manage` | `managementPolicy` | Global default: `manage`, `create`, or `observe` -- see [migration.md](migration.md) |
+| `--delete-policy` | `always` | `deletePolicy` | Global default: `always`, `own-only`, or `never` -- see [migration.md](migration.md) |
+| `--customhostname-management-policy` | _(empty)_ | `customhostnameManagementPolicy` | Management policy for CustomHostname resources; overrides `--management-policy` for that feature. Empty inherits `--management-policy` |
+| `--customhostname-delete-policy` | _(empty)_ | `customhostnameDeletePolicy` | Delete policy for CustomHostname resources; overrides `--delete-policy` for that feature. Empty inherits `--delete-policy` |
+| `--loadbalancing-management-policy` | `manage` | `loadbalancingManagementPolicy` | Management policy for load-balancing resources (LoadBalancer/Pool/Monitor); overrides `--management-policy` for that feature. The operator flag inherits `--management-policy` when empty; the Helm chart sets `manage` (single-owner). Set `""` to inherit |
+| `--loadbalancing-delete-policy` | _(empty)_ | `loadbalancingDeletePolicy` | Delete policy for load-balancing resources; overrides `--delete-policy` for that feature. Empty inherits `--delete-policy` |
 | `--dry-run` | `false` | `dryRun` | Log Cloudflare (CF) operations without executing them |
 | `--enable-customhostname` | `true` | `features.customhostname.enabled` | Enable the CustomHostname controller (and the shared Zone controller). On by default -- the operator's original role |
 | `--enable-loadbalancing` | `false` | `features.loadBalancing.enabled` | Enable the load-balancing control-plane role (Account + the LoadBalancer/LoadBalancerPool/LoadBalancerMonitor controllers). Off by default |
@@ -30,6 +34,26 @@ All flags are set via Helm values, which are passed as container args in the Dep
 | `--ssl-min-tls-version` | _(empty)_ | `sslMinTLSVersion` | Default min TLS version for new CHs (`1.0`-`1.3`). Empty = CF default |
 | `--ssl-method` | _(empty)_ | `sslMethod` | Default DCV method for new CHs (`http`, `txt`, `email`). Empty = `http` |
 | `--ssl-type` | _(empty)_ | `sslType` | Default validation type for new CHs (`dv`). Empty = `dv` |
+
+### Policy precedence (management and delete)
+
+Management and delete policy are resolved per feature, so one cluster can run each
+feature under a different default -- e.g. CustomHostname in `create` (coexist with
+external-dns) while load balancing enforces single-owner `manage`. Precedence, highest
+to lowest:
+
+1. **Per-CR** `spec.managementPolicy` / `spec.deletePolicy` -- overrides everything for that CR.
+2. **Per-feature flag** -- `--customhostname-*` for CustomHostname; `--loadbalancing-*` for the LoadBalancer/Pool/Monitor CRs.
+3. **Global flag** -- `--management-policy` / `--delete-policy`.
+4. **Built-in default** -- `manage` / `always`.
+
+All four per-feature flags default to empty, meaning "inherit the global". The Helm
+chart sets `loadbalancingManagementPolicy: "manage"` as the single-owner deployment
+default -- an overridable opinion in the chart, not baked into the binary; set it to
+`""` to inherit the global `--management-policy` instead. The operator logs the
+resolved effective values per feature at startup (the `Configuration` line) and rejects
+an invalid per-feature value at startup, naming the offending flag. Account CRs take no
+policy (the Account controller only validates credentials).
 
 ### CF API timeout and retry budget
 
