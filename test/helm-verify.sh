@@ -104,20 +104,19 @@ grep -q "\-\-ssl-type="                  <<<"$out" && { echo "FAIL: sslType shou
 grep -q "\-\-zap-log-level="             <<<"$out" && { echo "FAIL: zapLogLevel should be absent by default"; exit 1; }
 grep -q "export-logs"                    <<<"$out" && { echo "FAIL: podLabels should be absent by default"; exit 1; }
 
-# Per-feature policy flags render unconditionally (mirroring the global policy flags).
-# The chart sets loadbalancingManagementPolicy: "manage" (the single-owner deployment
-# opinion), so it renders "=manage"; the other three default to empty and must render
-# EMPTY (empty inherits the global). Anchor the empty ones with "=$" -- an unanchored
-# match would also pass for a wrongly non-empty default (false green).
-grep -q  "\-\-loadbalancing-management-policy=manage" <<<"$out" || { echo "FAIL: loadbalancing-management-policy should render the chart default manage"; exit 1; }
-grep -qE "\-\-customhostname-management-policy=$"      <<<"$out" || { echo "FAIL: customhostname-management-policy should default to empty (inherit)"; exit 1; }
-grep -qE "\-\-customhostname-delete-policy=$"          <<<"$out" || { echo "FAIL: customhostname-delete-policy should default to empty (inherit)"; exit 1; }
-grep -qE "\-\-loadbalancing-delete-policy=$"           <<<"$out" || { echo "FAIL: loadbalancing-delete-policy should default to empty (inherit)"; exit 1; }
+# Per-feature policy flags render ONLY when non-empty (like the ssl-* / zap-log-level
+# flags above), never as "--<flag>=" (empty). The chart sets loadbalancingManagementPolicy:
+# "manage" (the single-owner deployment opinion), so it renders "=manage"; the other three
+# default to empty and are OMITTED entirely -- an absent flag IS the inherit form.
+grep -q "\-\-loadbalancing-management-policy=manage" <<<"$out" || { echo "FAIL: loadbalancing-management-policy should render the chart default manage"; exit 1; }
+grep -q "\-\-customhostname-management-policy"        <<<"$out" && { echo "FAIL: customhostname-management-policy should be absent by default (empty inherits the global)"; exit 1; }
+grep -q "\-\-customhostname-delete-policy"            <<<"$out" && { echo "FAIL: customhostname-delete-policy should be absent by default (empty inherits the global)"; exit 1; }
+grep -q "\-\-loadbalancing-delete-policy"             <<<"$out" && { echo "FAIL: loadbalancing-delete-policy should be absent by default (empty inherits the global)"; exit 1; }
 
 # The chart's "manage" default for load balancing is an overridable opinion, not baked
-# into the binary: setting it empty renders the inherit form (--loadbalancing-management-policy=).
+# into the binary: setting it empty OMITS the flag (an absent flag inherits the global).
 lbinherit=$(helm template test "$C"/ --set loadbalancingManagementPolicy="")
-grep -qE "\-\-loadbalancing-management-policy=$" <<<"$lbinherit" || { echo "FAIL: loadbalancingManagementPolicy='' should render empty (inherit)"; exit 1; }
+grep -q "\-\-loadbalancing-management-policy" <<<"$lbinherit" && { echo "FAIL: loadbalancingManagementPolicy='' should omit the flag (inherit the global)"; exit 1; }
 
 # Feature gating. Both flags always render as --enable-<feature>=<bool>.
 # Defaults: customhostname on, loadBalancing off. CRDs render as regular

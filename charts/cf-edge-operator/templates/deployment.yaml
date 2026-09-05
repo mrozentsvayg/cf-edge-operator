@@ -43,10 +43,18 @@ spec:
         - --operator-namespace={{ include "cf-edge-operator.operatorNamespace" . }}
         - --management-policy={{ .Values.managementPolicy }}
         - --delete-policy={{ .Values.deletePolicy }}
+        {{- if .Values.customhostnameManagementPolicy }}
         - --customhostname-management-policy={{ .Values.customhostnameManagementPolicy }}
+        {{- end }}
+        {{- if .Values.customhostnameDeletePolicy }}
         - --customhostname-delete-policy={{ .Values.customhostnameDeletePolicy }}
+        {{- end }}
+        {{- if .Values.loadbalancingManagementPolicy }}
         - --loadbalancing-management-policy={{ .Values.loadbalancingManagementPolicy }}
+        {{- end }}
+        {{- if .Values.loadbalancingDeletePolicy }}
         - --loadbalancing-delete-policy={{ .Values.loadbalancingDeletePolicy }}
+        {{- end }}
         - --drift-interval={{ .Values.driftInterval }}
         - --drift-buffer={{ .Values.driftBuffer }}
         - --cf-api-timeout={{ .Values.cfAPITimeout }}
